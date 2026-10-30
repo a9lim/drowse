@@ -113,6 +113,78 @@ def test_lens_layers_named_modes_parse() -> None:
     assert cli_runners._parse_layer_list("all") == "all"
 
 
+def test_lens_fit_pins_a_hub_corpus_once_for_preflight_and_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import drowse.io.lens as lens_io
+    from drowse.cli.runners import lens as lens_runner
+    from drowse.io.lens import HfLensCorpus, LensCorpusMix
+
+    pinned = LensCorpusMix((
+        HfLensCorpus("org/data", "default", "a" * 40, "body"),
+        HfLensCorpus("org/zh", "cmn", "b" * 40, files=64),
+    ), (3, 1))
+    pins: list[Any] = []
+
+    def pin(corpus: Any) -> Any:
+        pins.append(corpus)
+        return pinned
+
+    preflights: list[Any] = []
+    streams: list[tuple[int, Any]] = []
+
+    def preflight(*_args: Any, docs: Any = None, hf_corpus: Any = None) -> bool:
+        preflights.append(hf_corpus)
+        return False
+
+    def stream(n: int, corpus: Any) -> tuple[list[str], str]:
+        streams.append((n, corpus))
+        raise SystemExit(0)  # stop before the model load
+
+    monkeypatch.setattr(lens_io, "pin_lens_corpus", pin)
+    monkeypatch.setattr(lens_io, "stream_lens_corpus", stream)
+    monkeypatch.setattr(lens_runner, "_try_lens_fit_noop_preflight", preflight)
+    args = cli.parse_args([
+        "lens", "fit", "m", "--hf-corpus", "org/data@main,text_field=body,weight=3",
+        "--hf-corpus", "org/zh:cmn,files=64", "--prompts", "7",
+    ])
+    with pytest.raises(SystemExit):
+        lens_runner._run_lens_fit(args)
+    assert pins == [LensCorpusMix((
+        HfLensCorpus("org/data", None, "main", "body"),
+        HfLensCorpus("org/zh", "cmn", files=64),
+    ), (3, 1))]
+    assert preflights == [pinned]
+    assert streams == [(7, pinned)]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["lens", "fit", "m", "--hf-corpus", "org/data:"],
+        ["lens", "fit", "m", "--hf-corpus", "org/data,weight=2"],
+        ["lens", "fit", "m", "--hf-corpus", "org/data,files=0"],
+        ["lens", "fit", "m", "--hf-corpus", "org/data", "--hf-corpus", "org/zh,seed=1"],
+    ],
+)
+def test_lens_fit_rejects_bad_hub_corpus_options(
+    argv: list[str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    from drowse.cli.runners import lens as lens_runner
+
+    with pytest.raises(SystemExit) as ex:
+        lens_runner._run_lens_fit(cli.parse_args(argv))
+    assert ex.value.code == 2
+    assert "lens fit:" in capsys.readouterr().err
+
+
+def test_lens_fit_corpus_flags_are_exclusive() -> None:
+    with pytest.raises(SystemExit):
+        cli.parse_args([
+            "lens", "fit", "m", "--corpus", "docs.txt", "--hf-corpus", "org/data",
+        ])
+
+
 # ---------------------------------------------------------------------------
 # config subtree
 # ---------------------------------------------------------------------------

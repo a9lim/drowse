@@ -37,7 +37,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import FastAPI, HTTPException
 from pydantic import Field, ValidationError
@@ -69,6 +69,9 @@ from drowse.server.response_models import (
     SourceSwitchResponse,
     SourcesResponse,
 )
+
+if TYPE_CHECKING:
+    from drowse.io.lens import LensCorpus
 
 log = logging.getLogger(__name__)
 
@@ -249,9 +252,12 @@ class LensFetchRequest(NativeRequest):
 
 class LensFitRequest(NativeRequest):
     """Defaults mirror CLI ``lens fit`` (all source layers).  A matching
-    partial fit resumes by default; ``force`` restarts."""
+    partial fit resumes by default; ``force`` restarts.  ``hf_corpus`` lists
+    ``--hf-corpus REPO[:CONFIG][@REV][,KEY=VALUE…]`` sources, several making
+    a weighted mix; unset, the fit streams the default web-text sample."""
 
     prompts: int = Field(default=100, ge=1, le=5000)
+    hf_corpus: list[str] | None = Field(default=None, min_length=1, max_length=16)
     seq_len: int | None = Field(default=None, ge=32, le=4096)
     prompt_batch: int | None = Field(default=None, ge=1, le=64)
     layers: str = "all"
@@ -695,15 +701,18 @@ def register_instrument_routes(app: FastAPI) -> None:
             st["message"] = "fetch failed"
 
     async def _lens_fit_body(
-        body: LensFitRequest, source_layers: "list[int] | str",
+        body: LensFitRequest,
+        source_layers: "list[int] | str",
+        corpus: "LensCorpus",
     ) -> None:
-        from drowse.io.lens import stream_default_lens_corpus
+        from drowse.io.lens import stream_lens_corpus
 
         st = lens_fit_job.state
-        st["message"] = f"streaming {body.prompts} corpus documents…"
+        st["message"] = f"streaming {body.prompts} documents from {corpus}…"
         docs, spec = await run_in_thread(
-            stream_default_lens_corpus,
+            stream_lens_corpus,
             body.prompts,
+            corpus,
             cancel_event=lens_fit_job.cancel_event,
         )
         on_progress = make_progress_hook(
@@ -758,12 +767,12 @@ def register_instrument_routes(app: FastAPI) -> None:
         st["message"] = "load failed"
 
     async def _sae_train_body(body: SaeTrainRequest, layer: int) -> None:
-        from drowse.io.lens import stream_default_lens_corpus
+        from drowse.io.lens import stream_lens_corpus
 
         st = sae_train_job.state
         n_docs = max(1, math.ceil(body.tokens / body.seq_len))
         st["message"] = f"streaming {n_docs:,} corpus documents…"
-        docs, spec = await run_in_thread(stream_default_lens_corpus, n_docs)
+        docs, spec = await run_in_thread(stream_lens_corpus, n_docs)
         on_progress = make_progress_hook(
             st, _TRAIN_PROGRESS_RE,
             done_field="tokens_done", total_field="tokens_total",
@@ -811,8 +820,13 @@ def register_instrument_routes(app: FastAPI) -> None:
 
     def _start_lens_fit(fields: dict[str, Any]) -> PreparationStatusJSON:
         from drowse.core.jlens import JacobianLensCancelled
+        from drowse.io.lens import parse_lens_corpus
 
         body = LensFitRequest(**fields)
+        try:
+            corpus = parse_lens_corpus(body.hf_corpus)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         source_layers = _parse_layers(body.layers) or "workspace"
         if source_layers == "sample":
             raise HTTPException(
@@ -834,7 +848,7 @@ def register_instrument_routes(app: FastAPI) -> None:
             )
 
         lens_fit_job.launch(
-            lambda: _lens_fit_body(body, source_layers), _on_error,
+            lambda: _lens_fit_body(body, source_layers, corpus), _on_error,
         )
         return _prep_status("lens")
 

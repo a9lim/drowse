@@ -13,14 +13,19 @@ beside ``local/relp``).
 
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
 from torch import nn
 
+from drowse.cli.runners import _try_lens_fit_noop_preflight
 from drowse.core.errors import RelpUnsupportedError
+from drowse.core.jlens import JacobianLens
 from drowse.core.relp import (
     RELP_RULES,
     _act_backward_factor,
@@ -28,9 +33,15 @@ from drowse.core.relp import (
     relp_backward_rules,
 )
 from drowse.io.lens import (
+    lens_checkpoint_paths,
     lens_estimator_policy,
+    lens_paths,
+    load_lens_checkpoint_sidecar,
     load_local_lens,
     load_local_lens_sidecar,
+    remove_lens,
+    save_lens,
+    save_lens_checkpoint_accumulator,
 )
 from drowse.io.lens_sources import (
     LOCAL_SOURCE_PREFIX,
@@ -336,3 +347,258 @@ def test_relp_policy_never_resumes_standard_artifact() -> None:
     assert std_after["n_prompts"] == std_before["n_prompts"]
     assert std_after == std_before
     assert load_local_lens_sidecar(_DENSE_MODEL_ID, "relp") == relp_before
+
+
+# ---------------------------------------------------------------------------
+# The RelP policy survives checkpoint, resume, promotion and no-op
+# ---------------------------------------------------------------------------
+
+
+_RELP_POLICY = lens_estimator_policy(backward_rules="relp")
+
+
+@pytest.fixture
+def relabels(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record pre-fix relabels; a post-fix fit must never need one."""
+    import drowse.io.lens as lens_io
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        lens_io, "_persist_relabel",
+        lambda sc_path, *_args, **_kwargs: seen.append(sc_path.name),
+    )
+    return seen
+
+
+def _interrupt_relp_fit_after(n: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run a RelP fit that checkpoints every prompt and dies after ``n``."""
+    import drowse.core.jlens as jlens_mod
+
+    real_fit = jlens_mod.fit_jacobian_lens
+
+    def _interrupted(*args: Any, **kwargs: Any) -> Any:
+        args = (*args[:2], list(args[2])[:n], *args[3:])
+        kwargs["input_id_rows"] = kwargs["input_id_rows"][:n]
+        kwargs["checkpoint_every"] = 1
+        real_fit(*args, **kwargs)
+        raise RuntimeError("simulated interruption")
+
+    monkeypatch.setattr(jlens_mod, "fit_jacobian_lens", _interrupted)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        _DenseStubSession().fit_jlens(
+            _PROMPTS, corpus_spec="test", backward_rules="relp",
+        )
+    monkeypatch.setattr(jlens_mod, "fit_jacobian_lens", real_fit)
+
+
+def _forbid_estimator(monkeypatch: pytest.MonkeyPatch) -> None:
+    import drowse.core.jlens as jlens_mod
+    import drowse.io.lens as lens_io
+
+    def _fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("a finished RelP fit must not refit or rewrite")
+
+    monkeypatch.setattr(jlens_mod, "fit_jacobian_lens", _fail)
+    monkeypatch.setattr(lens_io, "_save_fp32_square_safetensors_atomic", _fail)
+
+
+def _write_pre_fix_labels(pointer: Path) -> None:
+    """Label a pointer the way the pre-fix checkpoint writer did."""
+    data = json.loads(pointer.read_text())
+    data["method"] = "jlens_cotangent_sum"
+    data["estimator_policy"] = lens_estimator_policy()
+    pointer.write_text(json.dumps(data))
+
+
+def test_relp_checkpoint_records_relp_policy(
+    monkeypatch: pytest.MonkeyPatch, relabels: list[str],
+) -> None:
+    _interrupt_relp_fit_after(2, monkeypatch)
+
+    # The pointer the writer produced, read before any loader touches it.
+    _, checkpoint_path = lens_checkpoint_paths(_DENSE_MODEL_ID, "relp")
+    written = json.loads(checkpoint_path.read_text())
+    assert written["checkpoint"] is True
+    assert written["n_prompts"] == 2
+    assert written["method"] == "relp_cotangent_sum"
+    assert written["estimator_policy"] == _RELP_POLICY
+    assert load_lens_checkpoint_sidecar(_DENSE_MODEL_ID, "relp") == written
+    assert relabels == []
+
+
+def test_interrupted_relp_fit_resumes_from_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, relabels: list[str],
+) -> None:
+    import drowse.core.jlens as jlens_mod
+
+    full = _DenseStubSession().fit_jlens(
+        _PROMPTS, corpus_spec="test", backward_rules="relp",
+    )
+    remove_lens(_DENSE_MODEL_ID, "relp")
+    _interrupt_relp_fit_after(2, monkeypatch)
+
+    real_fit = jlens_mod.fit_jacobian_lens
+    consumed: list[int] = []
+
+    def _counting(*args: Any, **kwargs: Any) -> Any:
+        consumed.append(len(list(args[2])))
+        return real_fit(*args, **kwargs)
+
+    monkeypatch.setattr(jlens_mod, "fit_jacobian_lens", _counting)
+    messages: list[str] = []
+    resumed = _DenseStubSession().fit_jlens(
+        _PROMPTS, corpus_spec="test", backward_rules="relp",
+        on_progress=messages.append,
+    )
+    assert any("checkpoint at 2 prompts" in m for m in messages)
+    assert consumed == [len(_PROMPTS) - 2]
+    assert resumed.n_prompts == len(_PROMPTS)
+    for layer in full.source_layers:
+        assert torch.allclose(
+            resumed.jacobians[layer], full.jacobians[layer], atol=2e-3,
+        )
+    assert relabels == []
+
+
+def test_promoted_relp_final_carries_relp_policy(
+    monkeypatch: pytest.MonkeyPatch, relabels: list[str],
+) -> None:
+    import drowse.io.lens as lens_io
+
+    promoted: list[bool] = []
+    real_promote = lens_io.promote_lens_checkpoint
+
+    def _spy(*args: Any, **kwargs: Any) -> bool:
+        promoted.append(real_promote(*args, **kwargs))
+        return promoted[-1]
+
+    monkeypatch.setattr(lens_io, "promote_lens_checkpoint", _spy)
+    _DenseStubSession().fit_jlens(
+        _PROMPTS, corpus_spec="test", backward_rules="relp",
+        checkpoint_every=len(_PROMPTS),
+    )
+    assert promoted == [True]
+    _, manifest = lens_paths(_DENSE_MODEL_ID, "relp")
+    final = json.loads(manifest.read_text())
+    assert final["checkpoint"] is False
+    assert final["method"] == "relp_cotangent_sum"
+    assert final["estimator_policy"] == _RELP_POLICY
+    assert load_lens_checkpoint_sidecar(_DENSE_MODEL_ID, "relp") is None
+    assert relabels == []
+
+
+def test_finished_relp_fit_rerun_is_noop(
+    monkeypatch: pytest.MonkeyPatch, relabels: list[str],
+) -> None:
+    _DenseStubSession().fit_jlens(
+        _PROMPTS, corpus_spec="test", backward_rules="relp",
+        checkpoint_every=len(_PROMPTS),
+    )
+    before = load_local_lens_sidecar(_DENSE_MODEL_ID, "relp")
+    assert before is not None
+
+    _forbid_estimator(monkeypatch)
+    messages: list[str] = []
+    again = _DenseStubSession().fit_jlens(
+        _PROMPTS, corpus_spec="test", backward_rules="relp",
+        on_progress=messages.append,
+    )
+    assert any("nothing to do" in m for m in messages)
+    assert again.n_prompts == len(_PROMPTS)
+    assert load_local_lens_sidecar(_DENSE_MODEL_ID, "relp") == before
+    assert relabels == []
+
+
+def test_cli_preflight_reports_finished_relp_fit(
+    monkeypatch: pytest.MonkeyPatch, relabels: list[str],
+) -> None:
+    from drowse.io.lens import HfLensCorpus
+
+    corpus = HfLensCorpus("repo", "config", "a" * 40)
+    spec = corpus.spec
+    session = _DenseStubSession()
+    setattr(session._model, "_drowse_source_fingerprint", "source-a")
+    session.fit_jlens(
+        _PROMPTS, corpus_spec=spec, backward_rules="relp",
+        checkpoint_every=len(_PROMPTS),
+    )
+    monkeypatch.setattr(
+        "drowse.core.model.model_source_fingerprint",
+        lambda *_args, **_kwargs: "source-a",
+    )
+    args = argparse.Namespace(
+        force=False, model=_DENSE_MODEL_ID, quantize=None, device="cpu",
+        seq_len=None, corpus=None, prompts=len(_PROMPTS), relp=True,
+    )
+    assert _try_lens_fit_noop_preflight(args, None, hf_corpus=corpus)
+    args.relp = False  # the standard fit has its own, absent, artifact
+    assert not _try_lens_fit_noop_preflight(args, None, hf_corpus=corpus)
+    assert relabels == []
+
+
+def test_pre_fix_relp_final_is_relabelled_and_rerun_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _DenseStubSession().fit_jlens(
+        _PROMPTS, corpus_spec="test", backward_rules="relp",
+    )
+    _, manifest = lens_paths(_DENSE_MODEL_ID, "relp")
+    _write_pre_fix_labels(manifest)
+
+    sidecar = load_local_lens_sidecar(_DENSE_MODEL_ID, "relp")
+    assert sidecar is not None
+    assert sidecar["method"] == "relp_cotangent_sum"
+    assert sidecar["estimator_policy"] == _RELP_POLICY
+    assert json.loads(manifest.read_text()) == sidecar  # persisted once
+
+    _forbid_estimator(monkeypatch)
+    messages: list[str] = []
+    _DenseStubSession().fit_jlens(
+        _PROMPTS, corpus_spec="test", backward_rules="relp",
+        on_progress=messages.append,
+    )
+    assert any("nothing to do" in m for m in messages)
+
+
+def test_pre_fix_relp_checkpoint_resumes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _interrupt_relp_fit_after(2, monkeypatch)
+    _, checkpoint_path = lens_checkpoint_paths(_DENSE_MODEL_ID, "relp")
+    _write_pre_fix_labels(checkpoint_path)
+
+    messages: list[str] = []
+    resumed = _DenseStubSession().fit_jlens(
+        _PROMPTS, corpus_spec="test", backward_rules="relp",
+        on_progress=messages.append,
+    )
+    assert any("checkpoint at 2 prompts" in m for m in messages)
+    assert resumed.n_prompts == len(_PROMPTS)
+    final = load_local_lens_sidecar(_DENSE_MODEL_ID, "relp")
+    assert final is not None
+    assert final["estimator_policy"] == _RELP_POLICY
+
+
+def test_pre_fix_labels_outside_relp_stay_standard() -> None:
+    _DenseStubSession().fit_jlens(_PROMPTS, corpus_spec="test")
+    _, manifest = lens_paths(_DENSE_MODEL_ID, "default")
+    before = manifest.read_text()
+    sidecar = load_local_lens_sidecar(_DENSE_MODEL_ID, "default")
+    assert sidecar is not None
+    assert sidecar["estimator_policy"] == lens_estimator_policy()
+    assert manifest.read_text() == before
+
+
+def test_lens_writers_bind_relp_name_to_relp_rules() -> None:
+    lens = JacobianLens({0: torch.eye(DENSE_D)}, n_prompts=1, d_model=DENSE_D)
+    common: dict[str, Any] = dict(
+        corpus_spec="test", corpus_sha256="0" * 64, seq_len=128,
+        dim_batch=8, skip_first=16,
+    )
+    with pytest.raises(ValueError, match="local/relp"):
+        save_lens(lens, _DENSE_MODEL_ID, name="relp", **common)
+    with pytest.raises(ValueError, match="local/relp"):
+        save_lens(lens, _DENSE_MODEL_ID, backward_rules="relp", **common)
+    with pytest.raises(ValueError, match="local/relp"):
+        save_lens_checkpoint_accumulator(
+            {0: torch.eye(DENSE_D)}, 1, DENSE_D, _DENSE_MODEL_ID,
+            name="relp", base=None, **common,
+        )

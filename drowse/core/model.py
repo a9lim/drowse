@@ -138,9 +138,39 @@ def _local_model_files(path: Path) -> list[tuple[str, int, str]]:
     return result
 
 
+def resolve_model_revision(model_id: str) -> str | None:
+    """The immutable Hub commit ``model_id``'s default branch points to.
+
+    Transformers 5.18 stopped recording the resolved commit on configs (it
+    drops ``_commit_hash`` at construction), so Drowse resolves it itself and
+    pins every later read to it.  Online this asks the Hub and records the
+    ref in the cache; offline ``huggingface_hub`` answers from that cached
+    ref.  A local directory has no commit (it is identified by file hashes)
+    and returns ``None``.  Hub failures propagate — a missing, gated, or
+    unreachable repo raises with ``huggingface_hub``'s own message.
+    """
+    if Path(model_id).expanduser().is_dir():
+        return None
+    from huggingface_hub import HfApi
+
+    return str(HfApi().resolve_revision(model_id).resolved)
+
+
+def _pinned_revision(model_id: str) -> str | None:
+    """:func:`resolve_model_revision`, failing open to an unpinned read."""
+    try:
+        return resolve_model_revision(model_id)
+    except Exception:
+        # Transformers' own resolver fails open the same way: the config read
+        # that follows reports the repo problem in its own words, or serves
+        # an already-cached snapshot.
+        return None
+
+
 def model_source_fingerprint(
     model_id: str, *, quantize: str | None = None, device: str = "auto",
     dtype: torch.dtype | str | None = None, config: Any | None = None,
+    revision: str | None = None,
     parameter_dtype: torch.dtype | str | None = None,
 ) -> str | None:
     """Pre-load-verifiable identity for a checkpoint and load representation.
@@ -149,6 +179,10 @@ def model_source_fingerprint(
     exact checkpoint/config/tokenizer file hashes.  ``None`` means the source
     cannot be proven without loading weights, so callers must decline any
     metadata-only cache shortcut.
+
+    ``config`` and ``revision`` describe one snapshot: the loader passes both
+    from its plan; a preflight passes neither, and the commit is resolved
+    here with the config read pinned to it.
 
     The hashed config payload is canonicalized to the *post-load* view: on the
     multimodal text-extraction path the load mutates the plan config in place
@@ -164,11 +198,13 @@ def model_source_fingerprint(
         effective_quantize = quantize if resolved_device == "cuda" else None
         resolved_load_dtype = _resolve_dtype(dtype, resolved_device)
         if config is None:
-            config = AutoConfig.from_pretrained(model_id, trust_remote_code=False)
-        resolved_commit = (
-            getattr(config, "_commit_hash", None)
-            or getattr(getattr(config, "text_config", None), "_commit_hash", None)
-        )
+            if revision is None:
+                revision = _pinned_revision(model_id)
+            config = AutoConfig.from_pretrained(
+                model_id, trust_remote_code=False,
+                **({"revision": revision} if revision else {}),
+            )
+        resolved_commit = revision
         requested_path = Path(model_id).expanduser()
         raw_config_path = str(getattr(config, "_name_or_path", "")).strip()
         config_path = Path(raw_config_path).expanduser() if raw_config_path else None
@@ -1148,18 +1184,17 @@ def _resolve_load_plan(
     """Decide how to load ``model_id``; read configs, never weights."""
     resolved_dtype = _resolve_dtype(dtype, device)
 
-    # Resolve one config snapshot first, then pin every subsequent tokenizer,
-    # config, custom shard, and model read to that immutable commit. Without a
-    # single pin, a mutable Hub branch can advance between independent
-    # ``from_pretrained`` calls and leave caches stamped with config A over
-    # weights B. Local paths carry no commit and remain path-hash identified.
-    probe_config = AutoConfig.from_pretrained(model_id, trust_remote_code=trust_remote_code)
-    resolved_revision = (
-        getattr(probe_config, "_commit_hash", None)
-        or getattr(getattr(probe_config, "text_config", None), "_commit_hash", None)
-    )
+    # Resolve the Hub commit once, then pin every config, tokenizer, custom
+    # shard, and model read to it. Without a single pin, a mutable Hub branch
+    # can advance between independent ``from_pretrained`` calls and leave
+    # caches stamped with config A over weights B. Local paths carry no commit
+    # and remain path-hash identified.
+    resolved_revision = _pinned_revision(model_id)
     pin_kwargs: dict[str, str] = (
-        {"revision": str(resolved_revision)} if resolved_revision else {}
+        {"revision": resolved_revision} if resolved_revision else {}
+    )
+    probe_config = AutoConfig.from_pretrained(
+        model_id, trust_remote_code=trust_remote_code, **pin_kwargs,
     )
 
     # HF-distributed Mistral checkpoints ship a buggy pre-tokenizer regex
@@ -1294,7 +1329,7 @@ def _resolve_load_plan(
         device=device,
         dtype=resolved_dtype,
         quantize=quantize,
-        revision=str(resolved_revision) if resolved_revision else None,
+        revision=resolved_revision,
         pin_kwargs=pin_kwargs,
         tokenizer_kwargs=tokenizer_kwargs,
         load_kwargs=load_kwargs,
@@ -1440,14 +1475,13 @@ def _finalize_model(
     on_progress: Callable[[str], None] | None = None,
 ) -> Any:
     """Stamp identity, freeze, reconcile stop tokens, optionally compile."""
-    # ``from_pretrained`` preserves the resolved Hub revision on an ordinary
-    # model config, but the text-only multimodal path builds a fresh causal-LM
-    # config via ``from_config``.  Transformers does not copy the composite
-    # config's private ``_commit_hash`` into that child, which made an official
-    # J-lens fetched for the exact same immutable checkpoint look stale as soon
-    # as Drowse compared it with the live text model.  The revision was already
-    # resolved before any weights were read and every read above was pinned to
-    # it, so stamp that proven identity onto the returned model uniformly.
+    # The live config's ``_commit_hash`` is the slot every identity check reads
+    # (external J-lens bindings, capture fingerprints).  Transformers 5.18 and
+    # later never fill it, and on older releases the text-only multimodal path
+    # lost it anyway (``from_config`` builds a fresh child config), which made
+    # an official J-lens fetched for the same immutable checkpoint look stale.
+    # The revision was resolved before any weights were read and every read
+    # above was pinned to it, so stamp that proven identity uniformly.
     if plan.revision:
         live_config = getattr(model, "config", None)
         if live_config is not None:
@@ -1465,7 +1499,7 @@ def _finalize_model(
     # payload canonicalization's dtype write no-ops against the mutated config.
     source_fingerprint = model_source_fingerprint(
         plan.model_id, quantize=plan.quantize, device=plan.device,
-        dtype=plan.dtype, config=plan.config,
+        dtype=plan.dtype, config=plan.config, revision=plan.revision,
         parameter_dtype=(
             "quantized" if plan.quantize is not None
             else next(model.parameters()).dtype

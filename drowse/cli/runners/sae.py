@@ -41,12 +41,11 @@ def _load_sae_training_corpus(args: argparse.Namespace) -> tuple[list[str], str]
             sys.exit(2)
         return docs, f"file:{path.name}"
     from drowse.core.jlens import JacobianLensError
-    from drowse.io.lens import DEFAULT_LENS_CORPUS, stream_default_lens_corpus
+    from drowse.io.lens import DEFAULT_LENS_CORPUS, stream_lens_corpus
 
-    repo, config = DEFAULT_LENS_CORPUS
-    print(f"Streaming {target_docs} documents from {repo} ({config})...")
+    print(f"Streaming {target_docs} documents from {DEFAULT_LENS_CORPUS}...")
     try:
-        return stream_default_lens_corpus(target_docs)
+        return stream_lens_corpus(target_docs)
     except JacobianLensError as exc:
         print(f"sae train: {exc}", file=sys.stderr)
         sys.exit(2)
@@ -74,7 +73,7 @@ def _run_sae_train(args: argparse.Namespace) -> None:
             d_sae=args.width, expansion=args.expansion,
             learning_rate=args.learning_rate, l1_coefficient=args.l1,
             dead_feature_threshold=args.dead_threshold, seed=args.seed,
-            force=args.force, on_progress=lambda message: print(f"  {message}"),
+            force=args.force, on_progress=lambda message: print(f"  {message}", flush=True),
         )
     if args.json_output:
         print(json.dumps(result, indent=2))

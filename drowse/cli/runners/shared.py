@@ -240,7 +240,7 @@ def _setup_steering_vectors(
             if verbose:
                 print(f"Extracting steering vector: {canonical}")
                 _, profile = session.extract(
-                    canonical, on_progress=lambda m: print(f"  {m}"),
+                    canonical, on_progress=lambda m: print(f"  {m}", flush=True),
                     namespace=ns,
                 )
             else:

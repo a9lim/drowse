@@ -11,7 +11,7 @@ the public functions is actually called.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from drowse.core.errors import DrowseError
 
@@ -86,7 +86,12 @@ def _detect_alpha_column(df: "pd.DataFrame") -> str:
     # Pick the column whose values vary across rows.  ``nunique`` handles
     # NaN gracefully (counted as a single class) and is well-defined on
     # empty frames (returns 0).
-    moving = [c for c in candidates if df[c].nunique(dropna=False) > 1]
+    # A string label selects a Series here, but pandas types ``df[c]`` as
+    # ``Series | DataFrame`` (duplicate labels), so say so explicitly.
+    moving = [
+        c for c in candidates
+        if cast("pd.Series", df[c]).nunique(dropna=False) > 1
+    ]
     if len(moving) == 1:
         return moving[0]
     if len(moving) > 1:

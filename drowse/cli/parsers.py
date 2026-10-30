@@ -913,11 +913,27 @@ _TEMPLATE_BUILDERS = {
 
 def _build_lens_fit(p: argparse.ArgumentParser) -> None:
     p.add_argument("model", help="HuggingFace model ID or local path")
-    p.add_argument(
+    corpus = p.add_mutually_exclusive_group()
+    corpus.add_argument(
         "--corpus", default=None, metavar="FILE",
         help="Text corpus: one document per line (a JSONL line with a 'text' "
-             "field also works). Unset: stream the default web-text sample "
-             "via the `datasets` library (pip install 'drowse.ai[hf]').",
+             "field also works). With neither this nor --hf-corpus, stream "
+             "the default web-text sample "
+             "(HuggingFaceFW/fineweb-edu:sample-10BT) via the `datasets` "
+             "library (pip install 'drowse.ai[hf]').",
+    )
+    corpus.add_argument(
+        "--hf-corpus", action="append", default=None,
+        metavar="REPO[:CONFIG][@REV][,KEY=VALUE...]",
+        help="Stream the first N non-empty documents of a Hugging Face "
+             "dataset's train split instead, pinned to the commit REV "
+             "resolves to (default: main) and to CONFIG (default: the "
+             "dataset's default). Options: text_field=F (default text); "
+             "files=K reads round-robin from K of its data files, ordered by "
+             "a seed=S hash of their paths, to spread the sample over a "
+             "dataset whose rows are not shuffled. Repeat the flag to mix "
+             "corpora by weight=W (default 1). The pins are recorded in the "
+             "corpus spec, and a larger --prompts later resumes by prefix.",
     )
     p.add_argument(
         "--prompts", type=_positive_int, default=100, metavar="N",

@@ -342,7 +342,8 @@ exits 2.
 `top`/`rm` (the artifact is per-model); `decompose` takes a selector positional
 and a required `-m`.
 
-- `fit <model> [--corpus FILE] [--prompts N] [--seq-len T] [--dim-batch K]
+- `fit <model> [--corpus FILE | --hf-corpus REPO[:CONFIG][@REV][,KEY=VALUE…] …]
+  [--prompts N] [--seq-len T] [--dim-batch K]
   [--prompt-batch B] [--checkpoint-every N] [--layers …] [--standard] [-f] [-d] [-q]`.
   Defaults: 100 prompts, seq-len 128, dim-batch 8, prompt-batch 4 (2 on MPS),
   checkpoint every 25. All numeric fit flags are positive-only. The default
@@ -352,8 +353,28 @@ and a required `-m`.
   no-op preflight, resume, and checkpoint transactions are all name-scoped, so
   the two never touch each other. `--corpus` reads
   one document per line (a JSONL line with a `text` field also works, each
-  sliced to `_LENS_DOC_CHARS = 4000` before tokenization); unset, it streams the
-  default web-text sample via the optional `datasets` dependency. `--layers`
+  sliced to `_LENS_DOC_CHARS = 4000` before tokenization) and records
+  `file:<name>`. Otherwise the fit streams a Hub corpus
+  (`io.lens.HfLensCorpus`) via the optional `datasets` dependency: the default
+  web-text sample (FineWeb-Edu `sample-10BT`), or `--hf-corpus`, the first N
+  non-empty `text_field=F` values (default `text`) of a dataset's train split.
+  `files=K` reads them round-robin from K of the split's data files instead,
+  ordered by a `seed=S` (default 0) hash of their repository paths, which
+  spreads a sample over a dataset whose rows are not shuffled (most Chinese
+  web corpora on the Hub are ordered by crawl or score band). Repeating
+  `--hf-corpus` mixes corpora (`io.lens.LensCorpusMix`) by smooth weighted
+  round-robin over `weight=W` (default 1; ties to the earlier flag; a corpus
+  that runs dry drops out). `_pinned_lens_hf_corpus` pins every source once
+  per fit (REV, default `main`, to its commit; an omitted CONFIG to the
+  dataset's default), and the pinned spec — `hf:REPO/CONFIG@COMMIT;preprocess=…;
+  doc_chars=…[;text_field=…][;files=…;seed=…]`, or `mix:W*SPEC|W*SPEC…` — is
+  both the recorded `corpus_spec` and the no-op preflight's corpus identity.
+  No schedule depends on N, so the first N documents of a longer read are
+  those of a shorter one and a larger `--prompts` tops up by token-id prefix;
+  spell REV as the recorded commit to grow a fit after the dataset moves. The
+  read runs in a spawned worker that is terminated once
+  it reports, because pyarrow can block interpreter exit after a stream stops
+  early. `--layers`
   accepts explicit indices, `workspace`, or `all`; `sample` is rejected because
   it still includes layer 0 and is artifact-size/debug only, not a wall-time
   lever. `-f` restarts from zero; otherwise the fit resumes. A model-free exact

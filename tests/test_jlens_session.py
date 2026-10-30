@@ -1260,6 +1260,93 @@ def test_fit_jlens_resumes_from_partial_and_matches_full_fit() -> None:
         ), f"layer {layer}: resumed fit diverges from the from-scratch fit"
 
 
+def test_fit_jlens_tops_up_a_hub_corpus_by_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A larger read of the same pinned Hub corpus fits only the new rows."""
+    import datasets
+
+    import drowse.core.jlens as jlens_module
+    from drowse.io.lens import (
+        HfLensCorpus,
+        _collect_lens_corpus,
+        load_lens_sidecar,
+    )
+
+    rows = [{"text": ""}, *({"text": p} for p in _PROMPTS)]
+    monkeypatch.setattr(
+        datasets, "load_dataset", lambda *_a, **_k: iter(rows),
+    )
+    corpus = HfLensCorpus("org/shuffled", "default", "a" * 40)
+    first_docs, spec = _collect_lens_corpus(2, corpus)
+    _StubSession().fit_jlens(first_docs, corpus_spec=spec, force=True)
+
+    real_fit = jlens_module.fit_jacobian_lens
+    fitted_widths: list[int] = []
+
+    def counted_fit(*args: Any, **kwargs: Any) -> Any:
+        fitted_widths.append(len(args[2]))
+        return real_fit(*args, **kwargs)
+
+    monkeypatch.setattr(jlens_module, "fit_jacobian_lens", counted_fit)
+    docs, grown_spec = _collect_lens_corpus(4, corpus)
+    assert grown_spec == spec and docs == _PROMPTS
+    messages: list[str] = []
+    grown = _StubSession().fit_jlens(
+        docs, corpus_spec=spec, on_progress=messages.append,
+    )
+    assert any("resuming from 2 prompts" in m for m in messages)
+    assert fitted_widths == [2]
+    assert grown.n_prompts == len(_PROMPTS)
+    sidecar = load_lens_sidecar(_MODEL_ID)
+    assert sidecar is not None and sidecar["corpus_spec"] == spec
+
+
+def test_fit_jlens_tops_up_a_corpus_mix_by_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Growing a fit on a weighted mix fits only the newly scheduled rows."""
+    import datasets
+
+    import drowse.core.jlens as jlens_module
+    from drowse.io.lens import (
+        HfLensCorpus,
+        LensCorpusMix,
+        _collect_lens_corpus,
+        load_lens_sidecar,
+    )
+
+    rows = {"en/web": [_PROMPTS[0], _PROMPTS[2]], "zh/web": [_PROMPTS[1], _PROMPTS[3]]}
+    monkeypatch.setattr(
+        datasets, "load_dataset",
+        lambda repo, **_k: iter({"text": text} for text in rows[repo]),
+    )
+    mix = LensCorpusMix((
+        HfLensCorpus("en/web", "default", "a" * 40),
+        HfLensCorpus("zh/web", "default", "b" * 40),
+    ), (1, 1))
+    first_docs, spec = _collect_lens_corpus(2, mix)
+    _StubSession().fit_jlens(first_docs, corpus_spec=spec, force=True)
+
+    real_fit = jlens_module.fit_jacobian_lens
+    fitted_widths: list[int] = []
+
+    def counted_fit(*args: Any, **kwargs: Any) -> Any:
+        fitted_widths.append(len(args[2]))
+        return real_fit(*args, **kwargs)
+
+    monkeypatch.setattr(jlens_module, "fit_jacobian_lens", counted_fit)
+    docs, grown_spec = _collect_lens_corpus(4, mix)
+    assert grown_spec == spec and docs == _PROMPTS
+    messages: list[str] = []
+    _StubSession().fit_jlens(docs, corpus_spec=spec, on_progress=messages.append)
+    assert any("resuming from 2 prompts" in m for m in messages)
+    assert fitted_widths == [2]
+    sidecar = load_lens_sidecar(_MODEL_ID)
+    assert sidecar is not None and sidecar["corpus_spec"] == spec
+    assert sidecar["corpus_spec"].startswith("mix:1*hf:en/web/default@")
+
+
 def test_fit_jlens_changed_prefix_restarts_from_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -440,8 +440,10 @@ class TestPreparations:
 
         session.fit_jlens.side_effect = _blocking_fit
         monkeypatch.setattr(
-            "drowse.io.lens.stream_default_lens_corpus",
-            lambda _n, *, cancel_event=None: (["a long enough prompt."], "spec"),
+            "drowse.io.lens.stream_lens_corpus",
+            lambda _n, _corpus, *, cancel_event=None: (
+                ["a long enough prompt."], "spec",
+            ),
         )
         resp = client.post(
             f"{_BASE}/lens/preparations",
@@ -470,6 +472,63 @@ class TestPreparations:
         finally:
             release.set()
 
+    def test_lens_fit_streams_the_requested_hub_corpus(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        from drowse.io.lens import HfLensCorpus, LensCorpusMix
+
+        session, client = session_and_client
+        streamed: list[tuple[int, Any]] = []
+
+        def _stream(
+            n: int, corpus: Any, *, cancel_event: Any = None,
+        ) -> tuple[list[str], str]:
+            streamed.append((n, corpus))
+            return ["a long enough prompt."], "hf:org/data/cfg@sha"
+
+        monkeypatch.setattr("drowse.io.lens.stream_lens_corpus", _stream)
+        resp = client.post(
+            f"{_BASE}/lens/preparations",
+            json={
+                "operation": "fit", "prompts": 3, "layers": "workspace",
+                "hf_corpus": [
+                    "org/data:cfg@main,text_field=body,weight=2",
+                    "org/zh:cmn,files=8,seed=1",
+                ],
+            },
+        )
+        assert resp.status_code == 202
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if client.get(f"{_BASE}/lens/preparations").json()["state"] != "running":
+                break
+            time.sleep(0.01)
+        assert streamed == [(3, LensCorpusMix((
+            HfLensCorpus("org/data", "cfg", "main", "body"),
+            HfLensCorpus("org/zh", "cmn", files=8, seed=1),
+        ), (2, 1)))]
+        assert session.fit_jlens.call_args.kwargs["corpus_spec"] == (
+            "hf:org/data/cfg@sha"
+        )
+
+    def test_lens_fit_rejects_a_malformed_hub_corpus(
+        self, session_and_client: Any,
+    ) -> None:
+        _session, client = session_and_client
+        for fields, needle in (
+            ({"hf_corpus": ["org/data@"]}, "REPO"),
+            ({"hf_corpus": ["org/data,weight=2"]}, "only to a mix"),
+            ({"hf_corpus": "org/data"}, "hf_corpus"),
+            ({"hf_corpus": []}, "hf_corpus"),
+            ({"text_field": "body"}, "text_field"),
+        ):
+            resp = client.post(
+                f"{_BASE}/lens/preparations",
+                json={"operation": "fit", **fields},
+            )
+            assert resp.status_code == 400
+            assert needle in resp.json()["detail"]
+
     def test_lens_delete_without_running_fit_409(
         self, session_and_client: Any,
     ) -> None:
@@ -485,7 +544,7 @@ class TestPreparations:
             "runtime": {}, "metrics": {"tokens_trained": 100}, "source": "local:s",
         }
         monkeypatch.setattr(
-            "drowse.io.lens.stream_default_lens_corpus",
+            "drowse.io.lens.stream_lens_corpus",
             lambda _n, **_k: (["p"], "spec"),
         )
         resp = client.post(

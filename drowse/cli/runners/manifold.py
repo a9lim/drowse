@@ -172,7 +172,7 @@ def _run_manifold_extract(args: argparse.Namespace) -> None:
     extract_kwargs: dict[str, Any] = {
         "kind": kind,
         "custom_system": custom_system,
-        "on_progress": lambda m: print(f"  {m}"),
+        "on_progress": lambda m: print(f"  {m}", flush=True),
     }
     if requested_release:
         extract_kwargs["sae"] = args.sae
@@ -738,7 +738,7 @@ def _run_manifold_fit(args: argparse.Namespace) -> None:
             fit_mode=requested_fit_mode,
             hyperparams=requested_hyperparams,
             force=bool(getattr(args, "force", False)),
-            on_progress=lambda m: print(f"  {m}"),
+            on_progress=lambda m: print(f"  {m}", flush=True),
         )
     except (ValueError, ManifoldFormatError) as e:
         print(f"manifold fit failed: {e}", file=sys.stderr)
@@ -852,7 +852,7 @@ def _run_manifold_generate(args: argparse.Namespace) -> None:
                 roles=gen_roles,
                 custom_system=getattr(args, "custom_system", None),
                 samples_per_prompt=args.samples_per_prompt,
-                on_progress=lambda m: print(f"  {m}"),
+                on_progress=lambda m: print(f"  {m}", flush=True),
             )
             append_discover_manifold_node(
                 folder, plan.index_of[concept], concept, corpora[concept],
