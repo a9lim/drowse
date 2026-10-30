@@ -18,7 +18,7 @@ carry release metadata but remain noindex. Release verification forbids Access
 credentials and proves anonymous public access without noindex.`;
 
 const permissionsPolicy =
-  "accelerometer=(), browsing-topics=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()";
+  "accelerometer=(), bluetooth=(), browsing-topics=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), serial=(), usb=(), xr-spatial-tracking=()";
 const protectedPaths = ["/", "/app", "/manifest.webmanifest", "/sw.js"];
 const requiredManifestIcons = [
   {

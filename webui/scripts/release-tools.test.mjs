@@ -129,7 +129,7 @@ const headers = {
   "Cross-Origin-Resource-Policy": "same-origin",
   "Content-Security-Policy": csp,
   "Permissions-Policy":
-    "accelerometer=(), browsing-topics=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()",
+    "accelerometer=(), bluetooth=(), browsing-topics=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), serial=(), usb=(), xr-spatial-tracking=()",
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
