@@ -365,7 +365,7 @@ export default defineConfig({
           "assets/App-*.js",
           "assets/browser.worker-*.js",
           "assets/fitting.worker-*.js",
-          "assets/registry-*.js",
+          // Runtime registries are shared with the app shell and must remain available offline.
           "assets/drowse-web-llm-*.js",
           "assets/typescript-*.js",
           // The neuron explorer's catalog loads one layer at a time, on demand.

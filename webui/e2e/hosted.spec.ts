@@ -2623,11 +2623,13 @@ test("a busy owner explicitly approves takeover before generation is stopped", a
     requester.getByRole("heading", { name: "Models" }),
   ).toBeVisible();
   await expect(requester.getByText("Installed and verified")).toBeVisible();
+  await requester.getByRole("link", { name: "Chats", exact: true }).click();
+  await expect(requester.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Keep the runtime busy");
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeEnabled();
-  await requester.getByRole("button", { name: "Open Drowse", exact: true }).click();
+  await continueFromChatHome(requester);
 
   const dialog = page.getByRole("alertdialog", { name: "Another tab wants to use the GPU" });
   await expect(dialog).toBeVisible();
@@ -3094,10 +3096,13 @@ test("production build excludes the deterministic fixture", async () => {
 });
 
 test("installed PWA shell remains available offline without preloading the model engine", async ({ context, page }) => {
-  const webLlmChunks = (await readdir(resolve("dist-hosted", "assets")))
+  const assetNames = await readdir(resolve("dist-hosted", "assets"));
+  const webLlmChunks = assetNames
     .filter((name) => /^drowse-web-llm-[A-Za-z0-9_-]+\.js$/u.test(name));
   expect(webLlmChunks).toHaveLength(1);
   const webLlmUrl = `/assets/${webLlmChunks[0]}`;
+  const shellRegistries = assetNames.filter((name) => /^registry-[A-Za-z0-9_-]+\.js$/u.test(name));
+  expect(shellRegistries.length).toBeGreaterThan(0);
 
   await page.goto("/");
   await page.evaluate(async () => {
@@ -3110,6 +3115,9 @@ test("installed PWA shell remains available offline without preloading the model
     .toBe(true);
 
   expect(await page.evaluate(async (url) => Boolean(await caches.match(url)), webLlmUrl)).toBe(false);
+  for (const name of shellRegistries) {
+    expect(await page.evaluate(async (url) => Boolean(await caches.match(url)), `/assets/${name}`)).toBe(true);
+  }
 
   await context.setOffline(true);
   await page.goto("/app", { waitUntil: "domcontentloaded" });
