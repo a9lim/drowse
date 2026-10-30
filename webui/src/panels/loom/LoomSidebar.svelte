@@ -7,6 +7,7 @@
   import MorphText from "../../lib/ui/MorphText.svelte";
   import FluentIcon from "../../lib/ui/FluentIcon.svelte";
   import { slidingSelection } from "../../lib/slidingSelection";
+  import { containTab } from "../../lib/focusTrap";
   import RollingNumber from "../../lib/ui/RollingNumber.svelte";
   // Conversation loom. Turns advance from left to right and sibling
   // continuations separate vertically around their shared parent.
@@ -1242,15 +1243,6 @@
     });
   }
 
-  function modalFocusable(): HTMLElement[] {
-    if (!modalEl) return [];
-    return Array.from(
-      modalEl.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
-      ),
-    );
-  }
-
   function onModalKey(ev: KeyboardEvent): void {
     if (ev.key === "Escape") {
       ev.preventDefault();
@@ -1258,22 +1250,7 @@
       closeModal();
       return;
     }
-    if (ev.key !== "Tab") return;
-    const focusable = modalFocusable();
-    if (focusable.length === 0) {
-      ev.preventDefault();
-      modalEl?.focus();
-      return;
-    }
-    const active = document.activeElement as HTMLElement | null;
-    const index = active ? focusable.indexOf(active) : -1;
-    if (ev.shiftKey && index <= 0) {
-      ev.preventDefault();
-      focusable[focusable.length - 1].focus();
-    } else if (!ev.shiftKey && (index < 0 || index === focusable.length - 1)) {
-      ev.preventDefault();
-      focusable[0].focus();
-    }
+    if (modalEl) containTab(ev, modalEl);
   }
 
   function setModalError(message: string): void {

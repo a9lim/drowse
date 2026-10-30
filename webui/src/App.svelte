@@ -10,6 +10,7 @@
   import "./lib/style/workspace.css";
   import WorkspaceBackground from "./lib/ui/WorkspaceBackground.svelte";
   import { slidingSelection } from "./lib/slidingSelection";
+  import { containTab, tabStops } from "./lib/focusTrap";
   // Drowse workbench shell. Conversation owns its response-shaping tools;
   // the loom remains a separate workspace for navigating branches.
 
@@ -249,15 +250,6 @@
     }
   }
 
-  const FOCUSABLE = [
-    "button:not([disabled])",
-    "[href]",
-    "input:not([disabled])",
-    "select:not([disabled])",
-    "textarea:not([disabled])",
-    '[tabindex]:not([tabindex="-1"])',
-  ].join(",");
-
   function focusWithoutScrolling(element: HTMLElement | null | undefined): void {
     element?.focus({ preventScroll: true });
   }
@@ -270,8 +262,7 @@
     }
     if (open !== null && !mobileTokenDrawer && (open !== previousDrawer || modal && !drawerEl?.contains(document.activeElement))) {
       void tick().then(() => {
-        const first = [...(drawerEl?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(el => el.offsetParent !== null);
-        focusWithoutScrolling(first ?? drawerEl);
+        focusWithoutScrolling((drawerEl && tabStops(drawerEl)[0]) ?? drawerEl);
       });
     } else if (open === null && previousDrawer !== null) {
       const trigger = drawerTrigger;
@@ -283,27 +274,6 @@
     }
     previousDrawer = open;
   });
-
-  function onDrawerKeydown(ev: KeyboardEvent): void {
-    if (ev.key !== "Tab" || !drawerEl) return;
-    const focusable = [...drawerEl.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
-      (el) => el.offsetParent !== null,
-    );
-    if (focusable.length === 0) {
-      ev.preventDefault();
-      focusWithoutScrolling(drawerEl);
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (ev.shiftKey && (document.activeElement === first || document.activeElement === drawerEl)) {
-      ev.preventDefault();
-      focusWithoutScrolling(last);
-    } else if (!ev.shiftKey && (document.activeElement === last || document.activeElement === drawerEl)) {
-      ev.preventDefault();
-      focusWithoutScrolling(first);
-    }
-  }
 
   function drawerLabel(name: string): string {
     const labels: Record<string, string> = {
@@ -731,7 +701,7 @@
           aria-modal={drawerState.open === null || mobileTokenDrawer || sideToolOpen ? undefined : "true"}
           aria-label={drawerState.open === null || mobileTokenDrawer ? undefined : drawerLabel(drawerState.open)}
           tabindex="-1"
-          onkeydown={event => { if (!mobileTokenDrawer && !sideToolOpen) onDrawerKeydown(event); }}
+          onkeydown={event => { if (!mobileTokenDrawer && !sideToolOpen && drawerEl) containTab(event, drawerEl); }}
           in:fly={mobileTokenDrawer || sideToolOpen ? { duration: 0 } : panelIn(24)}
           out:fly={mobileTokenDrawer || sideToolOpen ? { duration: 0 } : panelOut(14)}
           onintrostart={(event) => { event.currentTarget.inert = false; }}
