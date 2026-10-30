@@ -337,6 +337,34 @@ def test_unseeded_generation_leaves_the_rng_alone(
     assert seeds == []
 
 
+@pytest.mark.parametrize(("body", "seeds"), [({"seed": 40}, [40, 41]), ({}, [])])
+def test_the_generate_route_forwards_its_seed(
+    make_tiny_session: TinySessionFactory, app_client: Any,
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any], seeds: list[int],
+) -> None:
+    """``POST /manifolds/generate`` takes the CLI's ``--seed`` knob."""
+    from drowse.base.paths import manifold_dir
+
+    client = app_client(_session(make_tiny_session, _Answerer()))
+    seen: list[int] = []
+    real_seed = torch.manual_seed
+
+    def _record(seed: int) -> Any:
+        seen.append(int(seed))
+        return real_seed(seed)
+
+    monkeypatch.setattr(torch, "manual_seed", _record)
+    resp = client.post(
+        "/drowse/v1/manifolds/generate",
+        json={"name": "pair", "concepts": ["a", "b"], **body},
+    )
+    assert resp.status_code == 201, resp.text
+    assert _node_corpus(manifold_dir("local", "pair"), 1, "b") == [
+        "resp::P0", "resp::P1", "resp::P2",
+    ]
+    assert seen == seeds
+
+
 def test_holds_the_model_lock_refuses_steering_and_evicts_on_failure(tmp_path: Path) -> None:
     """The fill runs inside the exclusive-model guard after the unsteered check,
     and the folder is evicted even when the run stops part-way."""

@@ -331,6 +331,9 @@ export interface GenerateManifoldRequest {
   custom_system?: string;
   /** In-character responses generated per shared baseline prompt. */
   samples_per_prompt?: number;
+  /** Seeds the sampler: each node's corpus is reproducible from the seed
+   *  and its node index.  Omitted or null: unseeded. */
+  seed?: number | null;
   fit_mode?: "pca" | "spectral" | "auto";
   hyperparams?: Record<string, number | string>;
   force?: boolean;

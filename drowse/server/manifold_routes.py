@@ -148,6 +148,9 @@ class GenerateManifoldRequest(NativeRequest):
     # prompt (``{c}`` = the concept), no role swap (pools in standard space).
     custom_system: str | None = None
     samples_per_prompt: int = 1
+    # Seeds the sampler: each node's corpus is reproducible from ``seed`` and
+    # its node index (``None``: unseeded), like ``manifold generate --seed``.
+    seed: int | None = None
     fit_mode: Literal["pca", "spectral", "auto"] = "pca"
     hyperparams: dict[str, Any] = {}
     force: bool = False
@@ -633,6 +636,7 @@ def register_manifold_routes(app: FastAPI) -> None:
             session.generate_manifold(
                 plan, custom_system=req.custom_system,
                 samples_per_prompt=req.samples_per_prompt,
+                seed=req.seed,
                 on_progress=on_progress,
             )
             body = detail(req.namespace, req.name)
