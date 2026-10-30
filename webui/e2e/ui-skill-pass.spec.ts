@@ -223,6 +223,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   }
   await card.getByRole("button", { name: "Open chat", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
+  await expect(page.locator("#workspace-main")).toHaveAttribute("aria-busy", "false");
   const restored = await page.evaluate(async url => (await import(url)).apiTree.get(), `/@fs${resolve("src/lib/runtime/services.ts")}`);
   expect({ ...restored, session_id: imported.snapshot.tree.session_id, rev: imported.snapshot.tree.rev }).toEqual(imported.snapshot.tree);
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("A complete local backup");
