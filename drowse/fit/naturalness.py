@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 
 import torch
 
@@ -38,9 +38,44 @@ from drowse.geometry.subspace import (
 )
 
 if TYPE_CHECKING:
-    from drowse.session.session import DrowseSession
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.profile import Profile
+    from drowse.generation.sampling import SamplingConfig
     from drowse.steering.grammar import ManifoldTerm
     from drowse.store.manifold_folder import ManifoldFolder
+
+
+class ProfileSink(Protocol):
+    """Registers an in-memory steering profile under a name."""
+
+    def put_profile(self, name: str, tensors: "Profile") -> None: ...
+
+
+class NaturalnessHost(Protocol):
+    """The loaded-model surface :func:`evaluate` drives (a ``DrowseSession``
+    satisfies it): the model, manifold fits and loads, steered generation,
+    and profile registration for the linear-chord baseline."""
+
+    @property
+    def model(self) -> Any: ...
+
+    @property
+    def tokenizer(self) -> Any: ...
+
+    @property
+    def device(self) -> torch.device: ...
+
+    @property
+    def registry(self) -> ProfileSink: ...
+
+    def fit(self, folder: Any) -> "Manifold": ...
+
+    def ensure_manifold_loaded(self, key: str) -> "Manifold": ...
+
+    def generate(
+        self, input: Any, *, steering: str | None = ...,
+        sampling: "SamplingConfig | None" = ...,
+    ) -> Any: ...
 
 
 class NaturalnessError(ValueError, DrowseError):
@@ -300,7 +335,7 @@ def _single_manifold_term(steering: str) -> "ManifoldTerm":
 
 
 def _behavior_layout(
-    session: "DrowseSession", folder: "ManifoldFolder",
+    session: NaturalnessHost, folder: "ManifoldFolder",
 ) -> tuple[ManifoldDomain, torch.Tensor]:
     """The chart the behavior manifold is fitted over: ``(domain, node_coords)``.
 
@@ -347,7 +382,7 @@ def _corpus_rows(
 
 
 def evaluate(
-    session: "DrowseSession",
+    session: NaturalnessHost,
     manifold: "str | Path | ManifoldFolder",
     prompt: str,
     steering: str,
@@ -426,6 +461,7 @@ def evaluate(
 
 __all__ = [
     "NaturalnessError",
+    "NaturalnessHost",
     "NaturalnessReport",
     "NaturalnessScore",
     "bhattacharyya_distance",
