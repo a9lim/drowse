@@ -158,12 +158,12 @@ def test_failed_enter_under_outer_scope_preserves_outer_entry(session: Any) -> N
     ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="SteeringComposer.push rolls back the failed entry but does not "
-    "rebuild hooks for the restored stack, so the outer scope stops steering",
-)
 def test_failed_enter_under_outer_scope_keeps_outer_hooks_acting(session: Any) -> None:
+    """A failed inner enter leaves the outer scope's hooks steering.
+
+    The composition-failure case inside ``SteeringComposer.push`` is pinned
+    at the manager level by ``test_steering_install``.
+    """
     with session.steering("0.3 a"):
         outer = forward_logits(session)
         with pytest.raises(ProfileNotRegisteredError):

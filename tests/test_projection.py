@@ -1,8 +1,7 @@
 """Runtime projection: unit-level project_profile + session materialization.
 
 Pure tensor math is tested in ``TestProjectProfile``; the session-level
-integration rides on the same ``_Stub`` pattern used by
-``test_steering_context.py`` — a ``DrowseSession`` that bypasses the
+integration uses a ``_Stub`` — a ``DrowseSession`` that bypasses the
 model-loading machinery and pre-registers profiles directly.
 
 Mahalanobis-only (4.0 collapse): ``project_profile`` is the closed-form LEACE
@@ -180,7 +179,7 @@ class TestProjectProfile:
 # ---------------------------------------------- session-level integration ---
 
 class _Stub(DrowseSession):
-    """DrowseSession without real model/tokenizer, mirrors test_steering_context.
+    """DrowseSession without real model/tokenizer.
 
     Projection materialization is Mahalanobis-only, so the stub exposes a real
     covering whitener over the registered profiles' layer/dim (no model load).
