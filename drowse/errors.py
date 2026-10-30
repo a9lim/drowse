@@ -52,6 +52,21 @@ def is_out_of_memory_error(exc: BaseException) -> bool:
     )
 
 
+class ConcurrentGenerationError(RuntimeError, DrowseError):
+    """Raised when a generation call is made while another is in progress."""
+
+    def user_message(self) -> tuple[int, str]:
+        return (409, str(self) or self.__class__.__name__)
+
+
+class GenerationRequestError(ValueError, DrowseError):
+    """A generation or scoring request the caller got wrong (bad ``n``, an
+    empty choice set, mismatched labels): a 400, never an engine failure."""
+
+    def user_message(self) -> tuple[int, str]:
+        return (400, str(self) or self.__class__.__name__)
+
+
 class WhitenerError(ValueError, DrowseError):
     """Raised when whitener construction or lookup fails.
 

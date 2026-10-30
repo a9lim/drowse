@@ -25,7 +25,7 @@ from pydantic import ValidationError
 from anyio import CancelScope
 
 from drowse.events import LoomMutated
-from drowse.generation.results import GenerationResult, TokenAlt
+from drowse.generation.results import GenerationResult, TokenEvent
 from drowse.generation.sampling import SamplingConfig
 from drowse.session.session import DrowseSession
 from drowse.generation.token_callback import TokenConsumer, TokenConsumerOptions
@@ -848,35 +848,21 @@ async def _ws_stream_generation(
             )
             cancelled = threading.Event()
             # The tree assigns the assistant node id at ``begin_assistant``
-            # time inside ``_generate_core``; we don't know it before the
-            # gen starts.  The on_token callback reads the live active
+            # time inside the generation; we don't know it before the
+            # gen starts.  The token consumer reads the live active
             # node off the tree (which is set to the streaming assistant
             # node for the lifetime of the gen).
             current_node_holder: list[str | None] = [None]
 
-            def _on_token(
-                text: str,
-                is_thinking: bool,
-                tid: int | None,
-                lp: float | None,
-                top_alts: list[TokenAlt] | None,
-                perplexity: float | None = None,
+            def _on_event(
+                event: TokenEvent,
                 _node_holder: list[str | None] = current_node_holder,
                 _token_queue: _OutboundQueue[_TokenQueueItem] = token_queue,
             ) -> None:
-                event = build_token_event(
-                    session,
-                    _node_holder,
-                    text=text,
-                    is_thinking=is_thinking,
-                    tid=tid,
-                    lp=lp,
-                    top_alts=top_alts,
-                    perplexity=perplexity,
-                )
-                _token_queue.put(_TokenFrame(cast(JSONObject, event)))
+                frame = build_token_event(session, _node_holder, event)
+                _token_queue.put(_TokenFrame(cast(JSONObject, frame)))
             consumer = TokenConsumer(
-                _on_token,
+                _on_event,
                 TokenConsumerOptions(
                     live_scores=True,
                     per_layer_scores=True,
@@ -958,7 +944,7 @@ async def _ws_stream_generation(
                 "generation_id": generation_id,
                 # ``node_id`` is filled in lazily by the first token
                 # event (the assistant node is created inside
-                # ``_generate_core``); ``started`` includes the request-
+                # the generation); ``started`` includes the request-
                 # level context the client needs to allocate state.
                 "node_id": None,
                 "sibling_index": sibling_idx,

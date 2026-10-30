@@ -18,9 +18,9 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 import torch
 
+from drowse.errors import ConcurrentGenerationError
 from drowse.events import SteeringApplied, SteeringCleared
 from drowse.session.session import (
-    ConcurrentGenerationError,
     GenState,
     ManifoldNotRegisteredError,
     SteeringStackEntry,
@@ -456,12 +456,12 @@ class SteeringComposer:
         # here catches genuine callback reentry where ``on_token`` /
         # ``score_callback`` calls back into ``session.steering(...)``
         # mid-step.
-        if session._gen_phase in (GenState.RUNNING, GenState.FINALIZING):
+        if session.gen_state in (GenState.RUNNING, GenState.FINALIZING):
             raise ConcurrentGenerationError(
                 "cannot enter session.steering() from inside a generation "
                 "callback (e.g. on_token) — the steering stack mutation "
                 f"would clobber hook tensors mid-step (gen_phase="
-                f"{session._gen_phase.name})"
+                f"{session.gen_state.name})"
             )
         with session._gen_lock:
             self._stack.append(dict(entries))
@@ -481,7 +481,7 @@ class SteeringComposer:
             # one prefill across a steered batch.  Drop it only when prefill is
             # genuinely steered.
             if self.steering_active_in_prefill():
-                session._invalidate_prefix_cache()
+                session._engine.prefix_cache.clear()
         self.emit_steering_applied()
 
     def pop(self) -> None:
@@ -506,12 +506,12 @@ class SteeringComposer:
         # from inside the running loop hits the reject path.
         if (
             not session._internal_steering_pop
-            and session._gen_phase in (GenState.RUNNING, GenState.FINALIZING)
+            and session.gen_state in (GenState.RUNNING, GenState.FINALIZING)
         ):
             raise ConcurrentGenerationError(
                 "cannot exit session.steering() from inside a generation "
                 "callback — the steering stack mutation would clobber "
-                f"hook tensors mid-step (gen_phase={session._gen_phase.name})"
+                f"hook tensors mid-step (gen_phase={session.gen_state.name})"
             )
         with session._gen_lock:
             self._stack.pop()
@@ -531,7 +531,7 @@ class SteeringComposer:
             # prefill.  Popping back to a prefill-inactive (or empty) stack keeps
             # the unsteered prefix valid for the next reuse.
             if self.steering_active_in_prefill():
-                session._invalidate_prefix_cache()
+                session._engine.prefix_cache.clear()
         if not self._stack:
             session.events.emit(SteeringCleared())
         else:

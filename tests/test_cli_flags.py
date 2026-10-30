@@ -589,8 +589,9 @@ def test_inventory_verbs_emit_pure_json(
     )
     install_fake_session(monkeypatch)
     monkeypatch.setattr(
-        "drowse.generation.scoring.score_template",
+        FakeSession, "score_template",
         lambda _session, _tmpl, **_kw: [SimpleNamespace(to_dict=lambda: {"ok": True})],
+        raising=False,
     )
     monkeypatch.setattr(
         "drowse.lens.sources.fetch_lens_source",

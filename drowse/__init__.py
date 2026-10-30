@@ -10,7 +10,7 @@ __version__ = "5.3.1"
 _EXPORTS: dict[str, tuple[str, str]] = {
     "DrowseSession": ("drowse.session.session", "DrowseSession"),
     "DrowseError": ("drowse.errors", "DrowseError"),
-    "GenState": ("drowse.session.session", "GenState"),
+    "GenState": ("drowse.generation.types", "GenState"),
     "LayerWhitener": ("drowse.geometry.whitener", "LayerWhitener"),
     "WhitenerError": ("drowse.errors", "WhitenerError"),
     "Profile": ("drowse.geometry.profile", "Profile"),
@@ -252,7 +252,8 @@ if TYPE_CHECKING:
         TokenEvent as TokenEvent,
     )
     from drowse.generation.sampling import SamplingConfig as SamplingConfig
-    from drowse.session.session import GenState as GenState, DrowseSession as DrowseSession
+    from drowse.generation.types import GenState as GenState
+    from drowse.session.session import DrowseSession as DrowseSession
     from drowse.steering.terms import Steering as Steering
     from drowse.loom.transcript import (
         ProbeRef as ProbeRef,

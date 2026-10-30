@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from drowse.errors import GenerationRequestError
 from drowse.generation.decode import build_chat_input
 from drowse.model.chat import logits_keep_kwarg
 
@@ -163,10 +164,10 @@ def score_choices(
     last prefix token). One batched teacher-forced forward per chunk, no sampling.
     """
     if not choices:
-        raise ValueError("score_choices: empty choice set")
+        raise GenerationRequestError("score_choices: empty choice set")
     labels = labels if labels is not None else list(choices)
     if len(labels) != len(choices):
-        raise ValueError("score_choices: labels and choices length mismatch")
+        raise GenerationRequestError("score_choices: labels and choices length mismatch")
     with _scoring_scope(session, steering):
         return _score_choice_set(
             session, messages, choices, labels,
@@ -191,7 +192,7 @@ def score_template(
     specs = template.score_inputs()
     for spec in specs:
         if not spec["choices"]:
-            raise ValueError("score_choices: empty choice set")
+            raise GenerationRequestError("score_choices: empty choice set")
     with _scoring_scope(session, steering):
         return [
             _score_choice_set(

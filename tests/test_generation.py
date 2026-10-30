@@ -2684,7 +2684,7 @@ def test_generation_transaction_leaves_a_popped_scope_alone():
 
 
 def test_generation_transaction_rejects_a_reentrant_generation():
-    from drowse.session.session import ConcurrentGenerationError
+    from drowse.errors import ConcurrentGenerationError
 
     s = _transaction_stub_session()
     with s._generation_transaction():

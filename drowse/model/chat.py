@@ -293,3 +293,10 @@ class ChatTraits:
                 self._render_bytes -= evicted
             self._render_cache[key] = (tensor.clone(), cost)
             self._render_bytes += cost
+
+    def clear_caches(self) -> None:
+        """Drop the rendered-input cache and the token-text table."""
+        with self._render_lock:
+            self._render_cache.clear()
+            self._render_bytes = 0
+        self._token_text.clear()
