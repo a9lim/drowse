@@ -436,14 +436,6 @@ class LayerWhitener:
         # asymmetry so downstream quadratic forms can't pick up drift.
         return 0.5 * (gram + gram.transpose(0, 1))
 
-    def mahalanobis_dot(
-        self, layer: int, u: torch.Tensor, v: torch.Tensor,
-    ) -> float:
-        """Return the scalar ``u^T Σ_L^{-1} v``."""
-        u32 = u.to(dtype=torch.float32, device="cpu").reshape(-1)
-        self._require(layer, int(u32.shape[0]))
-        return float(torch.dot(u32, self.apply_inv(layer, v).float().reshape(-1)).item())
-
     def mahalanobis_norms(self, layer: int, rows: torch.Tensor) -> torch.Tensor:
         """Row norms ``sqrt(vᵢᵀ Σ_L⁻¹ vᵢ)`` of ``rows`` ``(B, D)`` in one apply.
 
