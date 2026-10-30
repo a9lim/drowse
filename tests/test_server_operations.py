@@ -528,7 +528,9 @@ def test_preparation_progress_cancel_and_group_exclusion() -> None:
             raise Cancelled()
 
         train.start(body, message="starting…", name="x", current=0, total=4096)
-        await asyncio.sleep(0.01)
+        async with asyncio.timeout(2):
+            while train.state["current"] != 1024:
+                await asyncio.sleep(0.005)
         with pytest.raises(HTTPException) as busy:
             group.refuse_if_busy()
         assert busy.value.status_code == 409
