@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from drowse.model.fingerprint import loaded_model_fingerprint
-from tests._fakes import make_mock_session
+from tests.support.server import mock_session
 from tests.support.extraction import make_extraction
 
 
@@ -24,8 +24,7 @@ from tests.support.extraction import make_extraction
 
 
 def _mock_session(monkeypatch: pytest.MonkeyPatch):
-    # Shared native-API wiring lives in tests/_fakes.py.
-    session = make_mock_session()
+    session = mock_session()
 
     monitor = MagicMock()
     monitor.probe_names = []

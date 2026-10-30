@@ -35,7 +35,7 @@ from drowse.generation.results import (
     TokenEvent,
 )
 from drowse.readout.types import ProbeReading
-from tests._fakes import make_mock_session
+from tests.support.server import mock_session
 from tests._generation_stream import TestGenerationStream
 from tests.support.tokens import emit_token
 
@@ -136,39 +136,7 @@ def _mock_probe(name: str, manifold: MagicMock, top_n: int = 3) -> MagicMock:
 
 
 def _mock_session():
-    # Shared native-API wiring lives in tests/_fakes.py.
-    session = make_mock_session()
-    session.manifolds = {}
-    session.tree = MagicMock()
-    session.tree.messages_for.return_value = []
-    session.tree.active_node_id = "test-assistant"
-    session.tree.get.return_value.mean_logprob = None
-    session.tree.get.return_value.mean_surprise = None
-    session.lens.specs.return_value = {}
-    session.sae.specs.return_value = {}
-
-    # The unified monitor: one object, both ``probe_names`` (the wire/gate
-    # surface) and ``attached_probes()`` (the serializer source).
-    monitor = MagicMock()
-    monitor.probe_names = []
-    monitor.profiles = {}
-    monitor.attached_probes.return_value = {}
-    session.monitor = monitor
-
-    session.tokenizer = MagicMock()
-    session.tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
-    session._layers = []
-    session.last_per_token_scores = None
-    session.last_result = None
-    # The WS token-frame builder consults this first; a real None lets the
-    # inline ``_monitor`` / ``_capture`` scoring branch run (a bare
-    # MagicMock would shadow it with a truthy child mock).
-
-    gen_state = MagicMock()
-    gen_state.finish_reason = "stop"
-    gen_state.emit_map = []
-    session.generation_state = gen_state
-    return session
+    return mock_session()
 
 
 @pytest.fixture

@@ -5,103 +5,22 @@ import time
 from typing import Any, cast
 from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
-from drowse.readout.types import (
-    GeometryLiveState,
-    LensLiveState,
-    SaeLiveState,
-)
 from fastapi.testclient import TestClient
 
 from drowse.errors import DrowseError
 from drowse.generation.decode import GenerationConfig
 from drowse.generation.results import GenerationResult, RunSet
 from drowse.server.ws_models import WSSamplingParams, build_sampling_config
-from tests._fakes import make_mock_session
+from tests.support.server import mock_session, script_generate
 from tests.support.tokens import emit_token
 
 
 def _mock_session():
-    # Shared native-API wiring lives in tests/_fakes.py; the routes here need
-    # a real GenerationConfig rather than the shared config mock.
-    session = make_mock_session(config=GenerationConfig())
-    session.renderer.model_type = "gemma2"
-
-    session.tree = MagicMock()
-    session.tree.messages_for.return_value = []
-    session.tree.active_node_id = "test-assistant"
-    session.tree.get.return_value.mean_logprob = None
-    session.tree.get.return_value.mean_surprise = None
-    session.manifolds = {}
-    session.is_base_model = False
-    session.lens.has_compatible.return_value = False
-    session.scene_grammar = None
-    session.joint_logprob_cache = {}
-    # Read plane: the three instrument faces the routes and session_info read.
-    session.geometry.names = []
-    session.geometry.specs.return_value = {}
-    session.geometry.active_source = None
-    session.geometry.live_state = GeometryLiveState(enabled=True)
-    session.lens.names = []
-    session.lens.specs.return_value = {}
-    session.lens.active_source = None
-    session.lens.live_state = LensLiveState(enabled=False)
-    session.sae.names = []
-    session.sae.specs.return_value = {}
-    session.sae.active_source = None
-    session.sae.live_state = SaeLiveState(enabled=False)
-    session.instruments = {
-        "geometry": session.geometry,
-        "lens": session.lens,
-        "sae": session.sae,
-    }
-
-    monitor = MagicMock()
-    monitor.probe_names = []
-    monitor.attached_probes.return_value = {}
-    session.monitor = monitor
-    session.tokenizer = MagicMock()
-    session.chat_traits = SimpleNamespace(
-        supports_thinking=False, thinking_optional=False,
-    )
-    session._layers = []
-    session.last_per_token_scores = None
-    session.last_result = None
-
-    gen_state = MagicMock()
-    gen_state.finish_reason = "stop"
-    gen_state.emit_map = []
-    session.generation_state = gen_state
-
-    # EventBus mock with subscribe/unsubscribe support.
-    _event_subscribers = []
-
-    def _subscribe(cb: Any) -> Any:
-        _event_subscribers.append(cb)
-        def _unsub() -> None:
-            try:
-                _event_subscribers.remove(cb)
-            except ValueError:
-                pass
-        return _unsub
-
-    def _emit(event: Any) -> None:
-        for cb in list(_event_subscribers):
-            try:
-                cb(event)
-            except Exception:
-                pass
-
-    events = MagicMock()
-    events.subscribe = _subscribe
-    events.emit = _emit
-    session.events = events
-    session._event_subscribers = _event_subscribers
-
-    return session
+    # The native routes need a real GenerationConfig rather than a config mock.
+    return mock_session(config=GenerationConfig())
 
 
 @pytest.fixture
@@ -329,7 +248,6 @@ class TestProbes:
         assert resp.json()["probes"] == []
 
     def test_attach(self, session_and_client: Any) -> None:
-        from types import SimpleNamespace
         import torch
 
         from drowse.geometry.fold import fold_directions_to_subspace
@@ -667,34 +585,9 @@ def test_ws_sampling_can_disable_final_probe_readings() -> None:
 
 
 class TestWebSocket:
-    def _attach_generate(self, session: Any, tokens: Any) -> None:
-        """Install a fake ``session.generate`` that drives ``on_token``."""
-        def _gen(input: Any, *, steering: Any = None, sampling: Any = None,
-                 stateless: Any = False, raw: Any = False, thinking: Any = None,
-                 on_token: Any = None, parent_node_id: Any = None, n: Any = 1,
-                 append_same_role: Any = True) -> Any:
-            for i, tok in enumerate(tokens):
-                emit_token(on_token, tok, 1000 + i, index=i)
-                time.sleep(0.001)
-            result = GenerationResult(
-                text="".join(tokens), tokens=list(range(1000, 1000 + len(tokens))),
-                token_count=len(tokens), tok_per_sec=50.0, elapsed=0.05,
-                finish_reason="stop",
-            )
-            session.last_result = result
-            session.last_result = result
-            per_token = {
-                "happy": [0.1 * (i + 1) for i in range(len(tokens))],
-            }
-            session.last_per_token_scores = per_token
-            session.last_per_token_scores = per_token
-            return RunSet([result])
-
-        session.generate.side_effect = _gen
-
     def test_generate_happy_path(self, session_and_client: Any) -> None:
         session, client = session_and_client
-        self._attach_generate(session, ["Hello", " ", "world"])
+        script_generate(session, ["Hello", " ", "world"])
 
         with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({"type": "generate", "input": "hi"})
@@ -778,7 +671,7 @@ class TestWebSocket:
         under default labels would be a different prompt than the one being
         shadowed."""
         session, client = session_and_client
-        self._attach_generate(session, ["ok"])
+        script_generate(session, ["ok"])
         with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "generate",
@@ -902,7 +795,7 @@ class TestWebSocket:
         repeatedly so any regression of that pattern surfaces.
         """
         session, client = session_and_client
-        self._attach_generate(session, ["a", "b"])
+        script_generate(session, ["a", "b"])
 
         with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             for _ in range(3):
@@ -1025,7 +918,7 @@ class TestWebSocket:
         import drowse.steering.grammar as _sx
 
         session, client = session_and_client
-        self._attach_generate(session, ["ok"])
+        script_generate(session, ["ok"])
 
         real_parse = _sx.parse_expr
 

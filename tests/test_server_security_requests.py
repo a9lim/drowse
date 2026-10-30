@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from drowse.session.session import DrowseSession
 from drowse.server import create_app
-from tests.test_server_loom import _StubSession
+from tests.support.server import StubSession, mock_session
 
 
 INVALID_SAMPLING = [
@@ -34,7 +34,7 @@ def test_retained_install_errors_do_not_disclose_paths(
 
     monkeypatch.setattr(routes, "install_manifold", fail)
     monkeypatch.setattr(routes, "refuse_if_busy", lambda session: None)
-    with TestClient(create_app(cast(DrowseSession, _StubSession()))) as client:
+    with TestClient(create_app(cast(DrowseSession, StubSession()))) as client:
         response = client.post(
             "/drowse/v1/manifolds/install", json={"target": "synthetic/missing"},
             headers={"Accept": accept, "X-Drowse-Request-ID": "retained-install"},
@@ -49,9 +49,7 @@ def test_retained_install_errors_do_not_disclose_paths(
 @pytest.mark.parametrize("sampling", INVALID_SAMPLING)
 @pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/completions"])
 def test_invalid_openai_sampling_never_starts_inference(path: str, sampling: dict[str, Any]) -> None:
-    from tests.test_server import _mock_session
-
-    session = _mock_session()
+    session = mock_session()
     with TestClient(create_app(session)) as client:
         response = client.post(path, content=json.dumps({
             "messages": [{"role": "user", "content": "test"}], "prompt": "test",
@@ -65,7 +63,7 @@ def test_invalid_openai_sampling_never_starts_inference(path: str, sampling: dic
 @pytest.mark.parametrize("sampling", INVALID_SAMPLING)
 @pytest.mark.parametrize("frame_type", ["generate", "submit"])
 def test_invalid_websocket_sampling_keeps_connection_usable(frame_type: str, sampling: dict[str, Any]) -> None:
-    session = _StubSession()
+    session = StubSession()
     original = session.tree.to_dict()
     with TestClient(create_app(cast(DrowseSession, session))) as client:
         with client.websocket_connect("/drowse/v1/sessions/default/stream") as socket:
@@ -82,7 +80,7 @@ def test_invalid_websocket_sampling_keeps_connection_usable(frame_type: str, sam
     {"top_p": -1}, {"top_p": 2}, {"max_tokens": -1},
 ])
 def test_invalid_session_sampling_cannot_poison_defaults(sampling: dict[str, Any]) -> None:
-    session = _StubSession()
+    session = StubSession()
     original = session.config
     with TestClient(create_app(cast(DrowseSession, session))) as client:
         response = client.patch("/drowse/v1/sessions/default", content=json.dumps(sampling),
@@ -98,9 +96,7 @@ def test_invalid_session_sampling_cannot_poison_defaults(sampling: dict[str, Any
     ("top_p", -0.1), ("top_p", 1.1),
 ])
 def test_invalid_ollama_options_return_client_error(option: str, value: Any) -> None:
-    from tests.test_server import _mock_session
-
-    session = _mock_session()
+    session = mock_session()
     with TestClient(create_app(session)) as client:
         response = client.post("/api/generate", content=json.dumps({
             "model": "test/model", "prompt": "test", "options": {option: value},
@@ -134,7 +130,7 @@ def test_sampling_validation_preserves_boundary_and_sentinel_meanings() -> None:
 
 @pytest.mark.parametrize("frame_type", ["generate", "submit"])
 def test_websocket_fan_size_is_bounded_before_seed_allocation(frame_type: str) -> None:
-    session = _StubSession()
+    session = StubSession()
     before = session.tree.to_dict()
     with TestClient(create_app(cast(DrowseSession, session))) as client:
         with client.websocket_connect("/drowse/v1/sessions/default/stream") as socket:
@@ -149,7 +145,7 @@ def test_websocket_fan_size_is_bounded_before_seed_allocation(frame_type: str) -
 
 @pytest.mark.parametrize("transport", ["http", "websocket"])
 def test_bias_ids_are_validated_against_the_output_vocabulary(transport: str) -> None:
-    session: Any = _StubSession()
+    session: Any = StubSession()
     session.model = SimpleNamespace(get_output_embeddings=lambda: SimpleNamespace(weight=SimpleNamespace(shape=(32, 16))))
     original = session.tree.to_dict()
     with TestClient(create_app(cast(DrowseSession, session))) as client:
@@ -170,7 +166,7 @@ def test_bias_ids_are_validated_against_the_output_vocabulary(transport: str) ->
 def test_bias_validation_preserves_valid_values() -> None:
     from drowse.server.request_helpers import build_sampling_config, validate_logit_bias
 
-    session: Any = _StubSession()
+    session: Any = StubSession()
     session.model = SimpleNamespace(get_output_embeddings=lambda: SimpleNamespace(weight=SimpleNamespace(shape=(32, 16))))
     bias = {0: -100.0, 31: 100.0}
     sampling = build_sampling_config(logit_bias=bias)

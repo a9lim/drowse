@@ -2,7 +2,6 @@
 
 import json
 from typing import Any, cast
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from drowse.generation.results import GenerationResult, RunSet, TokenEvent
 from tests._generation_stream import TestGenerationStream
+from tests.support.server import mock_session
 from drowse.errors import ConcurrentGenerationError, ProfileNotRegisteredError
 
 
@@ -23,69 +23,8 @@ from drowse.errors import ConcurrentGenerationError, ProfileNotRegisteredError
 # ---------------------------------------------------------------------------
 
 def _mock_session():
-    """Create a mock DrowseSession with realistic attributes."""
-    session = MagicMock()
-    session.model_id = "test/model"
-    session.model_info = {
-        "model_type": "gemma2",
-        "num_layers": 26,
-        "hidden_dim": 2304,
-        "vram_used_gb": 5.2,
-        "param_count": 2_614_000_000,
-        "device": "cpu",
-        "dtype": "torch.bfloat16",
-    }
-    session.model = MagicMock()
-    session.renderer.model_type = "gemma2"
-    session.layers = [MagicMock() for _ in range(26)]
-
-    session.config = MagicMock()
-    session.config.temperature = 1.0
-    session.config.top_p = 0.9
-    session.config.top_k = None
-    session.config.max_new_tokens = 1024
-    session.config.system_prompt = None
-    session.config.thinking = None
-
-    session.profiles = {}
-    session.probes = {}
-    session.tree = MagicMock()
-    session.tree.messages_for.return_value = []
-    session.tree.active_node_id = "test-assistant"
-    session.tree.get.return_value.mean_logprob = None
-    session.tree.get.return_value.mean_surprise = None
-    session.is_base_model = False
-    session.lens.has_compatible.return_value = False
-    session.scene_grammar = None
-    session.joint_logprob_cache = {}
-    # Read plane: the three instrument faces the routes and session_info read.
-    session.geometry.names = []
-    session.geometry.specs.return_value = {}
-    session.geometry.active_source = None
-    session.geometry.live_state = GeometryLiveState(enabled=True)
-    session.lens.names = []
-    session.lens.specs.return_value = {}
-    session.lens.active_source = None
-    session.lens.live_state = LensLiveState(enabled=False)
-    session.sae.names = []
-    session.sae.specs.return_value = {}
-    session.sae.active_source = None
-    session.sae.live_state = SaeLiveState(enabled=False)
-    session.instruments = {
-        "geometry": session.geometry,
-        "lens": session.lens,
-        "sae": session.sae,
-    }
-
-    # Gen state carries the real finish_reason after each generation.
-    gen_state = MagicMock()
-    gen_state.finish_reason = "stop"
-    gen_state.emit_map = []
-    session.generation_state = gen_state
-    session.last_result = None
-    session.tokenizer = MagicMock()
-    session.tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
-    return session
+    """A mock DrowseSession with realistic attributes."""
+    return mock_session()
 
 
 def _single_run(**kwargs: Any) -> RunSet:
@@ -1122,7 +1061,7 @@ def test_joint_logprobs_lock_timeout_is_a_503_without_model_work(monkeypatch: An
 
     import drowse.server.runtime as runtime
     from drowse.server import create_app
-    from tests.test_server_loom import _StubSession
+    from tests.support.server import StubSession
 
     monkeypatch.setattr(runtime, "SESSION_LOCK_TIMEOUT_SECONDS", 0.05)
     computed: list[Any] = []
@@ -1130,7 +1069,7 @@ def test_joint_logprobs_lock_timeout_is_a_503_without_model_work(monkeypatch: An
         "drowse.loom.joint_logprobs.compute_joint_logprobs",
         lambda *args, **kwargs: computed.append(args),
     )
-    session: Any = _StubSession()
+    session: Any = StubSession()
     session.joint_logprob_cache = {}
     user_id = session.tree.add_user_turn("hi")
 

@@ -368,9 +368,9 @@ def test_filter_route_matches_all_three_ops():
 
     from drowse.session.session import DrowseSession
     from drowse.server import create_app
-    from tests.test_server_loom import _StubSession
+    from tests.support.server import StubSession
 
-    session = _StubSession()
+    session = StubSession()
     client = TestClient(create_app(cast(DrowseSession, session), default_steering=None))
     tree = session.tree
 

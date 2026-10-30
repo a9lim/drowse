@@ -67,11 +67,11 @@ def test_http_inference_leaves_event_loop_responsive(path: str, stream: bool) ->
     import httpx
     from drowse.generation.results import GenerationResult
     from drowse.server import create_app
-    from tests.test_server_loom import _StubSession
+    from tests.support.server import StubSession
 
     async def scenario() -> None:
         entered, release = threading.Event(), threading.Event()
-        session: Any = _StubSession()
+        session: Any = StubSession()
         result = GenerationResult(text="ok", tokens=[1], token_count=1, tok_per_sec=1, elapsed=0.1, finish_reason="stop")
 
         def block() -> None:
@@ -123,10 +123,10 @@ def test_http_inference_leaves_event_loop_responsive(path: str, stream: bool) ->
 def test_queued_openai_stream_does_not_start_model_before_owning_lock() -> None:
     import httpx
     from drowse.server import create_app
-    from tests.test_server_loom import _StubSession
+    from tests.support.server import StubSession
 
     async def scenario() -> None:
-        session: Any = _StubSession()
+        session: Any = StubSession()
         starts: list[bool] = []
         session.generate_stream = lambda *args, **kwargs: starts.append(True)
         app = create_app(session)
@@ -158,11 +158,11 @@ def test_model_code_trust_rejects_ambiguous_non_booleans(value: Any) -> None:
 def test_http_send_failure_joins_stream_close_without_blocking_loop(path: str) -> None:
     from starlette.requests import ClientDisconnect
     from drowse.server import create_app
-    from tests.test_server_loom import _StubSession
+    from tests.support.server import StubSession
 
     async def scenario() -> None:
         entered, release, closed = threading.Event(), threading.Event(), threading.Event()
-        session: Any = _StubSession()
+        session: Any = StubSession()
 
         class Stream:
             result = None

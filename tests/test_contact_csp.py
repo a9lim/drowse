@@ -4,11 +4,11 @@ from fastapi.testclient import TestClient
 
 from drowse.session.session import DrowseSession
 from drowse.server import create_app
-from tests.test_server_loom import _StubSession
+from tests.support.server import StubSession
 
 
 def test_dashboard_can_submit_feedback_without_broadening_other_connections():
-    with TestClient(create_app(cast(DrowseSession, _StubSession()), web=True)) as client:
+    with TestClient(create_app(cast(DrowseSession, StubSession()), web=True)) as client:
         response = client.get("/")
     policy = response.headers["content-security-policy"]
     connections = next(directive.strip().split()[1:] for directive in policy.split(";")
