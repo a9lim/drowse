@@ -360,6 +360,37 @@ class TestSourceSwitch:
         assert session.lens.disable_calls == 1
         session.select_jlens_source.assert_called_once_with("neuronpedia")
 
+    def test_unfitted_lens_switch_is_a_409(self, session_and_client: Any) -> None:
+        """Regression: the error-policy collapse turned this route's 409 into
+        ``LensNotFittedError``'s generic 404."""
+        from drowse.lens.jlens import LensNotFittedError
+
+        session, client = session_and_client
+        session.lens.enable_error = LensNotFittedError("no fitted J-lens for test/model")
+        resp = client.put(f"{_BASE}/lens/source", json={"source": "local:default"})
+        assert resp.status_code == 409
+        assert resp.json() == {"detail": "no fitted J-lens for test/model"}
+
+    def test_unavailable_source_keeps_its_message(self, session_and_client: Any) -> None:
+        """Regression: the registry's path-free "not available" text was
+        scrubbed to the generic filesystem message."""
+        session, client = session_and_client
+        session.select_jlens_source.side_effect = FileNotFoundError(
+            "J-lens source local:gone is not available",
+        )
+        resp = client.put(f"{_BASE}/lens/source", json={"source": "local:gone"})
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "J-lens source local:gone is not available"}
+
+    def test_os_level_miss_on_switch_stays_scrubbed(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.select_jlens_source.side_effect = FileNotFoundError(
+            2, "No such file or directory", "/secret/home/.drowse/models/x/jlens/active.json",
+        )
+        resp = client.put(f"{_BASE}/lens/source", json={"source": "local:default"})
+        assert resp.status_code == 404
+        assert "/secret" not in resp.text
+
     def test_sae_409_points_at_preparations(
         self, session_and_client: Any,
     ) -> None:

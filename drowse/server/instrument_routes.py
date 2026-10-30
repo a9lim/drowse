@@ -30,7 +30,7 @@ from typing import Any, cast
 from fastapi import FastAPI, HTTPException
 from pydantic import Field
 
-from drowse.lens.jlens import JacobianLensCancelled, resolve_word_token
+from drowse.lens.jlens import JacobianLensCancelled, LensNotFittedError, resolve_word_token
 from drowse.readout.measurements import MeasurementsEnvelope
 from drowse.sae.training import SaeTrainingCancelled
 from drowse.server.operations import Preparation, PreparationGroup
@@ -289,7 +289,13 @@ def register_instrument_routes(app: FastAPI) -> None:
     async def activate_lens_source(source: str) -> list[int]:
         async with session_lock(app):
             session.lens.set_live(False)
-            await run_in_thread(session.select_jlens_source, source)
+            try:
+                await run_in_thread(session.select_jlens_source, source)
+            except FileNotFoundError as exc:
+                if exc.filename is not None:
+                    raise  # an OS-level miss names a path: scrubbed by the policy
+                # The source registry's own "<kind>:<name> is not available".
+                raise HTTPException(404, str(exc)) from None
             return await enable_lens_live()
 
     # -- live / sources / source -------------------------------------------
@@ -341,7 +347,13 @@ def register_instrument_routes(app: FastAPI) -> None:
         if not caps.source_switch:
             _refuse(caps.source_switch_error, f"{family} has no synchronous source switch")
         preparations["lens"].refuse_if_busy()
-        return {"source": body.source, "live_layers": await activate_lens_source(body.source)}
+        try:
+            layers = await activate_lens_source(body.source)
+        except LensNotFittedError as exc:
+            # The route exists and the source is selected, but its artifact
+            # cannot load for this model: a conflict with the artifact state.
+            raise HTTPException(409) from exc
+        return {"source": body.source, "live_layers": layers}
 
     # -- preparations ---------------------------------------------------------
 

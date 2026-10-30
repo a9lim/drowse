@@ -74,11 +74,11 @@ def check_strict_model(session: "DrowseSession", name: str | None) -> None:
         return
     if name.lower() not in known_model_names(session):
         hosted = ", ".join(sorted({session.model_id, *aliases_for_session(session)}))
-        raise HTTPException(
-            404,
-            f"model '{name}' not found. drowse hosts: {hosted}. "
+        raise HTTPException(404, {
+            "message": f"model '{name}' not found. drowse hosts: {hosted}. "
             "Unset DROWSE_STRICT_MODEL to accept any model name.",
-        )
+            "param": "model",
+        })
 
 
 def probe_reading_aggregate(

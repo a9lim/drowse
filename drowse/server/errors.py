@@ -196,10 +196,33 @@ def classify_extraction_error(exc: Exception) -> ErrorInfo | None:
     return None
 
 
+def error_param(exc: BaseException) -> str | None:
+    """The request field an error is about — OpenAI's ``error.param``.
+
+    A body-validation failure names its first error's field path; an
+    ``HTTPException`` names one through a ``{"param": …}`` detail.
+    """
+    if isinstance(exc, RequestValidationError):
+        errors = exc.errors()
+        loc = [str(part) for part in (errors[0].get("loc", ()) if errors else ())]
+        if loc and loc[0] in {"body", "query", "path"}:
+            loc = loc[1:]
+        return ".".join(loc) or None
+    if isinstance(exc, StarletteHTTPException) and isinstance(exc.detail, dict):
+        param = exc.detail.get("param")
+        return param if isinstance(param, str) else None
+    return None
+
+
 def protocol_error(
     path: str, status: int, message: str, headers: dict[str, str] | None = None,
+    *, param: str | None = None,
 ) -> Response:
-    """Render one error message in the envelope the request's protocol owns."""
+    """Render one error message in the envelope the request's protocol owns.
+
+    ``param`` names the offending request field; only OpenAI's envelope has a
+    slot for it.
+    """
     if status in {204, 304}:
         return Response(status_code=status, headers=headers)
     if path.startswith(OLLAMA_PREFIX):
@@ -207,7 +230,7 @@ def protocol_error(
     elif path.startswith(OPENAI_PREFIX):
         content = {"error": {
             "message": message, "type": openai_error_type(status),
-            "param": None, "code": status,
+            "param": param, "code": status,
         }}
     else:
         content = {"detail": message}
@@ -223,7 +246,7 @@ def install_error_handlers(app: FastAPI) -> None:
         else:
             info = describe_error(exc)
         headers = getattr(exc, "headers", None) if isinstance(exc, StarletteHTTPException) else None
-        return protocol_error(request.url.path, info.status, info.message, headers)
+        return protocol_error(request.url.path, info.status, info.message, headers, param=error_param(exc))
 
     async def _render_unexpected(request: Request, exc: Exception) -> Response:
         # Starlette re-raises after this response is sent, so the server logs

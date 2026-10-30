@@ -1803,12 +1803,28 @@ class TestNativeErrorEnvelope:
         assert strict.status_code == 404
         assert set(strict.json()) == {"error"}
         assert "other/model" in strict.json()["error"]["message"]
+        assert strict.json()["error"]["param"] == "model"
         ollama = client.post("/api/chat", json={"model": "other/model", "messages": []})
         assert ollama.status_code == 404
         assert set(ollama.json()) == {"error"}
-        assert isinstance(ollama.json()["error"], str)
+        assert "other/model" in ollama.json()["error"]
         pull = client.post("/api/pull", json={"model": "other/model"})
         assert pull.status_code == 404 and set(pull.json()) == {"error"}
+
+    def test_openai_validation_errors_name_their_param(self) -> None:
+        """Regression: the unified validation renderer dropped OpenAI's
+        ``error.param``, which clients use to point at the bad field."""
+        from drowse.server import create_app
+
+        client = TestClient(create_app(_mock_session()))
+        resp = client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "hi"}], "temperature": "hot",
+        })
+        assert resp.status_code == 400
+        error = resp.json()["error"]
+        assert error["param"] == "temperature"
+        assert error["type"] == "invalid_request_error"
+        assert error["message"].startswith("temperature: ")
 
     def test_protocol_error_renders_each_envelope(self) -> None:
         import json as _json
