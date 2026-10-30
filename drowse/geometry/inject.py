@@ -475,16 +475,17 @@ def synthesize_subspace(
 
 
 def _soft_norm_cap_scale(
-    norm_pre_sq: torch.Tensor, norm_post_sq: torch.Tensor, norm_cap: float,
+    norm_pre: torch.Tensor, norm_post_sq: torch.Tensor, norm_cap: float,
 ) -> torch.Tensor:
-    """Per-row shrink ``min(1, norm_cap·‖h‖ / ‖h_new‖)`` from squared norms.
+    """Per-row shrink ``min(1, norm_cap·‖h‖ / ‖h_new‖)``.
 
-    The curved kernel's soft cap against off-domain RBF extrapolation.  The
-    squared norms are ``(.., 1)``; the result is the ``(.., 1)`` scale (``1``
-    when ``‖h_new‖`` is within the cap).  Affine injection is uncapped.
+    The curved kernel's soft cap against off-domain RBF extrapolation.
+    ``norm_pre`` is ``‖h‖`` and ``norm_post_sq`` is ``‖h_new‖²``, both
+    ``(.., 1)``; the result is the ``(.., 1)`` scale (``1`` within the cap).
+    Affine injection is uncapped.
     """
     return (
-        norm_cap * norm_pre_sq.clamp_min(0.0).sqrt()
+        norm_cap * norm_pre
         / norm_post_sq.clamp_min(0.0).sqrt().clamp(min=1e-6)
     ).clamp_(max=1.0)
 
@@ -853,13 +854,13 @@ def subspace_inject(
     # Soft cap ``‖h_new‖ ≤ norm_cap·‖h‖`` against off-domain RBF extrapolation,
     # with ``‖h + δ·B‖² = ‖h‖² + 2 (q + mp)·δ + ‖δ‖²`` evaluated in reduced
     # space (orthonormal ``B``): one full-width reduction, one full-width write.
-    norm_pre_sq = (h_f32 * h_f32).sum(dim=-1, keepdim=True)
+    norm_pre = torch.linalg.vector_norm(h_f32, dim=-1, keepdim=True)   # (.., 1)
     norm_post_sq = (
-        norm_pre_sq
+        norm_pre * norm_pre
         + 2.0 * ((q + mp) * delta).sum(dim=-1, keepdim=True)
         + (delta * delta).sum(dim=-1, keepdim=True)
     )
-    cap = _soft_norm_cap_scale(norm_pre_sq, norm_post_sq, norm_cap)  # (.., 1)
+    cap = _soft_norm_cap_scale(norm_pre, norm_post_sq, norm_cap)  # (.., 1)
     h_new = (delta @ basis).add_(h_f32).mul_(cap)        # (.., D)
     # Return fp32 (see the affine branch): the caller's ``hidden.copy_`` does
     # the model-dtype downcast, so no per-fire ``.to(h.dtype)`` temporary.
