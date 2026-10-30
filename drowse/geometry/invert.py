@@ -49,8 +49,9 @@ def _gn_step(
     targets (broadcastable against ``p``'s leading dims — the inversion fans
     ``p`` over ``S`` restarts against a ``(.., 1, R)`` query).  The RBF tensors
     are already on ``p``'s device/dtype.  Returns the retracted post-step
-    position.  The ``n == 1`` normal equation is a scalar division (the common
-    1-D ring/arc), avoiding a batched ``linalg.solve`` per step.
+    position.  The ``n ≤ 2`` normal equations are solved in closed form: a
+    batched ``linalg.solve`` checks for singularity with a host sync, which on
+    the steering hot path would drain the device queue mid-forward.
     """
     emb = (domain.embed(p) - coord_offset) / coord_scale          # (.., m)
     value, jac = eval_rbf_jet(node_params, rbf_weights, poly_coeffs, emb)
@@ -60,16 +61,22 @@ def _gn_step(
     jtj = jt @ j_auth                                             # (.., n, n)
     jtr = jt @ resid.unsqueeze(-1)                                # (.., n, 1)
     n_dim = jtj.shape[-1]
+    diag = torch.diagonal(jtj, dim1=-2, dim2=-1)                  # (.., n)
+    reg = damping * diag.clamp(min=_INVERSION_DIAG_FLOOR) + _INVERSION_DIAG_FLOOR
     if n_dim == 1:
-        a = jtj[..., 0]                                           # (.., 1)
-        a = a + (damping * a.clamp(min=_INVERSION_DIAG_FLOOR) + _INVERSION_DIAG_FLOOR)
-        step = jtr[..., 0] / a                                    # (.., 1)
+        step = jtr[..., 0] / (jtj[..., 0] + reg)                  # (.., 1)
+    elif n_dim == 2:
+        # Damped JᵀJ is SPD, so Cramer's rule is safe — and, unlike a batched
+        # ``linalg.solve``, it never syncs the device mid-forward.
+        a00 = jtj[..., 0, 0] + reg[..., 0]
+        a11 = jtj[..., 1, 1] + reg[..., 1]
+        a01 = jtj[..., 0, 1]
+        r0, r1 = jtr[..., 0, 0], jtr[..., 1, 0]
+        det = a00 * a11 - a01 * jtj[..., 1, 0]
+        step = torch.stack((a11 * r0 - a01 * r1, a00 * r1 - jtj[..., 1, 0] * r0), dim=-1)
+        step = step / det.unsqueeze(-1)                           # (.., 2)
     else:
-        diag = torch.diagonal(jtj, dim1=-2, dim2=-1)              # (.., n)
-        reg = torch.diag_embed(
-            damping * diag.clamp(min=_INVERSION_DIAG_FLOOR) + _INVERSION_DIAG_FLOOR
-        )
-        A = jtj + reg                                             # (.., n, n)
+        A = jtj + torch.diag_embed(reg)                           # (.., n, n)
         bsz = A.shape[:-2]
         # The flattened batch also dodges ``linalg.solve``'s size-1-leading-
         # batch out-resize warning on MPS.

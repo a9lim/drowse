@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 # they knew the answer).  Spectral (Laplacian eigenmaps) recovers
 # curved-manifold topology that PCA flattens.  Both feed the same downstream
 # machinery: ``CustomDomain(k)`` with identity embedding, then per-layer
-# ``manifold.fit_layer_subspace`` exactly as for authored manifolds.
+# ``subspace.fit_curved_subspace`` exactly as for authored manifolds.
 
 
 @dataclass(frozen=True)
@@ -749,13 +749,16 @@ def _rips_h1_persistence(
         adj[ei[x]].add(ej[x])
         adj[ej[x]].add(ei[x])
     # Triangles: i<j<k with all three edges present; filtration = longest edge.
-    dist = distances
+    # One host conversion up front: per-triangle tensor indexing dominated a
+    # dense heap's fit time.
+    dist = distances.tolist()
     triangles: list[tuple[float, int, int, int]] = []
     for x in range(E):
         i, j = ei[x], ej[x]
+        row_i, row_j = dist[i], dist[j]
         for k in adj[i] & adj[j]:
             if k > j:  # canonical i<j<k → each triangle once
-                fl = max(el[x], float(dist[i, k].item()), float(dist[j, k].item()))
+                fl = max(el[x], row_i[k], row_j[k])
                 if len(triangles) == max_triangles:
                     raise ValueError("persistent-homology triangle budget exceeded; topology is unresolved")
                 triangles.append((fl, i, j, k))

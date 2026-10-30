@@ -514,20 +514,94 @@ def _orthonormalize_columns(
     return torch.stack(cols, dim=-1)                        # (.., R, n)
 
 
-def _svd_mps_safe(
-    a: torch.Tensor,
+def _principal_pairs_1d(
+    qa: torch.Tensor, qb: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """``torch.linalg.svd`` with an explicit CPU hop on MPS.
+    """Principal pair of two lines: ``a = qa``, ``b = ±qb`` with ``aᵀb = c ≥ 0``.
 
-    ``aten::linalg_svd`` is unimplemented on Metal and silently CPU-falls-back
-    with a per-call warning; doing the hop explicitly suppresses the warning and
-    keeps it a tiny ``(.., n, n)`` round-trip (``n`` = intrinsic dim).  Native on
-    CUDA / CPU.
+    The 1×1 overlap ``[c0] = qaᵀqb`` has the trivial SVD ``|c0|`` with the
+    sign absorbed into ``b`` — exactly what ``linalg.svd`` returns, on-device.
     """
-    if a.device.type == "mps":
-        u, s, vh = torch.linalg.svd(a.cpu())
-        return u.to(a.device), s.to(a.device), vh.to(a.device)
-    return torch.linalg.svd(a)
+    c0 = (qa * qb).sum(dim=-2, keepdim=True)       # (.., 1, 1) = qaᵀqb
+    sign = torch.where(c0 >= 0.0, torch.ones_like(c0), -torch.ones_like(c0))
+    return qa, qb * sign, c0.squeeze(-2).abs().clamp(0.0, 1.0)
+
+
+def _principal_pairs_2d(
+    qa: torch.Tensor, qb: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Principal pairs of two planes from a closed-form 2×2 SVD, on-device.
+
+    ``M = qaᵀqb``; the right singular vectors are the eigenvectors of the
+    symmetric ``MᵀM`` at angle ``θ = ½·atan2(2r, p − q)``.  ``u₁ = Mv₁/‖Mv₁‖``
+    and ``u₂ = ±u₁^⊥`` with the sign that makes ``σ₂ = u₂ᵀMv₂ ≥ 0``, so ``U``
+    is exactly orthonormal and ``aᵢᵀbⱼ = σᵢδᵢⱼ`` holds to the eigenvector
+    accuracy.  Replaces the MPS CPU hop of ``linalg.svd`` for the 2-D case.
+    """
+    m = qa.transpose(-1, -2) @ qb                  # (.., 2, 2)
+    g = m.transpose(-1, -2) @ m                    # (.., 2, 2) MᵀM
+    theta = 0.5 * torch.atan2(2.0 * g[..., 0, 1], g[..., 0, 0] - g[..., 1, 1])
+    cs, sn = torch.cos(theta), torch.sin(theta)
+    v = torch.stack((
+        torch.stack((cs, -sn), dim=-1),
+        torch.stack((sn, cs), dim=-1),
+    ), dim=-2)                                     # (.., 2, 2) columns v₁, v₂
+    mv = m @ v                                     # columns Mv₁, Mv₂
+    s1 = torch.linalg.vector_norm(mv[..., 0], dim=-1)          # (..,)
+    fallback = torch.zeros_like(mv[..., 0])
+    fallback[..., 0] = 1.0                          # M ≈ 0: any orthonormal U
+    u1 = torch.where(
+        (s1 > _ROTATE_EPSILON).unsqueeze(-1),
+        mv[..., 0] / s1.clamp(min=_ROTATE_EPSILON).unsqueeze(-1),
+        fallback,
+    )
+    u1_perp = torch.stack((-u1[..., 1], u1[..., 0]), dim=-1)
+    d2 = (u1_perp * mv[..., 1]).sum(dim=-1)        # signed σ₂
+    u2 = u1_perp * torch.where(d2 >= 0.0, 1.0, -1.0).unsqueeze(-1)
+    u = torch.stack((u1, u2), dim=-1)              # (.., 2, 2)
+    c = torch.stack((s1, d2.abs()), dim=-1).clamp(0.0, 1.0)
+    return qa @ u, qb @ v, c
+
+
+def _principal_pairs_svd(
+    qa: torch.Tensor, qb: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Principal pairs from ``linalg.svd`` of the ``n×n`` overlap (``n ≥ 3``).
+
+    ``linalg.svd`` is unimplemented on Metal, so on MPS the tiny overlap hops
+    to CPU explicitly (one round trip per call).
+    """
+    m = qa.transpose(-1, -2) @ qb
+    if m.device.type == "mps":
+        u, s, vh = (t.to(m.device) for t in torch.linalg.svd(m.cpu()))
+    else:
+        u, s, vh = torch.linalg.svd(m)
+    return qa @ u, qb @ vh.transpose(-1, -2), s.clamp(-1.0, 1.0)
+
+
+def _rotate_planes(
+    Hn: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tensor,
+) -> torch.Tensor:
+    """Apply the planar rotations ``aᵢ → bᵢ`` (``cos θᵢ = cᵢ``) to ``Hn``."""
+    s = (1.0 - c * c).clamp(min=0.0).sqrt()        # (.., n) sin θᵢ
+    # nᵢ = unit(bᵢ − cᵢ aᵢ): the in-(aᵢ,bᵢ)-plane direction ⊥ aᵢ that aᵢ rotates
+    # toward (‖bᵢ − cᵢ aᵢ‖ = sᵢ).  Guard the sᵢ≈0 (no-rotation) planes — their
+    # nᵢ is a 0/0 and their planar rotation is the identity anyway.
+    perp = b - c.unsqueeze(-2) * a                 # (.., R, n)
+    perp_norm = torch.linalg.vector_norm(perp, dim=-2, keepdim=True)  # (.., 1, n)
+    n_dir = perp / perp_norm.clamp(min=_ROTATE_EPSILON)  # (.., R, n) unit nᵢ
+    # Hn's components in each plane and the planar-rotation change
+    # (aᵢ → cᵢaᵢ + sᵢnᵢ, nᵢ → −sᵢaᵢ + cᵢnᵢ):
+    #   Δ = Σᵢ [(cᵢ−1)αᵢ − sᵢβᵢ] aᵢ + [sᵢαᵢ + (cᵢ−1)βᵢ] nᵢ.
+    alpha = (a * Hn.unsqueeze(-1)).sum(dim=-2)     # (.., n)  aᵢᵀ Hn
+    beta = (n_dir * Hn.unsqueeze(-1)).sum(dim=-2)  # (.., n)  nᵢᵀ Hn
+    active = (s > _ROTATE_EPSILON).to(Hn.dtype)    # (.., n) skip sᵢ≈0 planes
+    d_a = ((c - 1.0) * alpha - s * beta) * active  # (.., n)
+    d_n = (s * alpha + (c - 1.0) * beta) * active  # (.., n)
+    delta = (
+        (a * d_a.unsqueeze(-2)).sum(dim=-1) + (n_dir * d_n.unsqueeze(-2)).sum(dim=-1)
+    )                                              # (.., R)
+    return Hn + delta
 
 
 def _frame_rotation_transport(
@@ -554,63 +628,22 @@ def _frame_rotation_transport(
     - **No information loss.**  A rotation preserves ``‖Hn‖`` and discards no
       component; the residual's full content rides the frame as it turns.
 
-    All ``O(R·n)`` per position, no ``(R, R)`` matrix materialized.  fp32.
+    All ``O(R·n)`` per position, no ``(R, R)`` matrix materialized.  fp32.  The
+    principal pairs are closed-form on-device for ``n ≤ 2``; ``n ≥ 3`` takes
+    the SVD (a CPU hop on MPS).
     """
-    # Orthonormal bases of the two tangent spaces (basis-choice-arbitrary, but
-    # the principal-angle SVD below is invariant to that choice).  Modified
-    # Gram-Schmidt, not ``torch.linalg.qr`` — the latter is unimplemented on MPS.
+    # Orthonormal bases of the two tangent spaces (basis-choice-arbitrary; the
+    # principal pairs are invariant to that choice).  Modified Gram-Schmidt,
+    # not ``torch.linalg.qr`` — the latter is unimplemented on MPS.
     qa = _orthonormalize_columns(j_old)            # (.., R, n)
     qb = _orthonormalize_columns(j_new)            # (.., R, n)
     n = qa.shape[-1]
-    if n == 1:
-        # --- on-device n=1 closed form (the common curved topology: a 1-D
-        # ring/arc) ----------------------------------------------------------
-        # A 1×1 overlap ``[c0] = qaᵀqb`` has a trivial SVD: the singular value is
-        # ``|c0|`` and the sign rides into U/V.  Rather than route a 1×1 matrix
-        # through ``_svd_mps_safe`` (which hops to CPU on MPS every fire — the
-        # whole point of this branch is to stay on-device), build the principal
-        # directions / cosine directly: pick ``b = ±qb`` so the cosine is
-        # ``c = |c0| ≥ 0`` (exactly what SVD's non-negative singular value gives,
-        # the sign absorbed into V).  ``a = qa``, ``b = sign(c0)·qb`` then
-        # satisfy ``aᵀb = |c0| = c`` — bit-for-bit the (a, b, c) the SVD path
-        # produces at n=1, so the shared planar-rotation tail below is identical.
-        c0 = (qa * qb).sum(dim=-2, keepdim=True)   # (.., 1, 1) = qaᵀqb
-        sign = torch.where(
-            c0 >= 0.0, torch.ones_like(c0), -torch.ones_like(c0),
-        )                                          # (.., 1, 1) sign(c0), +1 at 0
-        a = qa                                     # (.., R, 1) principal dir in span(qa)
-        b = qb * sign                              # (.., R, 1) flipped so aᵀb ≥ 0
-        c = c0.squeeze(-2).abs().clamp(0.0, 1.0)   # (.., 1) cos θ = |c0|
-    else:
-        # Principal angles between the subspaces: SVD of the n×n frame overlap.
-        # Σ = cos θᵢ; the principal directions pair up orthogonally across i
-        # (aᵢᵀbⱼ = cos θᵢ · δᵢⱼ), so the subspace rotation is a product of
-        # *independent* planar rotations aᵢ → bᵢ.  n≥2 keeps the CPU-hopped SVD
-        # (``linalg.svd`` is unimplemented on Metal); only the tiny n=1 case
-        # (the dominant curved topology) earned a hand-written on-device path.
-        u, s_cos, vh = _svd_mps_safe(qa.transpose(-1, -2) @ qb)  # (..,n,n),(..,n),(..,n,n)
-        a = qa @ u                                 # (.., R, n) principal dirs in span(qa)
-        b = qb @ vh.transpose(-1, -2)              # (.., R, n) principal dirs in span(qb)
-        c = s_cos.clamp(-1.0, 1.0)                 # (.., n) cos θᵢ
-    s = (1.0 - c * c).clamp(min=0.0).sqrt()        # (.., n) sin θᵢ
-    # nᵢ = unit(bᵢ − cᵢ aᵢ): the in-(aᵢ,bᵢ)-plane direction ⊥ aᵢ that aᵢ rotates
-    # toward (‖bᵢ − cᵢ aᵢ‖ = sᵢ).  Guard the sᵢ≈0 (no-rotation) planes — their
-    # nᵢ is a 0/0 and their planar rotation is the identity anyway.
-    perp = b - c.unsqueeze(-2) * a                 # (.., R, n)
-    perp_norm = torch.linalg.vector_norm(perp, dim=-2, keepdim=True)  # (.., 1, n)
-    n_dir = perp / perp_norm.clamp(min=_ROTATE_EPSILON)  # (.., R, n) unit nᵢ
-    # Hn's components in each plane and the planar-rotation change
-    # (aᵢ → cᵢaᵢ + sᵢnᵢ, nᵢ → −sᵢaᵢ + cᵢnᵢ):
-    #   Δ = Σᵢ [(cᵢ−1)αᵢ − sᵢβᵢ] aᵢ + [sᵢαᵢ + (cᵢ−1)βᵢ] nᵢ.
-    alpha = (a * Hn.unsqueeze(-1)).sum(dim=-2)     # (.., n)  aᵢᵀ Hn
-    beta = (n_dir * Hn.unsqueeze(-1)).sum(dim=-2)  # (.., n)  nᵢᵀ Hn
-    active = (s > _ROTATE_EPSILON).to(Hn.dtype)    # (.., n) skip sᵢ≈0 planes
-    d_a = ((c - 1.0) * alpha - s * beta) * active  # (.., n)
-    d_n = (s * alpha + (c - 1.0) * beta) * active  # (.., n)
-    delta = (
-        (a * d_a.unsqueeze(-2)).sum(dim=-1) + (n_dir * d_n.unsqueeze(-2)).sum(dim=-1)
-    )                                              # (.., R)
-    return Hn + delta
+    pairs = (
+        _principal_pairs_1d if n == 1
+        else _principal_pairs_2d if n == 2
+        else _principal_pairs_svd
+    )
+    return _rotate_planes(Hn, *pairs(qa, qb))
 
 
 def subspace_inject(
