@@ -176,7 +176,7 @@ test("models and saved chats share large headings with roomier library cards and
           await expect(card).toHaveCSS("padding", "16px");
           await expect(card).toHaveCSS("box-shadow", "none");
           await expect(card).toHaveCSS("background-image", "none");
-          await expect(page.getByRole("button", { name: "New Instance", exact: true })).toBeVisible();
+          await expect(page.locator(".hero-actions").getByRole("button", { name: "New chat", exact: true })).toBeVisible();
         }
         await expect(card).toHaveCSS("backdrop-filter", "none");
         const fit = await page.evaluate(() => {

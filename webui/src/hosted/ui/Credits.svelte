@@ -269,7 +269,8 @@
         <p>If Drowse helped your work, cite the version you used{releaseBuild ? " and this build's commit" : ""}, along with the exact model checkpoint.</p>
       </div>
       <div class="citation">
-        <pre bind:this={citationBlock} tabindex="-1"><code>{citation}</code></pre>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scrollable citation must be keyboard-accessible.) -->
+        <pre bind:this={citationBlock} tabindex="0" role="region" aria-label="BibTeX citation"><code>{citation}</code></pre>
         <div class="citation-actions">
           <Button onclick={copyCitation}><FluentIcon name="copy" /><MorphText text={citationStatus === "Citation copied." ? "Copied" : "Copy BibTeX"} /></Button>
           <span class="citation-status" role="status">{citationStatus}</span>

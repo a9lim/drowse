@@ -51,23 +51,23 @@ test("public headers keep visible branding aligned and navigation reachable", as
           const nav = el.querySelector("nav")!;
           const theme = el.querySelector(".appearance")!.getBoundingClientRect();
           const links = [...nav.querySelectorAll("a")].map(a => a.getBoundingClientRect().toJSON());
-          return { brand: brand.toJSON(), brandVisible: getComputedStyle(el.querySelector(".page-brand")!).visibility !== "hidden", theme: theme.toJSON(), links, scrollable: nav.scrollWidth > nav.clientWidth, overflow: document.documentElement.scrollWidth - innerWidth };
+          return { brand: brand.toJSON(), brandVisible: getComputedStyle(el.querySelector(".page-brand")!).visibility !== "hidden", separateRow: innerWidth <= 640, theme: theme.toJSON(), links, scrollable: nav.scrollWidth > nav.clientWidth, overflow: document.documentElement.scrollWidth - innerWidth };
         });
         expect(result.overflow).toBeLessThanOrEqual(1);
         for (const link of result.links) {
           expect(link.height).toBeGreaterThanOrEqual(40);
           expect(link.width).toBeGreaterThanOrEqual(40);
-          if (result.brandVisible) expect(link.y + link.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
+          if (result.separateRow) expect(link.y).toBeGreaterThanOrEqual(result.brand.y + result.brand.height - 1);
+          else if (result.brandVisible) expect(link.y + link.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
         }
         if (result.brandVisible) expect(result.theme.y + result.theme.height / 2).toBeCloseTo(result.brand.y + result.brand.height / 2, 0);
         if (width === 320) {
-          expect(result.brandVisible).toBe(false);
+          expect(result.brandVisible).toBe(true);
           expect(result.scrollable).toBe(false);
         }
       }).toPass({ timeout: 10_000 });
       if (width === 320) {
-        for (const name of ["Contribute", "Chats"]) {
-          const link = header.getByRole("link", { name, exact: true });
+        for (const link of await header.getByRole("navigation", { name: "Primary navigation" }).getByRole("link").all()) {
           await link.focus();
           await layoutFrame(page);
           expect(await link.evaluate(el => {
@@ -248,12 +248,13 @@ test("page entrances stagger semantic groups only after initial load and survive
     { group: "0", delay: "0s", name: "page-group-enter" },
     { group: "2", delay: "0.08s", name: "page-group-enter" },
   ]);
-  await home.getByRole("link", { name: "Models", exact: true }).evaluate(el => (el as HTMLAnchorElement).click());
+  await home.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Models", exact: true }).evaluate(el => (el as HTMLAnchorElement).click());
   await expect(models.locator('[data-page-group="1"]')).toHaveCSS("animation-delay", "0.04s");
   await expect(page.locator(".page-route")).toHaveCount(1);
   await expect(models).not.toHaveClass(/page-entering/);
   await expect(models).toHaveJSProperty("inert", false);
-  await expect.poll(() => models.evaluate(el => el.getAnimations({ subtree: true }).filter(a => a.playState === "running").length)).toBe(0);
+  // The sticky header's scroll timeline stays active after page transitions finish.
+  await expect.poll(() => models.evaluate(el => el.getAnimations({ subtree: true }).filter(a => a.playState === "running" && a.timeline === document.timeline && Number.isFinite(a.effect?.getTiming().iterations ?? 1)).length)).toBe(0);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await models.getByRole("link", { name: "Chats", exact: true }).click();
   await expect(page.locator(".page-route")).toHaveCount(1);

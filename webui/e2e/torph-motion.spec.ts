@@ -18,7 +18,7 @@ async function harness(page: Page) {
 test("morph text preserves current readable and selected text across rapid updates", async ({ page }) => {
   await harness(page);
   const display = page.getByTestId("display");
-  await expect(display.locator(".morph-text")).toHaveAttribute("data-morph-active", "");
+  await expect(display.locator(".morph-text")).not.toHaveAttribute("data-morph-active", "");
   for (const text of ["−0.01", "0.00", "+0.01", "9.99E-7", "1.00E-6", "10000", "Ready again"]) {
     await page.getByRole("textbox", { name: "Text to display" }).fill(text);
     await expect(display.locator(".morph-source")).toHaveText(text);
@@ -105,19 +105,27 @@ test("layer, trace and template scrubbing selects real data", async ({ page }) =
 
 for (const reducedMotion of ["no-preference", "reduce"] as const) {
   test(`reading values stay whole above the bar with ${reducedMotion} motion`, async ({ page }, info) => {
+    await page.clock.install();
     await page.emulateMedia({ reducedMotion });
     await harness(page);
     await page.evaluate(() => document.fonts.ready);
     const card = page.getByTestId("reading-card");
     const row = page.getByRole("group", { name: "Harness reading", exact: true });
+    await row.scrollIntoViewIfNeeded();
+    await expect(row.locator(".morph-text")).not.toHaveAttribute("data-morph-active", "");
+    // Sample the overlay before its completion callback restores the plain text.
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     for (const width of [180, 240, 320, 480]) {
       await card.evaluate((element, width) => element.style.width = `${width}px`, width);
-      for (const value of ["0.031", "1.000", "−0.031", "9.99e−7"]) {
+      for (const value of ["1.000", "−0.031", "9.99e−7", "0.031"]) {
         await page.getByRole("textbox", { name: "Reading value", exact: true }).fill(value);
-        await expect(row.locator(".morph-source")).toHaveText(value);
         await row.scrollIntoViewIfNeeded();
+        await page.clock.runFor(32);
+        await expect(row.locator(".morph-source")).toHaveText(value);
         if (reducedMotion === "no-preference") {
           await expect(row.locator(".morph-text")).toHaveAttribute("data-morph-active", "");
+        } else {
+          await expect(row.locator(".morph-text")).not.toHaveAttribute("data-morph-active", "");
         }
         await expect.poll(() => row.evaluate(element => {
           const source = element.querySelector(".morph-source")!;
@@ -138,13 +146,11 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
             && value.right <= bounds.right + 1 && value.bottom <= bar.top
             && element.scrollWidth <= element.clientWidth + 1 && paintFits;
         })).toBe(true);
+        await row.evaluate(element => element.getAnimations({ subtree: true }).forEach(animation => animation.finish()));
+        await page.clock.runFor(32);
       }
-      await page.getByRole("textbox", { name: "Reading value", exact: true }).fill("0.031");
-      if (reducedMotion === "no-preference") {
-        await expect(row.locator(".morph-text")).toHaveAttribute("data-morph-active", "");
-        await expect.poll(() => row.evaluate(element => element.getAnimations({ subtree: true })
-          .every(animation => animation.playState !== "running"))).toBe(true);
-      }
+      await page.clock.runFor(500);
+      await expect(row.locator(".morph-text")).not.toHaveAttribute("data-morph-active", "");
       await card.screenshot({ path: info.outputPath(`reading-${width}-${reducedMotion}.png`) });
     }
   });
@@ -155,8 +161,8 @@ test("landing demonstration remains labeled and usable at phone widths", async (
   await page.setViewportSize({width:320,height:900});
   const demo=page.getByRole("region", {name:"Recorded Drowse example"});
   await expect(demo).toContainText("Welcoming influence");
-  await demo.getByRole("slider", {name:"Recorded welcoming setting"}).focus();
-  await demo.getByRole("slider", {name:"Recorded welcoming setting"}).press("End");
+  await demo.getByRole("slider", {name:"Welcoming influence", exact: true}).focus();
+  await demo.getByRole("slider", {name:"Welcoming influence", exact: true}).press("End");
   await expect.poll(() => demo.locator(".result").evaluate(element => {
     const copy = element.cloneNode(true) as HTMLElement;
     copy.querySelectorAll('[aria-hidden="true"]').forEach(node => node.remove());
@@ -165,7 +171,7 @@ test("landing demonstration remains labeled and usable at phone widths", async (
   await demo.getByRole("button", {name:"Inspect",exact:true}).click();
   await expect.poll(async () => (await demo.locator(".token-text .morph-source").allTextContents()).join(""))
     .toContain("Come find us sometime");
-  await demo.getByRole("slider", {name:"Recorded welcoming setting"}).press("ArrowLeft");
+  await demo.getByRole("slider", {name:"Welcoming influence", exact: true}).press("ArrowLeft");
   await expect.poll(async () => (await demo.locator(".token-text .morph-source").allTextContents()).join(""))
     .toContain("moving can be a big change");
   expect(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth+1)).toBe(true);

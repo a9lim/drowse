@@ -6,7 +6,7 @@ const devUrl = "http://127.0.0.1:4176";
 
 for (const motion of ["reduce", "no-preference"] as const) {
 test(`theme changes update inherited recorded-demo text colors (${motion})`, async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: motion });
+  await page.emulateMedia({ reducedMotion: motion, colorScheme: "dark" });
   await page.goto(`${devUrl}/`);
   await expect(page.locator(".demo-panel .result .morph-source").first()).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
@@ -14,7 +14,8 @@ test(`theme changes update inherited recorded-demo text colors (${motion})`, asy
     await page.setViewportSize({ width, height: 900 });
     if (motion === "no-preference") {
       await page.locator(".demo-panel").scrollIntoViewIfNeeded();
-      await expect(page.locator(".demo-panel .morph-text[data-morph-active]").first()).toBeVisible();
+      // Idle text returns to the ordinary DOM after its initial paint settles.
+      await expect(page.locator(".demo-panel .morph-text[data-morph-active]")).toHaveCount(0);
     }
     for (const theme of ["light", "dark", "light", "dark"]) {
       await page.evaluate(async ({ url, theme }) => {
@@ -41,11 +42,11 @@ test(`theme changes update inherited recorded-demo text colors (${motion})`, asy
 async function expectIcon(button: Locator, theme: "light" | "dark") {
   await expect(button).toHaveAccessibleName(`Switch to ${theme === "dark" ? "light" : "dark"} theme`);
   await expect(button.locator("svg")).toHaveCount(1);
-  await expect(button.locator("svg")).toHaveAttribute("data-theme-icon", theme === "dark" ? "moon" : "sunny");
+  await expect(button.locator("svg")).toHaveAttribute("data-theme-icon", theme === "dark" ? "sunny" : "moon");
   await expect(button.locator("svg")).toHaveCSS("width", "21px");
   await expect(button.locator("svg")).toHaveCSS("height", "21px");
-  await expect(button.locator("clipPath circle")).toHaveAttribute("r", theme === "dark" ? "8" : "5");
-  await expect(button.locator(".rays")).toHaveAttribute("opacity", theme === "dark" ? "0" : "1");
+  await expect(button.locator("clipPath circle")).toHaveAttribute("r", theme === "dark" ? "5" : "8");
+  await expect(button.locator(".rays")).toHaveAttribute("opacity", theme === "dark" ? "1" : "0");
   await expect(button).toHaveCSS("background-image", "none");
   const rect = await button.boundingBox();
   expect(rect!.width).toBeGreaterThanOrEqual(44);
@@ -53,7 +54,7 @@ async function expectIcon(button: Locator, theme: "light" | "dark") {
 }
 
 test("one theme button works on every public surface and screen size", async ({ page }, testInfo) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" });
   for (const path of ["/", "/credits", "/contact", "/missing-page", "/app?layoutFixture=setup"]) {
     await page.goto(`${devUrl}${path}`);
     const button = page.locator(".theme-toggle button");
@@ -75,7 +76,7 @@ test("one theme button works on every public surface and screen size", async ({ 
 });
 
 test("workbench menu and appearance drawer use the same theme control", async ({ page, browserName }) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" });
   await page.goto(`${devUrl}/app?layoutFixture=base`);
   await openWorkspaceMenu(page);
   const menu = page.getByRole("dialog", { name: "Workspace menu", exact: true });
@@ -105,7 +106,7 @@ test("workbench menu and appearance drawer use the same theme control", async ({
 
 for (const fallback of [false, true]) {
   test(`SVG geometry morphs through intermediate states${fallback ? " without view transitions" : " during page transitions"}`, async ({ page }, testInfo) => {
-    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: "dark" });
     await page.clock.install();
     await page.goto(`${devUrl}/`);
     if (fallback) await page.evaluate(() => Object.defineProperty(document, "startViewTransition", { value: undefined }));
@@ -113,23 +114,23 @@ for (const fallback of [false, true]) {
     await expectIcon(button, "dark");
     await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await button.click();
-    await expect(button.locator("svg")).toHaveAttribute("data-theme-icon", "sunny");
-    await page.clock.runFor(160);
-    const sunRadius = Number(await button.locator("clipPath circle").getAttribute("r"));
-    expect(sunRadius).toBeGreaterThan(5);
-    expect(sunRadius).toBeLessThan(8);
-    await page.clock.runFor(400);
-    await expectIcon(button, "light");
-    await button.screenshot({ path: testInfo.outputPath(`sun-${fallback}.png`) });
-    await button.click();
     await expect(button.locator("svg")).toHaveAttribute("data-theme-icon", "moon");
     await page.clock.runFor(160);
     const moonRadius = Number(await button.locator("clipPath circle").getAttribute("r"));
     expect(moonRadius).toBeGreaterThan(5);
     expect(moonRadius).toBeLessThan(8);
     await page.clock.runFor(400);
-    await expectIcon(button, "dark");
+    await expectIcon(button, "light");
     await button.screenshot({ path: testInfo.outputPath(`moon-${fallback}.png`) });
+    await button.click();
+    await expect(button.locator("svg")).toHaveAttribute("data-theme-icon", "sunny");
+    await page.clock.runFor(160);
+    const sunRadius = Number(await button.locator("clipPath circle").getAttribute("r"));
+    expect(sunRadius).toBeGreaterThan(5);
+    expect(sunRadius).toBeLessThan(8);
+    await page.clock.runFor(400);
+    await expectIcon(button, "dark");
+    await button.screenshot({ path: testInfo.outputPath(`sun-${fallback}.png`) });
     await page.emulateMedia({ reducedMotion: "reduce" });
     await button.click();
     await expectIcon(button, "light");

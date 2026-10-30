@@ -175,12 +175,12 @@
             Run a language model on your device. Inspect its predictions and test
             how changes to its internal activity affect its replies.
           </p>
-          <p class="audience">For researchers, students, educators, and anyone curious about how language models work.</p>
           <div class="hero-action-row">
             <a class="primary-action" href="/app">Open Drowse</a>
             <span class="requirement" data-webgpu={webGpu}>{requirement}</span>
           </div>
           <p class="trust-line">Open source. Inference and saved work stay on your device. <a href="/privacy">What leaves your device <span aria-hidden="true">→</span></a></p>
+          <p class="audience">For researchers, students, educators, and anyone curious about how language models work.</p>
         </div>
       </section>
 

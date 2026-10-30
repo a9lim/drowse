@@ -255,7 +255,7 @@ async function setFixtureTokenDelay(page: Page, delay: number): Promise<void> {
 
 async function continueFromChatHome(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.locator(".hero-actions").getByRole("button", { name: "Continue with Qwen3 1.7B fixture", exact: true }).click();
 }
 
 async function savedConversationAvatarSeed(page: Page, name: string): Promise<string | null> {
@@ -301,7 +301,7 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   await returnToChats(page);
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   const card = page.locator(`[data-saved-conversation="${original.id}"]`);
-  const avatar = card.getByRole("button", { name: /Generate another avatar/ });
+  const avatar = card.getByRole("button", { name: `New avatar for ${original.name}. You can undo this.`, exact: true });
   await expect.poll(() => avatar.locator("img").evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
   const oldImage = await avatar.locator("img").getAttribute("src");
   await avatar.click();
@@ -756,9 +756,14 @@ test("landing page routes into the hosted app", async ({ page }) => {
     "href",
     "/app",
   );
-  await expect(page.getByText("Open source. Inference and saved work stay on your device.", { exact: true })).toBeVisible();
-  await expect(page.locator(".hero-action-row > span")).toHaveText("Chrome or Safari · compatible device required");
-  await expect(page.getByRole("button", { name: "Pause background animation" })).toHaveCount(0);
+  await expect(page.locator(".trust-line")).toContainText("Open source. Inference and saved work stay on your device.");
+  await expect(page.locator(".trust-line").getByRole("link", { name: "What leaves your device" })).toHaveAttribute("href", "/privacy");
+  const requirement = page.locator(".hero-action-row > span");
+  await expect(requirement).toHaveAttribute("data-webgpu", /^(available|unavailable)$/);
+  await expect(requirement).toHaveText(await requirement.getAttribute("data-webgpu") === "available"
+    ? "WebGPU is available in this browser. Drowse checks your device's memory next."
+    : "This browser can't run Drowse yet. Try a current version of Chrome, Edge or Safari 26 or later on a computer with a graphics processor.");
+  await expect(page.getByRole("button", { name: "Pause background animation", exact: true })).toBeVisible();
   await page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" }).click();
   await expect(page).toHaveURL(/\/app$/);
   expect(pageErrors).toEqual([]);
@@ -950,7 +955,7 @@ test("unknown paths render the hosted 404", async ({ page }) => {
   await expect(
     page.getByRole("region", { name: "Page not found", exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute(
+  await expect(page.getByRole("region", { name: "Page not found", exact: true }).getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute(
     "href",
     "/app",
   );
@@ -987,17 +992,18 @@ test("first-run offline notice does not cover the mobile primary action and rest
   const notice = page.getByRole("status").filter({ hasText: "The interface is ready offline." });
   await expect(notice).toBeVisible({ timeout: 15_000 });
   const primary = page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" });
-  const [noticeBox, primaryBox] = await Promise.all([notice.boundingBox(), primary.boundingBox()]);
-  expect(noticeBox).not.toBeNull();
-  expect(primaryBox).not.toBeNull();
-  expect(noticeBox!.y).toBeGreaterThanOrEqual(0);
-  expect(noticeBox!.y + noticeBox!.height).toBeLessThanOrEqual(844);
-  expect(
-    noticeBox!.x < primaryBox!.x + primaryBox!.width &&
-      noticeBox!.x + noticeBox!.width > primaryBox!.x &&
-      noticeBox!.y < primaryBox!.y + primaryBox!.height &&
-      noticeBox!.y + noticeBox!.height > primaryBox!.y,
-  ).toBe(false);
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(async () => {
+      const [noticeBox, primaryBox] = await Promise.all([notice.boundingBox(), primary.boundingBox()]);
+      if (!noticeBox || !primaryBox) return false;
+      const overlaps = noticeBox.x < primaryBox.x + primaryBox.width &&
+        noticeBox.x + noticeBox.width > primaryBox.x &&
+        noticeBox.y < primaryBox.y + primaryBox.height &&
+        noticeBox.y + noticeBox.height > primaryBox.y;
+      return noticeBox.y >= 0 && noticeBox.y + noticeBox.height <= 844 && !overlaps;
+    }).toBe(true);
+  }
 
   await primary.focus();
   const dismiss = notice.getByRole("button", { name: "Dismiss" });
@@ -1015,7 +1021,7 @@ test("dismissing the landing notice does not make the hero a selectable focus co
   await notice.getByRole("button", { name: "Dismiss" }).click();
   await expect(notice).toHaveCount(0);
   await expect(page.locator(".hero .primary-action")).toBeFocused();
-  await expect(page.locator("main")).not.toHaveAttribute("tabindex");
+  await expect(page.locator("main")).toHaveAttribute("tabindex", "-1");
   await expect(page.locator("main")).toHaveCSS("outline-style", "none");
 });
 
@@ -1401,7 +1407,7 @@ test("models without an SAE say that no SAE is available", async ({ page }) => {
   await page.getByRole("group", { name: "Response guidance type" })
     .getByRole("button", { name: "SAE", exact: true }).click();
   await expect(page.getByLabel("Model feature controls").getByText(
-    "No SAE is available for this model",
+    "No compatible SAE pack is published for this model.",
     { exact: true },
   )).toBeVisible();
 
@@ -2541,7 +2547,8 @@ test("deleting the active model unloads it and removes its files while preservin
   await installedModels.getByRole("button", { name: "Delete model", exact: true }).click();
 
   await page.waitForURL(`${devUrl}/app?fixture=1&choose=1`);
-  await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("drowse.entry.v1"))).toBeNull();
+  await expect(page.getByRole("heading", { name: "Choose your first model", exact: true })).toBeVisible();
   await expect.poll(async () => fixtureDeletionSnapshot(page)).toEqual({
     install: null,
     session: expect.objectContaining({

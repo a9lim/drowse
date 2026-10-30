@@ -26,11 +26,11 @@ for (const theme of ["light", "dark"]) {
     await page.keyboard.press("Enter");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme === "light" ? "dark" : "light");
     await expect(toggle.locator("svg")).toHaveCount(1);
-    await expect(toggle.locator("clipPath circle")).toHaveAttribute("r", theme === "light" ? "8" : "5");
+    await expect(toggle.locator("clipPath circle")).toHaveAttribute("r", theme === "light" ? "5" : "8");
     expect(await button.boundingBox()).toEqual(before);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.keyboard.press("Space");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-    await expect(toggle.locator("clipPath circle")).toHaveAttribute("r", theme === "light" ? "5" : "8");
+    await expect(toggle.locator("clipPath circle")).toHaveAttribute("r", theme === "light" ? "8" : "5");
   });
 }

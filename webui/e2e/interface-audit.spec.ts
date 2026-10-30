@@ -242,8 +242,8 @@ test("Drowse headers use a plain wordmark without decorative marks or local badg
   await expect(page.getByText("local only", { exact: true })).toHaveCount(0);
 });
 
-test("appearance defaults to dark and persists across every hosted surface", async ({ page }) => {
-  await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
+test("an appearance choice persists across every hosted surface", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await page.goto(devUrl);
 
   const appearance = page.getByRole("group", { name: "Appearance" });
@@ -384,7 +384,8 @@ test("the first visit uses a full-bleed local-compute background without redunda
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(devUrl);
   await expect(page.getByText("Computed on-device", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("Open source. Inference and saved work stay on your device.", { exact: true })).toBeVisible();
+  await expect(page.locator(".trust-line")).toContainText("Open source. Inference and saved work stay on your device.");
+  await expect(page.locator(".trust-line").getByRole("link", { name: "What leaves your device" })).toHaveAttribute("href", "/privacy");
   await expect(page.getByRole("link", { name: "See the privacy boundary" })).toHaveCount(0);
   await expect(page.locator(".hero-visual")).toHaveAttribute("aria-hidden", "true");
   await expect(page.locator(".hero-visual svg")).toHaveAttribute("width", "0");

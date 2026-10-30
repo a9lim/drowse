@@ -21,13 +21,13 @@ test("first use chooses a model and later visits open the chat home", async ({ p
 
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "New Instance", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeVisible();
+  await expect(page.locator(".home-shell .hero").getByRole("button", { name: "New chat", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Continue with / })).toBeVisible();
   await expect(page.getByRole("heading", { name: "This device is ready" })).toHaveCount(0);
 
-  await page.getByRole("link", { name: "Models", exact: true }).click();
+  await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Models", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
-  await page.locator('.page-route[data-route="models"]').getByRole("link", { name: "Chats", exact: true }).click();
+  await page.locator('.page-route[data-route="models"]').getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Chats", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
 });
 
@@ -189,7 +189,7 @@ test("returning home remains usable at narrow phone widths", async ({ page }) =>
     await page.goto(`${devUrl}/app?fixture=1`);
     await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Download a model", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Models", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Models", exact: true })).toBeVisible();
     expect(await page.evaluate(() =>
       document.documentElement.scrollWidth <= window.innerWidth + 1
     )).toBe(true);

@@ -153,7 +153,10 @@ test("desktop landing documents supported browsers and supplies runtime prerequi
   }
 
   const browserSupport = page.locator(".hero-action-row > span");
-  await expect(browserSupport).toHaveText("Chrome or Safari · compatible device required");
+  await expect(browserSupport).toHaveAttribute("data-webgpu", /^(available|unavailable)$/);
+  await expect(browserSupport).toHaveText(await browserSupport.getAttribute("data-webgpu") === "available"
+    ? "WebGPU is available in this browser. Drowse checks your device's memory next."
+    : "This browser can't run Drowse yet. Try a current version of Chrome, Edge or Safari 26 or later on a computer with a graphics processor.");
   expect(pageErrors).toEqual([]);
 });
 

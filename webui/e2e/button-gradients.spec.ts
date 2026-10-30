@@ -11,8 +11,12 @@ async function expectGradients(page: Page) {
 
 test("filled actions have visible but restrained top-down shading", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.addLocatorHandler(page.locator(".pwa-notice.passive"), async notice => {
+    await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
+  });
   await page.goto("/credits");
-  const action = page.getByRole("link", { name: "Contribute on GitHub" });
+  const action = page.getByRole("link", { name: "Ways to contribute", exact: true });
+  await expect(action).toHaveAttribute("href", "/contribute");
   for (const theme of ["light", "dark"]) {
     await setAppearance(page, theme);
     for (const width of [1440, 390]) {

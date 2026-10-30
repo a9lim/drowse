@@ -121,9 +121,10 @@ test("the recovery button repairs a repeat-on-reload failure without removing sa
   await breakCachedShell(page, true);
   await page.evaluate(async () => {
     localStorage.setItem("drowse.saved-data-test", "keep chats");
-    for (const name of ["webllm/model", "webllm/wasm", "unrelated-cache", "drowse-hosted-on-demand-wasm-v1"]) {
+    for (const name of ["webllm/model", "webllm/wasm", "unrelated-cache"]) {
       await (await caches.open(name)).put("/keep-model", new Response("keep model"));
     }
+    await (await caches.open("drowse-hosted-on-demand-wasm-v1")).put("/stale-app-code.wasm", new Response("stale app code"));
     await new Promise<void>((resolve, reject) => {
       const request = indexedDB.open("drowse-saved-conversations", 1);
       request.onupgradeneeded = () => request.result.createObjectStore("conversations");
@@ -137,21 +138,25 @@ test("the recovery button repairs a repeat-on-reload failure without removing sa
       };
     });
   });
-  const cachedModels = () => page.evaluate(async () => Promise.all(["webllm/model", "webllm/wasm", "unrelated-cache", "drowse-hosted-on-demand-wasm-v1"].map(async name =>
+  const cachedModels = () => page.evaluate(async () => Promise.all(["webllm/model", "webllm/wasm", "unrelated-cache"].map(async name =>
     (await (await caches.open(name)).match("/keep-model"))?.text())));
-  expect(await cachedModels()).toEqual(Array(4).fill("keep model"));
+  expect(await cachedModels()).toEqual(Array(3).fill("keep model"));
   await page.reload();
   await expect(page.getByRole("heading", { name: "Drowse could not open" })).toBeVisible();
-  expect(await cachedModels()).toEqual(Array(4).fill("keep model"));
+  expect(await cachedModels()).toEqual(Array(3).fill("keep model"));
   await page.reload();
   await expect(page.getByRole("heading", { name: "Drowse could not open" })).toBeVisible();
-  expect(await cachedModels()).toEqual(Array(4).fill("keep model"));
+  expect(await cachedModels()).toEqual(Array(3).fill("keep model"));
+  expect(await page.evaluate(async () => (await (await caches.open("drowse-hosted-on-demand-wasm-v1")).match("/stale-app-code.wasm"))?.text())).toBe("stale app code");
   await page.getByRole("button", { name: "Reload Drowse", exact: true }).click();
   await expect(page.locator("#hero-title")).toBeVisible();
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("deleted-test-caches") ?? "[]"))).toEqual([expect.stringMatching(/^drowse-hosted-precache-v2-/)]);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("deleted-test-caches") ?? "[]"))).toEqual([
+    expect.stringMatching(/^drowse-hosted-precache-v2-/), "drowse-hosted-on-demand-wasm-v1",
+  ]);
+  expect(await page.evaluate(async () => (await caches.open("drowse-hosted-on-demand-wasm-v1")).match("/stale-app-code.wasm").then(Boolean))).toBe(false);
   expect(await page.evaluate(async () => ({
     local: localStorage.getItem("drowse.saved-data-test"),
-    cached: await Promise.all(["webllm/model", "webllm/wasm", "unrelated-cache", "drowse-hosted-on-demand-wasm-v1"].map(async name =>
+    cached: await Promise.all(["webllm/model", "webllm/wasm", "unrelated-cache"].map(async name =>
       (await (await caches.open(name)).match("/keep-model"))?.text())),
     chat: await new Promise(resolve => {
       const request = indexedDB.open("drowse-saved-conversations", 1);
@@ -161,7 +166,7 @@ test("the recovery button repairs a repeat-on-reload failure without removing sa
         read.onsuccess = () => { db.close(); resolve(read.result); };
       };
     }),
-  }))).toEqual({ local: "keep chats", cached: Array(4).fill("keep model"), chat: "keep conversation" });
+  }))).toEqual({ local: "keep chats", cached: Array(3).fill("keep model"), chat: "keep conversation" });
 });
 
 test("offline recovery keeps the cached app and gives an actionable retry", async ({ context, page }) => {

@@ -9,9 +9,13 @@ const storesUrl = moduleUrl("src/lib/stores.svelte.ts");
 
 test.describe.configure({ mode: "parallel" });
 
+const appEntryUrl = (page: Page) => page.locator('script[type="module"][src*="/main.ts"]')
+  .evaluate(script => (script as HTMLScriptElement).src);
+
 async function openPage(page: Page, path: string) {
   await page.goto(`${devUrl}${path}`);
-  await page.evaluate(async () => { await import("/main.ts"); });
+  // Vite adds a timestamp after source edits; importing the bare path would mount a second app.
+  await page.evaluate(async url => { await import(url); }, await appEntryUrl(page));
 }
 
 async function setTheme(page: Page, theme: string) {
@@ -79,9 +83,9 @@ async function expectActionContrast(button: Locator, label: string) {
 
 async function mountStorageHome(page: Page) {
   await openPage(page, "/outside-the-workbench");
-  await page.evaluate(async ({ componentUrl, libraryUrl }) => {
+  await page.evaluate(async ({ componentUrl, libraryUrl, entryUrl }) => {
     const [{ default: HostedHome }, { mount, unmount }, { conversationLibrary }, { default: app }] = await Promise.all([
-      import(componentUrl), import("/e2e/svelte-runtime.ts"), import(libraryUrl), import("/main.ts"),
+      import(componentUrl), import("/e2e/svelte-runtime.ts"), import(libraryUrl), import(entryUrl),
     ]);
     await unmount(app);
     conversationLibrary.listSummaries = async () => ({ conversations: [], issues: [] });
@@ -104,6 +108,7 @@ async function mountStorageHome(page: Page) {
   }, {
     componentUrl: moduleUrl("src/hosted/ui/HostedHome.svelte"),
     libraryUrl: moduleUrl("src/lib/stores/savedConversations.svelte.ts"),
+    entryUrl: await appEntryUrl(page),
   });
 }
 
@@ -196,9 +201,9 @@ for (const theme of ["dark", "light"]) {
   test(`disabled button labels remain discernible in ${theme}`, async ({ page }, testInfo) => {
     await openPage(page, "/outside-the-workbench");
     await setTheme(page, theme);
-    await page.evaluate(async ({ buttonUrl, numberUrl }) => {
+    await page.evaluate(async ({ buttonUrl, numberUrl, entryUrl }) => {
       const [{ mount, unmount, createRawSnippet }, { default: Button }, { default: NumberInput }, { default: app }] = await Promise.all([
-        import("/e2e/svelte-runtime.ts"), import(buttonUrl), import(numberUrl), import("/main.ts"),
+        import("/e2e/svelte-runtime.ts"), import(buttonUrl), import(numberUrl), import(entryUrl),
       ]);
       await unmount(app);
       document.body.replaceChildren();
@@ -209,7 +214,7 @@ for (const theme of ["dark", "light"]) {
         mount(Button, { target, props: { variant, disabled: true, children: createRawSnippet(() => ({ render: () => `<span>${variant}</span>` })) } });
       }
       mount(NumberInput, { target, props: { value: 42, disabled: true, ariaLabel: "Disabled numeric value" } });
-    }, { buttonUrl: moduleUrl("src/lib/ui/Button.svelte"), numberUrl: moduleUrl("src/lib/NumberInput.svelte") });
+    }, { buttonUrl: moduleUrl("src/lib/ui/Button.svelte"), numberUrl: moduleUrl("src/lib/NumberInput.svelte"), entryUrl: await appEntryUrl(page) });
     await expect(page.getByRole("spinbutton", { name: "Disabled numeric value" })).toBeDisabled();
     await expect(page.locator(".sk-number")).toHaveCSS("opacity", "0.65");
     await expect(page.locator(".sk-number-input")).toHaveCSS("opacity", "1");

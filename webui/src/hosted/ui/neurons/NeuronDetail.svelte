@@ -83,8 +83,8 @@
   <header class="detail-head">
     {#if overview[0] || overview[1]}
       <dl class="overview">
-        <div><dt>Triggered by:</dt><dd><MorphText text={overview[0] || "unclear"} numbers={false} duration={280} /></dd></div>
-        <div><dt>Steers outputs:</dt><dd><MorphText text={overview[1] || "unclear"} numbers={false} duration={280} /></dd></div>
+        <div><dt>Triggered by:</dt><dd><TitleText text={overview[0]} fallback="unclear" interactive /></dd></div>
+        <div><dt>Steers outputs:</dt><dd><TitleText text={overview[1]} fallback="unclear" interactive /></dd></div>
       </dl>
     {/if}
     <p class="titles">

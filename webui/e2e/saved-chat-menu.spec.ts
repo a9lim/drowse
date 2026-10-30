@@ -104,8 +104,8 @@ test("chat options preserve the palette and fit phone, desktop, and enlarged tex
   await page.setViewportSize({ width: 390, height: 900 });
   await page.evaluate(() => document.documentElement.style.fontSize = "200%");
   await trigger(page).click();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await expect(menu(page).getByRole("menuitem", { name: "Delete", exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect((await new AxeBuilder({ page }).include(".chat-card").analyze()).violations).toEqual([]);
   expect(errors).toEqual([]);
 });
@@ -158,6 +158,7 @@ test("options support keyboard, outside dismissal, one open menu, and viewport-e
 });
 
 test("duplicate stays single-flight and delete requires a separate confirmation", async ({ page }) => {
+  await page.clock.install();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await mountHome(page);
   await page.evaluate(() => (window as any).__chatMenu.holdDuplicate = true);
@@ -181,11 +182,24 @@ test("duplicate stays single-flight and delete requires a separate confirmation"
   await menu(page).getByRole("menuitem", { name: "Delete", exact: true }).click();
   await firstCard(page).getByRole("button", { name: "Delete chat", exact: true }).click();
   await expect(firstCard(page)).toHaveCount(0);
-  expect(await page.evaluate(() => (window as any).__chatMenu.deletions)).toEqual(["chat-0"]);
+  expect(await page.evaluate(() => (window as any).__chatMenu.deletions)).toEqual([]);
   await expect(page.locator('[data-saved-conversation="chat-1"] .chat-menu-trigger')).toBeFocused();
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(firstCard(page)).toBeVisible();
+  await page.clock.fastForward(10_001);
+  expect(await page.evaluate(() => (window as any).__chatMenu.deletions)).toEqual([]);
+  await trigger(page).click();
+  await menu(page).getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await firstCard(page).getByRole("button", { name: "Delete chat", exact: true }).click();
+  await expect(firstCard(page)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Undo", exact: true })).toBeVisible();
+  await page.clock.fastForward(10_001);
+  await expect.poll(() => page.evaluate(() => (window as any).__chatMenu.deletions)).toEqual(["chat-0"]);
+  await expect(firstCard(page)).toHaveCount(0);
 });
 
 test("failed duplicate and delete retain the chat and allow retry", async ({ page }) => {
+  await page.clock.install();
   await page.emulateMedia({ reducedMotion: "reduce" });
   await mountHome(page);
   await page.evaluate(() => (window as any).__chatMenu.failDuplicate = true);
@@ -198,9 +212,16 @@ test("failed duplicate and delete retain the chat and allow retry", async ({ pag
   await trigger(page).click();
   await menu(page).getByRole("menuitem", { name: "Delete", exact: true }).click();
   await firstCard(page).getByRole("button", { name: "Delete chat", exact: true }).click();
+  await expect(firstCard(page)).toHaveCount(0);
+  await page.clock.fastForward(10_001);
   await expect(page.getByRole("alert").filter({ hasText: "Delete unavailable" })).toBeVisible();
-  await expect(firstCard(page).getByRole("button", { name: "Delete chat", exact: true })).toBeEnabled();
+  await expect(trigger(page)).toBeEnabled();
   await expect(page.locator("[data-saved-conversation]")).toHaveCount(2);
-  await firstCard(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(trigger(page)).toBeFocused();
+  await page.evaluate(() => (window as any).__chatMenu.failDelete = false);
+  await trigger(page).click();
+  await menu(page).getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await firstCard(page).getByRole("button", { name: "Delete chat", exact: true }).click();
+  await page.clock.fastForward(10_001);
+  await expect.poll(() => page.evaluate(() => (window as any).__chatMenu.deletions)).toEqual(["chat-0", "chat-0"]);
+  await expect(firstCard(page)).toHaveCount(0);
 });

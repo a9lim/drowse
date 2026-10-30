@@ -22,9 +22,13 @@ test("new chat separates all model types without clipping and keeps downloads in
       ["pythia-base", "Pythia 70M Deduped Base", "base", true],
       ["gpt-base", "GPT-2 Base (124M)", "base", true],
       ["qwen-base", "Qwen 3.5 2B Base", "base", true],
-    ].map(([id, name, modelType, setupComplete]) => ({ id, modelId: id, name, modelType, setupComplete, fit: "supported" }));
+    ].map(([id, name, modelType, setupComplete]) => ({
+      id, modelId: id, name, modelType, setupComplete, fit: "eligible", tier: "fastest",
+      firstRunPacks: [], firstRunBytes: 1_000_000_000, remainingDownloadBytes: setupComplete ? 0 : 1_000_000_000,
+    }));
     mount(HostedHome, { target, props: {
       controller: {
+        current: () => ({ models, runtime: { available: true } }),
         capabilities: () => ({ signals: { appleMobile: false } }),
         retryPersistence: async () => false,
         check: async () => {},
@@ -40,7 +44,7 @@ test("new chat separates all model types without clipping and keeps downloads in
       onChooseModels(id) { document.body.dataset.chosen = id; },
     } });
   }, `/@fs/${resolve("src/hosted/ui/HostedHome.svelte")}`);
-  await page.getByRole("button", { name: "New Instance", exact: true }).click();
+  await page.locator(".hero-actions").getByRole("button", { name: "New chat", exact: true }).click();
   const chooser = page.getByRole("region", { name: "Choose a model", exact: true });
   await expect(chooser.getByRole("region", { name: "Chat models", exact: true }).getByRole("button")).toHaveCount(4);
   await expect(chooser.getByRole("region", { name: "Base models", exact: true }).locator(".model-choices button")).toHaveCount(4);
@@ -68,7 +72,7 @@ test("new chat separates all model types without clipping and keeps downloads in
   await page.keyboard.press("Escape");
   await page.mouse.move(0, 0);
   await expect(tooltip).toBeHidden();
-  await chooser.getByRole("button", { name: "Qwen3 4B Click to download", exact: true }).focus();
+  await chooser.getByRole("button", { name: "Qwen3 4B", exact: true }).focus();
   await page.keyboard.press("Tab");
   await expect(help).toBeFocused();
   await expect(tooltip).toBeVisible();
@@ -78,12 +82,12 @@ test("new chat separates all model types without clipping and keeps downloads in
   await expect(tooltip).toBeHidden();
   const download = chooser.locator('[data-model-id="gemma-chat"] .model-choice-button');
   await download.click();
-  await expect(download).toContainText("Click again to download");
+  await expect(download).toContainText("Select again to confirm");
   expect(await page.locator("body").getAttribute("data-downloaded")).toBeNull();
   await download.click();
   await expect(page.locator("body")).toHaveAttribute("data-downloaded", "gemma-chat");
   expect(await page.locator("body").getAttribute("data-chosen")).toBeNull();
-  await chooser.getByRole("button", { name: "Gemma 3 1B PT Ready to use", exact: true }).click();
+  await chooser.getByRole("button", { name: "Gemma 3 1B PT", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Start a new chat with Gemma 3 1B PT?" })).toBeVisible();
   await page.getByRole("button", { name: "Start new chat", exact: true }).click();
   await expect(page.locator("body")).toHaveAttribute("data-opened", JSON.stringify({ id: "gemma-base", options: { resetSession: true } }));

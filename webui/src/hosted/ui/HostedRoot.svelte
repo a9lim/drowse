@@ -241,7 +241,7 @@
 
   function trackRemovedModels(snapshot: HostedShellSnapshot): void {
     if (snapshot.phase !== "supported") return;
-    const installed = new Set(snapshot.models.filter(model => model.setupComplete).map(model => model.id));
+    const installed = new Set(snapshot.models.filter(model => model.installed).map(model => model.id));
     const previous = installedModelIds;
     installedModelIds = installed;
     if (!previous) return;
@@ -461,6 +461,7 @@
       if (snapshot.runtime.phase === "ready") {
         const modelVariantId = snapshot.runtime.modelVariantId ?? snapshot.selectedModelVariantId;
         if (modelVariantId) rememberCompletedOnboarding(modelVariantId);
+        firstRun = false;
         prepareWorkbenchUrl();
         runtimeRecovery = null;
         void mountWorkbench();

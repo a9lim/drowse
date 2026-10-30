@@ -89,9 +89,12 @@ export function tokenHover(root: HTMLElement) {
   const over = (event: Event) => {
     const token = (event.target as Element | null)?.closest?.<HTMLElement>(".tok, .zh-term");
     if (token && root.contains(token)) enter(token);
-    else if (current) leave();
+    else if (current && !current.contains(document.activeElement)) leave();
   };
   const out = (event: PointerEvent | FocusEvent) => {
+    // Focus-driven scrolling also changes the element under a stationary pointer.
+    // Those pointer events must not dismiss the keyboard user's focused glossary.
+    if (event.type === "pointerout" && current?.contains(document.activeElement)) return;
     const next = event.relatedTarget as Element | null;
     // The pointer may move onto the gloss itself to read it (WCAG 1.4.13).
     if (next && tip.contains(next)) return;
@@ -108,7 +111,14 @@ export function tokenHover(root: HTMLElement) {
     else leave();
   };
   const key = (event: KeyboardEvent) => { if (event.key === "Escape") leave(); };
-  const scroll = () => { if (current) leave(); };
+  const scroll = () => {
+    if (!current) return;
+    // Moving to a term can scroll it into view. Keep the glossary attached while
+    // it still has focus or the pointer, and dismiss it when it leaves the viewport.
+    const box = current.getBoundingClientRect();
+    if ((current.contains(document.activeElement) || current.matches(":hover")) && box.bottom > 0 && box.top < window.innerHeight) showTip(current);
+    else leave();
+  };
 
   root.addEventListener("pointerover", over);
   root.addEventListener("pointerout", out);

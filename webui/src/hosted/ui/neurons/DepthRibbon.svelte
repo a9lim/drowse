@@ -1,4 +1,5 @@
 <script lang="ts">
+  import TitleText from "./TitleText.svelte";
   import { BANDS, BAND_ORDER, bandOf, depthColor, neuronId, type CatalogIndex, type IndexRow } from "./data";
 
   let { index, layer, neuron, highlight, onlayer, onneuron, scores = null, peek }: {
@@ -285,16 +286,16 @@
         {#if everyNeuron && hoverNeuron !== null}
           <strong>{neuronId(hover.layer, hoverNeuron)}</strong>
           {#if peeked?.[6] || peeked?.[7]}
-            <span class="tip-over"><em>Triggered by:</em>{peeked[6] || "unclear"}</span>
-            <span class="tip-over"><em>Steers outputs:</em>{peeked[7] || "unclear"}</span>
+            <span class="tip-over"><em>Triggered by:</em><TitleText text={peeked[6] ?? ""} fallback="unclear" /></span>
+            <span class="tip-over"><em>Steers outputs:</em><TitleText text={peeked[7] ?? ""} fallback="unclear" /></span>
           {:else}
             <span class="tip-line">{BANDS[bandOf(hover.layer)].name}</span>
           {/if}
           <span class="tip-hint">Click to open</span>
         {:else if tipRow}
           <strong>{neuronId(tipRow[0], tipRow[1])}</strong>
-          <span class="tip-over"><em>Triggered by:</em>{tipRow[6] || "unclear"}</span>
-          <span class="tip-over"><em>Steers outputs:</em>{tipRow[7] || "unclear"}</span>
+          <span class="tip-over"><em>Triggered by:</em><TitleText text={tipRow[6] ?? ""} fallback="unclear" /></span>
+          <span class="tip-over"><em>Steers outputs:</em><TitleText text={tipRow[7] ?? ""} fallback="unclear" /></span>
           <span class="tip-hint">Click to open</span>
         {:else}
           <strong>Layer {hover.layer}</strong>

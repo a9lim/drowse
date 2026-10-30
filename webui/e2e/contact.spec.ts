@@ -25,7 +25,7 @@ test("contact email is available in public footers, feedback, help, and the work
   const address = "contact@drowse.ai";
   for (const path of ["/", "/contact", "/credits"]) {
     await page.goto(`${dev}${path}`);
-    await expect(page.getByRole("navigation", { name: "Footer", exact: true }).getByRole("link", { name: address, exact: true })).toHaveAttribute("href", `mailto:${address}`);
+    await expect(page.getByRole("navigation", { name: "Footer", exact: true }).getByRole("link", { name: "Email us", exact: true })).toHaveAttribute("href", `mailto:${address}`);
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
   }
   await openFeedback(page);
@@ -83,7 +83,7 @@ test("offline and failed sends retain text and retry the same reference before s
   expect(requests).toHaveLength(0);
   await context.setOffline(false);
   await page.getByRole("button", { name: "Send message", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("couldn't confirm");
+  await expect(page.getByRole("alert")).toContainText("contact service isn't responding");
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Synthetic test content. No real email is sent.");
   await page.getByRole("button", { name: "Check delivery", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Message sent" })).toBeVisible();
@@ -135,7 +135,7 @@ test("unconfirmed, rate-limited, and invalid success responses never lose the dr
     ];
     await route.fulfill({ ...responses[references.length - 1], headers: { "Access-Control-Allow-Origin": dev } });
   });
-  for (const message of ["couldn't confirm", "haven't confirmed", "Too many attempts", "couldn't confirm"]) {
+  for (const message of ["couldn't send this", "haven't confirmed", "Too many attempts", "couldn't send this"]) {
     await page.getByRole("button", { name: /^(Send message|Check delivery)$/ }).click();
     await expect(page.getByRole("alert")).toContainText(message);
     await expect(page.getByRole("heading", { name: "Message sent" })).not.toBeVisible();
@@ -196,8 +196,10 @@ test("topics follow the reason, preserve shared choices, and submit the matching
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`${dev}/contact`);
   await fillMessage(page);
-  const reason = page.getByRole("button", { name: "Reason", exact: true });
-  const topic = page.getByRole("button", { name: "Topic", exact: true });
+  const reason = page.getByRole("button", { name: /^Reason / });
+  const topic = page.getByRole("button", { name: /^Topic / });
+  await expect(reason).toHaveAccessibleName("Reason General feedback");
+  await expect(topic).toHaveAccessibleName("Topic Drowse in general");
   async function chooseReason(label: string) {
     await reason.click();
     await page.getByRole("option", { name: label, exact: true }).click();
@@ -223,10 +225,15 @@ test("topics follow the reason, preserve shared choices, and submit the matching
   expect(await topicLabels()).toEqual(["Interview request", "Coverage and fact checking", "Images and press materials", "Something else"]);
   await chooseReason("Research and collaboration");
   await expect(topic).toContainText("Research collaboration");
-  expect(await topicLabels()).toEqual(["Research collaboration", "Using Drowse in a study", "Methods and validation", "Sharing results", "Funding & Sponsorship", "Something else"]);
+  expect(await topicLabels()).toEqual(["Research collaboration", "Using Drowse in a study", "Methods and validation", "Sharing results", "Grants and research funding", "Something else"]);
   await topic.click();
-  await page.getByRole("option", { name: "Funding & Sponsorship", exact: true }).click();
-  await expect(topic).toContainText("Funding & Sponsorship");
+  await page.getByRole("option", { name: "Grants and research funding", exact: true }).click();
+  await chooseReason("Funding and sponsorship");
+  await expect(topic).toContainText("Grants and research funding");
+  expect(await topicLabels()).toEqual(["Sponsoring Drowse", "Grants and research funding", "Something else"]);
+  await chooseReason("Teaching with Drowse");
+  await expect(topic).toContainText("Using Drowse in a course");
+  expect(await topicLabels()).toEqual(["Using Drowse in a course", "Teaching materials", "Something else"]);
   await topic.click();
   await page.getByRole("option", { name: "Something else", exact: true }).click();
   await chooseReason("Media and press");
@@ -295,7 +302,7 @@ for (const viewportWidth of [390, 1280]) {
     await page.setViewportSize({ width: viewportWidth, height: 720 });
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.goto(`${dev}/contact`);
-    const field = page.getByRole("button", { name: "Reason", exact: true });
+    const field = page.getByRole("button", { name: /^Reason / });
     await field.click({ delay: 160 });
     const list = page.getByRole("listbox", { name: "Reason", exact: true });
     await expect(list).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");

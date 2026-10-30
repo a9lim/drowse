@@ -15,7 +15,7 @@ for (const fixture of ["base", "1"]) {
       await setAppearance(page, theme);
       for (const width of [1440, 900]) {
         await page.setViewportSize({ width, height: 900 });
-        expect(await page.evaluate(() => {
+        await expect.poll(() => page.evaluate(() => {
           const sidebar = document.querySelector(".app-sidebar")!;
           const workspace = document.querySelector(".workspace-frame")!;
           const surface = document.querySelector(".chat-zone")!;

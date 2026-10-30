@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import dataset from "../src/hosted/data/not-found-messages.json" with { type: "json" };
 
-const url = "http://127.0.0.1:4177/a-page-that-is-not-here";
+const url = "/a-page-that-is-not-here";
 async function current(page: Page) {
   const id = await page.locator(".message").getAttribute("data-message-id");
   return dataset.messages.find(message => message.id === id)!;
@@ -20,7 +20,7 @@ test("the 404 page renders real tokens, chooses a fresh unique message, and load
   const first = await current(page);
   await expect(page.locator(".recorded-tokens")).toHaveText(first.text);
   await expect(page.getByRole("link", { name: "Back to home", exact: true })).toHaveAttribute("href", "/");
-  await expect(page.getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute("href", "/app");
+  await expect(page.getByRole("region", { name: "Page not found", exact: true }).getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute("href", "/app");
   await page.reload();
   await expect(page.locator(".message")).not.toHaveAttribute("data-message-id", first.id);
   await expect(page.locator(".recording-controls")).toHaveCount(0);
@@ -29,8 +29,8 @@ test("the 404 page renders real tokens, chooses a fresh unique message, and load
   await expect(page.locator(".message")).not.toHaveAttribute("data-message-id", second.id);
   await expect(page.locator(".recorded-tokens")).toHaveText((await current(page)).text);
   const download = await page.request.get("/recordings/404-gemma3-4b.json");
-  expect(download.ok()).toBe(true);
-  expect((await download.json()).runs).toHaveLength(50);
+  // The raw provenance recording stays in the repository; the page ships the curated messages.
+  expect(download.headers()["content-type"]).not.toContain("application/json");
   expect(requests.filter(request => /huggingface|browser\.worker|drowse-web-llm|\.wasm|ndarray|catalog\/v1/.test(request))).toEqual([]);
   expect(errors).toEqual([]);
 });
@@ -39,9 +39,12 @@ test("token hover, touch, keyboard, and surprisal preserve the recorded probabil
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(url);
   const message = await current(page);
-  const piece = message.tokens.find(token => token.logprob < -0.1 && /\S/.test(token.text))!;
+  const piece = message.tokens.find((token, index) => token.logprob < -0.1 && /^ ?[A-Za-z0-9]+$/.test(token.text)
+    && message.tokens.findIndex(other => other.text === token.text) === index)!;
   const label = piece.text.replaceAll(" ", "␣").replaceAll("\n", "↵");
-  const trigger = page.getByRole("button", { name: `Inspect token ${label}`, exact: true }).first();
+  const trigger = page.locator(".recorded-tokens").getByRole("button", {
+    name: `Inspect token “${piece.text.trim()}”${piece.text.startsWith(" ") ? ", with a leading space" : ""}`, exact: true,
+  }).first();
   const panel = page.getByRole("dialog");
   if (!testInfo.project.name.includes("webkit")) {
     await trigger.hover();

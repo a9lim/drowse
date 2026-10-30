@@ -602,7 +602,7 @@ test("model cards show provider logos and catalog-backed SAE availability", asyn
   await expect(page.locator(".download-gate")).not.toContainText("Ready to download");
   await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
   await updateSnapshot(page, {
-    download: { ...initialSnapshot.download, phase: "requesting_persistence", reason: "Ready to download." },
+    download: { ...initialSnapshot.download, phase: "requesting_persistence", modelVariantId: "gemma3-1b-instruct-q4f16_1", reason: "Ready to download." },
   });
   await expect(page.locator(".download-gate")).toContainText("Preparing download");
   await expect(page.locator(".download-gate")).not.toContainText("Ready to download");
@@ -664,7 +664,7 @@ test("an unverified iPhone model starts one download with storage protection dec
   await expect(page.locator(".download-gate")).toContainText("Preparing download");
   await expect(page.locator(".model-grid > button")).toBeDisabled();
   await expect(page.getByRole("status", { name: "Storage protection", exact: true })).toContainText("Downloads and chats save on this device");
-  await updateSnapshot(page, { download: { ...initialSnapshot.download, phase: "downloading" } });
+  await updateSnapshot(page, { download: { ...initialSnapshot.download, phase: "downloading", modelVariantId: "model-uncertain" } });
   await expect(page.locator(".download-gate")).toContainText("Downloading model files");
   expect(await page.evaluate(() => (globalThis as any).__hostedOnboardingHarness.downloads)).toEqual([
     { id: "model-uncertain", options: { explicitUnsafeOverride: true } },

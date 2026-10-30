@@ -14,6 +14,14 @@ const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
 const servicesUrl = `/@fs/${resolve("src/lib/runtime/services.ts")}`;
 test.use({ hasTouch: true });
 
+async function expectWebGpuRequirement(page: Page) {
+  const note = page.locator(".hero-action-row > span");
+  await expect(note).toHaveAttribute("data-webgpu", /^(available|unavailable)$/);
+  await expect(note).toHaveText(await note.getAttribute("data-webgpu") === "available"
+    ? "WebGPU is available in this browser. Drowse checks your device's memory next."
+    : "This browser can't run Drowse yet. Try a current version of Chrome, Edge or Safari 26 or later on a computer with a graphics processor.");
+}
+
 async function showMapDetails(page: Page, selector?: string) {
   await showWorkspaceTools(page, "Loom");
   if (selector) {
@@ -36,7 +44,7 @@ test("model settings end with the versioned Drowse footer", async ({ page }, tes
   await expect(footer).toContainText("© 2026 Drowse Contributors");
   await expect(footer).toContainText("GNU AGPL v3 or later");
   await expect(footer.locator('a[href="/LICENSE"]')).toHaveCount(0);
-  await expect(footer.getByRole("link", { name: "Contribute" })).toHaveAttribute("href", /github.com\/a9lim\/drowse/);
+  await expect(footer.getByRole("link", { name: "Contribute" })).toHaveAttribute("href", "https://drowse.ai/contribute");
   await expect(footer.getByRole("link", { name: "Credits" })).toHaveAttribute("href", "/credits");
   for (const theme of ["light", "dark"]) {
     await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs${resolve("src/lib/theme.ts")}`, theme });
@@ -51,14 +59,14 @@ test("model settings end with the versioned Drowse footer", async ({ page }, tes
   }
 });
 
-test("Credits matches the public theme and GitHub links say Contribute", async ({ page, browserName }, testInfo) => {
+test("Credits matches the public theme and links to ways to contribute", async ({ page, browserName }, testInfo) => {
   test.slow();
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
   const nav = page.getByRole("navigation", { name: "Primary navigation" });
-  await expect(nav.getByRole("link", { name: "Contribute", exact: true })).toHaveAttribute("href", /github.com\/a9lim\/drowse/);
+  await expect(nav.getByRole("link", { name: "Contribute", exact: true })).toHaveAttribute("href", "/contribute");
   await expect(page.getByRole("link", { name: /^(Source|View source)$/ })).toHaveCount(0);
   await nav.getByRole("link", { name: "Credits", exact: true }).click();
   await expect(page).toHaveURL(/\/credits$/);
@@ -79,7 +87,7 @@ test("Credits matches the public theme and GitHub links say Contribute", async (
     images => images.every(image => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0),
   )).toBe(true);
   await expect(page.locator(".page-brand")).toHaveAttribute("href", "/");
-  await expect(nav.getByRole("link", { name: "Chats", exact: true })).toHaveAttribute("href", "/app");
+  await expect(page.locator(".page-header").getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute("href", "/app");
   if (browserName === "webkit") {
     // WebKit's default keyboard mode skips links.
     await page.getByRole("link", { name: "Skip to content" }).focus();
@@ -99,7 +107,7 @@ test("Credits matches the public theme and GitHub links say Contribute", async (
       await page.setViewportSize({ width, height: 1000 });
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await expect.poll(() => page.evaluate(() => [...document.querySelectorAll("body *")]
-        .filter(element => !element.closest('.credits-art-frame, nav[aria-label="Primary navigation"]'))
+        .filter(element => !element.closest('.credits-art-frame, nav[aria-label="Primary navigation"], .citation pre code'))
         .filter(element => element.getBoundingClientRect().right > innerWidth + 1)
         .map(element => `${element.tagName}.${element.className}: ${element.getBoundingClientRect().right}`))).toEqual([]);
       for (const link of await nav.getByRole("link").all()) {
@@ -127,6 +135,25 @@ test("Credits matches the public theme and GitHub links say Contribute", async (
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(errors).toEqual([]);
 });
+
+function expectCopiedConversation(copy: any, original: any) {
+  expect(copy.id).not.toBe(original.id);
+  expect(copy.name).toBe(`${original.name} (copy)`);
+  expect(copy.snapshot.tree.nodes).toHaveLength(original.snapshot.tree.nodes.length);
+  const sourceIds = new Map(copy.snapshot.tree.nodes.map((node: any, index: number) => [node.id, original.snapshot.tree.nodes[index].id]));
+  for (const node of copy.snapshot.tree.nodes) expect(original.snapshot.tree.nodes.some((source: any) => source.id === node.id)).toBe(false);
+  const tree = copy.snapshot.tree;
+  expect({
+    ...copy,
+    id: original.id, name: original.name, createdAt: original.createdAt, updatedAt: original.updatedAt,
+    snapshot: { ...copy.snapshot, tree: {
+      ...tree,
+      root_id: sourceIds.get(tree.root_id), active_node_id: sourceIds.get(tree.active_node_id),
+      nodes: tree.nodes.map((node: any) => ({ ...node, id: sourceIds.get(node.id), parent_id: node.parent_id === null ? null : sourceIds.get(node.parent_id) })),
+      children_of: Object.fromEntries(Object.entries(tree.children_of).map(([parent, children]) => [sourceIds.get(parent), (children as string[]).map(id => sourceIds.get(id))])),
+    } },
+  }).toEqual(original);
+}
 
 test("chat backups download, import separately, and reopen the entire Loom", async ({ page, browserName }, testInfo) => {
   test.skip(browserName === "webkit", "The worker requires OPFS; WebKit import/download is covered by the chat card test.");
@@ -166,13 +193,16 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   expect(backup.conversation).toEqual(original);
   const records = () => page.evaluate(async url => (await (await import(url)).conversationLibrary.list()).conversations, libraryUrl);
   const before = await records();
-  const fileInput = page.getByLabel("Import chat backup file", { exact: true });
+  const fileInput = page.getByLabel("Import chat backup files", { exact: true });
   await fileInput.setInputFiles({ name: download.suggestedFilename(), mimeType: "application/json", buffer: Buffer.from(text) });
-  await expect(page.getByRole("status").filter({ hasText: "Imported" })).toContainText("Backup experiment");
+  await expect(page.locator(".import-duplicate")).toContainText("Backup experiment” is already imported.");
+  expect(await records()).toEqual(before);
+  await page.getByRole("button", { name: "Import as a copy", exact: true }).click();
+  await expect(page.locator(".backup-result")).toContainText("Backup experiment (copy)");
   const after = await records();
   expect(after).toHaveLength(before.length + 1);
-  const imported = after.find((record: any) => record.name === original.name && record.id !== original.id)!;
-  expect({ ...imported, id: original.id }).toEqual(original);
+  const imported = after.find((record: any) => record.name === `${original.name} (copy)` && record.id !== original.id)!;
+  expectCopiedConversation(imported, original);
   expect(after.find((record: any) => record.id === original.id)).toEqual(original);
   backup.conversation.name = "Damaged copy";
   await fileInput.setInputFiles({ name: "damaged.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
@@ -194,7 +224,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await card.getByRole("button", { name: "Open chat", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   const restored = await page.evaluate(async url => (await import(url)).apiTree.get(), `/@fs${resolve("src/lib/runtime/services.ts")}`);
-  expect({ ...restored, session_id: original.snapshot.tree.session_id, rev: original.snapshot.tree.rev }).toEqual(original.snapshot.tree);
+  expect({ ...restored, session_id: imported.snapshot.tree.session_id, rev: imported.snapshot.tree.rev }).toEqual(imported.snapshot.tree);
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("A complete local backup");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Continue only the imported copy");
   await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -726,8 +756,7 @@ test("shared page headers and footers align across public pages and workbench", 
         height: content.getBoundingClientRect().height, text: el.textContent?.trim() };
     });
     const check = async (name: string) => {
-      if (width === 320 && name !== "workbench") await expect(page.locator(".page-brand")).toBeHidden();
-      else await expect(page.locator(".page-brand")).toBeVisible();
+      await expect(page.locator(".page-brand")).toBeVisible();
       await page.evaluate(() => document.fonts.ready);
       const box = await page.locator(".page-brand").evaluate(el => el.getBoundingClientRect().toJSON());
       const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
@@ -754,11 +783,16 @@ test("shared page headers and footers align across public pages and workbench", 
       }
       else expect(box.x).toBeGreaterThanOrEqual(0);
       await expect(page.locator(".page-header .theme-toggle")).toHaveCount(1);
-      await expect(page.locator(".page-header nav a")).toHaveText(["Chats", "Models", "Credits", "Contribute"]);
+      const site = await page.locator(".page-header").evaluate(el => el.classList.contains("site"));
+      await expect(page.locator(".page-header nav a")).toHaveText(site
+        ? ["Learn", "Neurons", "Models", "Credits", "Contribute"] : ["Chats", "Models"]);
       await page.screenshot({ path: testInfo.outputPath(`${name}-${width}.png`) });
       const footer = page.locator(".page-footer");
       await footer.scrollIntoViewIfNeeded();
-      await expect(footer.getByRole("link")).toHaveText(["Credits", "Contact us", "contact@drowse.ai", "Contribute"]);
+      await expect(footer.getByRole("navigation", { name: "Footer" }).getByRole("link")).toHaveText([
+        "Home", "Open Drowse", "Models", "Learn", "Neurons", "Credits", "Contribute", "Changelog (opens GitHub)",
+        "Privacy", "LicenseGNU AGPL v3 or later", "Third-party licenses", "Security (opens GitHub)", "Contact us", "Email us",
+      ]);
       const actualFooter = await footer.evaluate(el => {
         const css = getComputedStyle(el);
         const content = el.querySelector(".footer-content")!;
@@ -818,7 +852,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await page.emulateMedia({ reducedMotion: "no-preference", colorScheme: width === 1000 ? "light" : "dark" });
     await page.goto(`${devUrl}/app?fixture=1&choose=1`);
     await chooseFixtureModel(page);
-    const openModel = page.getByRole("button", { name: /^(Download and open|Open Drowse)$/ });
+    const openModel = page.getByRole("button", { name: /^(Download and open|Open workbench)$/ });
     await expect(openModel).toBeEnabled();
     await settled();
     await page.evaluate(() => document.fonts.ready);
@@ -850,7 +884,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await settled();
     await assertHeader();
     await chooseFixtureModel(page);
-    await page.getByRole("button", { name: /^(Download and open|Open Drowse)$/ }).click();
+    await openModel.click();
     await expect(page.locator(".shell")).toBeVisible();
     await settled();
     await returnToChats(page);
@@ -1020,13 +1054,15 @@ test.describe("saved chat card interactions", () => {
     const text = await readStreamText(await download.createReadStream());
     const backup = JSON.parse(text);
     expect(backup.conversation.name).toBe("Marmot research");
-    await page.getByLabel("Import chat backup file").setInputFiles({ name: "backup.json", mimeType: "application/json", buffer: Buffer.from(text) });
-    await expect(page.getByRole("status").filter({ hasText: "Imported" })).toContainText("Marmot research");
+    await page.getByLabel("Import chat backup files", { exact: true }).setInputFiles({ name: "backup.json", mimeType: "application/json", buffer: Buffer.from(text) });
+    await expect(page.locator(".import-duplicate")).toContainText("Marmot research” is already imported.");
+    await page.getByRole("button", { name: "Import as a copy", exact: true }).click();
+    await expect(page.locator(".backup-result")).toContainText("Marmot research (copy)");
     const imported = await page.evaluate(async ({ url, id }) => {
       const { conversations } = await (await import(url)).conversationLibrary.list();
-      return conversations.find((record: any) => record.name === "Marmot research" && record.id !== id);
+      return conversations.find((record: any) => record.name === "Marmot research (copy)" && record.id !== id);
     }, { url: `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`, id: backup.conversation.id });
-    expect({ ...imported, id: backup.conversation.id }).toEqual(backup.conversation);
+    expectCopiedConversation(imported, backup.conversation);
   });
 });
 
@@ -2324,7 +2360,7 @@ test("Loom stays accessible while a reply streams", async ({ page, browserName }
   await returnToChats(page);
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
   await expect(page.locator(".shell")).toHaveCount(0);
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.locator(".hero-actions").getByRole("button", { name: "Continue with Qwen3 1.7B fixture", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await expect(page.locator(".chat[aria-label='Chat']")).toContainText("Keep writing while I explore the branches.");
 });
@@ -2361,7 +2397,7 @@ test("workspace menu returns to chats and restores the current conversation", as
   await expect(page.locator(".shell")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.locator(".hero-actions").getByRole("button", { name: "Continue with Qwen3 1.7B fixture", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("Remember this path when I go home.");
   await expect(page.locator(".msg .response-body").last()).toHaveText(reply);
@@ -2853,7 +2889,7 @@ test("landing browser copy is consistent across platforms and action labels stay
   ]) {
     await page.goto(`${devUrl}/${query}`);
     const recommendation = page.locator(".hero-action-row > span");
-    await expect(recommendation).toHaveText("Chrome or Safari · compatible device required");
+    await expectWebGpuRequirement(page);
     const action = page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse", exact: true });
     await expect(action).toHaveAttribute("href", "/app");
     const returningAction = page.locator(".closing-action");
@@ -2913,8 +2949,9 @@ test("landing actions and local-compute copy have room at phone and desktop size
   const action = page.locator(".hero-action-row .primary-action");
   const note = page.locator(".hero-action-row > span");
   const privacy = page.locator(".trust-line");
-  await expect(note).toHaveText("Chrome or Safari · compatible device required");
-  await expect(privacy).toHaveText("Open source. Inference and saved work stay on your device.");
+  await expectWebGpuRequirement(page);
+  await expect(privacy).toContainText("Open source. Inference and saved work stay on your device.");
+  await expect(privacy.getByRole("link", { name: "What leaves your device" })).toHaveAttribute("href", "/privacy");
   await expect(page.getByRole("button", { name: "Pause background animation" })).toHaveCount(0);
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme });
@@ -2944,12 +2981,16 @@ test("landing actions and local-compute copy have room at phone and desktop size
   await page.locator(".hero-copy").screenshot({ path: testInfo.outputPath("landing-action-spacing.png") });
 });
 
-test("landing animation follows a changed motion preference without a pause button", async ({ page }) => {
+test("landing animation supports a pause control and follows a changed motion preference", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto(devUrl);
   await expect(page.locator(".hero-visual")).toHaveAttribute("data-shader-status", "ready");
-  await expect(page.getByRole("button", { name: "Pause background animation" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Pause background animation", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Play background animation", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Play background animation", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Pause background animation", exact: true })).toBeVisible();
   await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(page.getByRole("button", { name: "Pause background animation", exact: true })).toHaveCount(0);
   await expect(page.locator(".hero-visual")).toHaveAttribute("data-travel", "0.000");
   const pausedTravel = await page.locator(".hero-visual").getAttribute("data-travel");
   await page.evaluate(() => window.scrollTo(0, 900));
@@ -3181,9 +3222,12 @@ test("landing explains the workbench and separates chat and base model uses", as
   await expect(models).not.toContainText("M means million parameters");
   await expect(models).not.toContainText("These candidates have existing");
   await expect(models).not.toContainText("validation needed");
-  await expect(base.locator("a, button")).toHaveCount(0);
-  await expect(models.getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute("href", "/app");
-  await expect(models.locator(".closing-action p")).toHaveText("Choose your model and tools inside the app.");
+  await expect(base.getByRole("link")).toHaveCount(4);
+  for (const link of await base.getByRole("link").all()) {
+    await expect(link).toHaveAttribute("href", /^\/app\?choose=1&model=[^&]+$/);
+  }
+  await expect(page.locator(".closing-action").getByRole("link", { name: "Open Drowse", exact: true })).toHaveAttribute("href", "/app");
+  await expect(page.locator(".closing-action p")).toHaveText("Choose your model and tools inside the app.");
   for (const theme of ["Light", "Dark"]) {
     await page.setViewportSize({ width: 1440, height: 900 });
     await setAppearance(page, theme);
@@ -3263,13 +3307,13 @@ test("landing has no gradient scrims and adapts its ink without panel background
   await expect(page.locator("#capabilities-title")).toHaveCSS("mix-blend-mode", "normal");
 });
 
-test("homepage fills the viewport without a scrollbar strip and still scrolls", async ({ page }, testInfo) => {
+test("homepage fills the content viewport and keeps native scrolling available", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(devUrl);
   const root = page.locator("html");
   await expect(root).toHaveCSS("scrollbar-gutter", "auto");
-  await expect(root).toHaveCSS("scrollbar-width", "none");
+  await expect(root).toHaveCSS("scrollbar-width", "auto");
   for (const theme of ["Light", "Dark"]) {
     await setAppearance(page, theme);
     for (const width of [320, 390, 1440]) {
@@ -3279,16 +3323,20 @@ test("homepage fills the viewport without a scrollbar strip and still scrolls", 
         const root = document.documentElement;
         const background = document.querySelector(".hero-visual")!.getBoundingClientRect();
         const shell = document.querySelector(".landing-shell")!.getBoundingClientRect();
+        // Mobile WebKit reserves the scrollbar in its visual viewport, while
+        // documentElement.clientWidth still reports the full layout viewport.
+        const visibleWidth = visualViewport?.width ?? root.clientWidth;
         return {
-          gutter: innerWidth - root.clientWidth,
+          gutter: innerWidth - visibleWidth,
           overflow: root.scrollWidth - root.clientWidth,
           left: background.left,
-          right: background.right - innerWidth,
+          right: background.right - visibleWidth,
           bottom: background.bottom - innerHeight,
-          shellWidth: shell.width - innerWidth,
+          shellWidth: shell.width - root.clientWidth,
         };
       });
-      expect(geometry).toEqual({ gutter: 0, overflow: 0, left: 0, right: 0, bottom: 0, shellWidth: 0 });
+      expect(geometry.gutter).toBeGreaterThanOrEqual(0);
+      expect({ ...geometry, gutter: 0 }).toEqual({ gutter: 0, overflow: 0, left: 0, right: 0, bottom: 0, shellWidth: 0 });
       await page.locator("#hero-title").click();
       await page.keyboard.press("PageDown");
       await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(0);
@@ -3326,7 +3374,7 @@ test("mobile hero overlays the orb without selecting the section", async ({ page
       })).toBe("none");
       await heading.click({ clickCount: 3 });
       expect(await page.evaluate(() => getSelection()?.toString() ?? "")).toBe("");
-      expect(await page.locator("main").evaluate(element => element === document.activeElement)).toBe(false);
+      await expect(page.locator("main")).toHaveAttribute("tabindex", "-1");
       await expect(page.locator("main")).toHaveCSS("outline-style", "none");
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       const action = page.locator(".hero .primary-action");

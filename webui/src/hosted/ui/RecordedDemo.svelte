@@ -86,7 +86,7 @@
   .alpha, .result,
   .alpha :global(.morph-text), .result :global(.morph-text),
   .alpha :global(.morph-source), .result :global(.morph-source) { color: var(--fg); }
-  .alpha { flex-wrap: wrap; align-items: baseline; row-gap: var(--space-2); font-size: var(--text-sm); margin-bottom: calc(var(--space-8) + var(--space-2)); line-height: 1.6; -webkit-user-select: none; user-select: none; }
+  .alpha { flex-wrap: wrap; align-items: baseline; row-gap: var(--space-2); font-size: var(--text-sm); margin-bottom: var(--space-xl); line-height: 1.6; -webkit-user-select: none; user-select: none; }
   .alpha > span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
   .alpha :global(.morph-paint) { overflow: visible; }
   .capability-demo :global(.slider-bubble) { font-family: var(--font-reading); white-space: nowrap; }

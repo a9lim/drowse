@@ -59,7 +59,7 @@ async function home(page: Page, installed = true) {
     const target = document.createElement("div"); document.body.append(target);
     mount(Harness, { target, props: { controller, onChooseModels: () => { routes++; } } });
   }, { moduleUrl: `/@fs/${resolve("e2e/fixtures/ModelDownloadHarness.svelte")}`, installed });
-  await page.getByRole("button", { name: installed ? "New Instance" : "Download a model", exact: true }).click();
+  await page.locator(".hero-actions").getByRole("button", { name: installed ? "New chat" : "Download a model", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Choose a model" })).toBeVisible();
 }
 
@@ -70,7 +70,7 @@ test("two clicks download inline, verify before ready, and preserve the new-chat
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
   await home(page);
   await action(page, 1).click();
-  await expect(action(page, 1)).toContainText("Click again to download - 2.28 GB");
+  await expect(action(page, 1)).toContainText("Download 2.3 GB? Select again to confirm");
   expect(await page.evaluate(() => (window as any).downloads.calls)).toEqual([]);
   await action(page, 1).click();
   await expect(card(page, 1).getByRole("progressbar")).toBeVisible();
@@ -86,12 +86,10 @@ test("two clicks download inline, verify before ready, and preserve the new-chat
   await expect(card(page, 1)).toContainText("Verifying files…");
   await expect(card(page, 1)).not.toHaveClass(/installed/);
   await page.evaluate(() => (window as any).downloads.finish());
-  await expect(card(page, 1)).toHaveClass(/installed/);
-  await expect(action(page, 1)).toContainText("Ready to use");
-  await expect(card(page, 1).getByRole("progressbar")).toHaveCount(0);
-  expect(await page.evaluate(() => ({ calls: (window as any).downloads.calls, opens: (window as any).downloads.opens, routes: (window as any).downloads.routes }))).toEqual({ calls: [{ id: "model-1", options: { explicitUnsafeOverride: false } }], opens: [], routes: 0 });
-  await action(page, 1).click();
   await expect(page.getByRole("heading", { name: "Start a new chat with Gemma 3 4B?" })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).downloads.snapshot.models[1].setupComplete)).toBe(true);
+  await expect(page.locator(".new-chat-panel").getByRole("progressbar")).toHaveCount(0);
+  expect(await page.evaluate(() => ({ calls: (window as any).downloads.calls, opens: (window as any).downloads.opens, routes: (window as any).downloads.routes }))).toEqual({ calls: [{ id: "model-1", options: { explicitUnsafeOverride: false } }], opens: [], routes: 0 });
   expect(await page.evaluate(() => (window as any).downloads.opens)).toEqual([]);
   await page.getByRole("button", { name: "Start new chat", exact: true }).click();
   expect(await page.evaluate(() => (window as any).downloads.opens)).toEqual([{ id: "model-1", options: { resetSession: true } }]);
@@ -103,28 +101,28 @@ test("pause, resume, retry, and chooser reopening retain download state", async 
   await action(page, 1).click(); await action(page, 1).click();
   await page.evaluate(() => (window as any).downloads.progress(570_000_000));
   await page.locator(".chooser-heading").getByRole("button", { name: "Cancel" }).click();
-  await page.getByRole("button", { name: "New Instance", exact: true }).click();
+  await page.locator(".hero-actions").getByRole("button", { name: "New chat", exact: true }).click();
   await expect(card(page, 1).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
   await card(page, 1).getByRole("button", { name: "Pause", exact: true }).click();
-  await expect(action(page, 1)).toContainText("Download paused. Click to resume");
+  await expect(action(page, 1)).toContainText("Download paused. Select to resume");
   await action(page, 1).click(); await action(page, 1).click();
   await page.evaluate(() => (window as any).downloads.fail());
   await expect(card(page, 1).getByRole("alert")).toHaveText("Connection lost. Try again.");
-  await expect(action(page, 1)).toContainText("Download failed. Click to retry");
+  await expect(action(page, 1)).toContainText("Download failed. Select to retry");
   await action(page, 1).click(); await action(page, 1).click();
   await page.evaluate(() => (window as any).downloads.finish());
-  await expect(action(page, 1)).toContainText("Ready to use");
+  await expect(page.getByRole("heading", { name: "Start a new chat with Gemma 3 4B?" })).toBeVisible();
   expect(await page.evaluate(() => (window as any).downloads.calls.length)).toBe(3);
 });
 
 test("keyboard confirmation, device warnings, unavailable models, and first download", async ({ page }) => {
   await home(page, false);
   await action(page, 1).focus(); await page.keyboard.press("Enter");
-  await expect(action(page, 1)).toContainText("Click again to download");
+  await expect(action(page, 1)).toContainText("Select again to confirm");
   await page.keyboard.press("Escape");
-  await expect(action(page, 1)).toContainText("Click to download");
+  await expect(action(page, 1)).toContainText("Select to download");
   await action(page, 1).click(); await action(page, 2).click();
-  await expect(action(page, 1)).not.toContainText("Click again");
+  await expect(action(page, 1)).not.toContainText("Select again");
   await page.evaluate(() => {
     (window as any).downloads.model(1, { fit: "blocked" });
     (window as any).downloads.model(3, { catalogAvailable: false });
@@ -136,7 +134,8 @@ test("keyboard confirmation, device warnings, unavailable models, and first down
   await action(page, 2).focus(); await page.keyboard.press("Enter");
   expect(await page.evaluate(() => (window as any).downloads.calls)).toEqual([{ id: "model-2", options: { explicitUnsafeOverride: true } }]);
   await page.evaluate(() => (window as any).downloads.finish());
-  await expect(action(page, 2)).toContainText("Ready to use");
+  await expect(page.getByRole("heading", { name: "Start a new chat with Qwen3 0.6B?" })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).downloads.opens)).toEqual([]);
 });
 
 test("two padded 2x2 groups, purple installed cards, readable themes and narrow layouts", async ({ page }, testInfo) => {

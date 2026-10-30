@@ -69,7 +69,7 @@ async function chats(page: Page) {
   });
   await page.getByRole("link", { name: "Chats", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "New Instance", exact: true }).click();
+  await page.locator(".hero-actions").getByRole("button", { name: "New chat", exact: true }).click();
   await page.locator('[data-model-id="qwen3-1.7b-fixture"] .model-choice-button').click();
   await expect(page.getByRole("heading", { name: "Start a new chat with Qwen3 1.7B?", exact: true })).toBeVisible();
   await page.evaluate(() => {

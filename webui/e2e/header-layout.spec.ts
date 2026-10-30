@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 const devUrl = "http://127.0.0.1:4176";
 
 test("sidebar leads with chats and compact navigation stays centered", async ({ page }, testInfo) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "light" });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${devUrl}/app?layoutFixture=base`);
   const sidebar = page.getByRole("complementary", { name: "Workspace sidebar" });
@@ -50,7 +50,7 @@ for (const viewport of [
 ]) {
   test(`contextual header and menu fit at ${viewport.width}x${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
-    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "light" });
     await page.goto(`${devUrl}/app?layoutFixture=base`);
     const trigger = page.getByRole("button", { name: "Workspace menu", exact: true });
     const menu = page.getByRole("dialog", { name: "Workspace menu", exact: true });
@@ -71,7 +71,7 @@ for (const viewport of [
       await expect(page.getByRole("dialog", { name: "Command palette" })).toHaveCount(0);
     }
 
-    for (const theme of ["Light", "Dark"]) {
+    for (const theme of ["Dark", "Light"]) {
       await trigger.click();
       const backToChats = menu.getByRole("button", { name: "Back to Chats", exact: true });
       await expect(backToChats).toBeFocused();
