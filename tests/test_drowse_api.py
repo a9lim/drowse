@@ -16,7 +16,7 @@ from drowse.readout.types import (
 )
 from fastapi.testclient import TestClient
 
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, GenerationRequestError
 from drowse.generation.decode import GenerationConfig
 from drowse.generation.results import GenerationResult, RunSet
 from drowse.server.ws_models import WSSamplingParams, build_sampling_config
@@ -758,6 +758,28 @@ class TestWebSocket:
         )
         assert "private backend detail" not in error["message"]
         assert error["status"] == 500
+
+    @pytest.mark.parametrize(("error", "status", "message"), [
+        (GenerationRequestError("n must be >= 1, got 0"), 400, "n must be >= 1, got 0"),
+        (ValueError("/home/user/.drowse/x: shape (3,) != (4,)"), 500,
+         "Generation failed. Check the server log for details."),
+    ])
+    def test_generate_worker_frame_keeps_request_text_and_scrubs_a_bare_value_error(
+        self, session_and_client: Any, error: Exception, status: int, message: str,
+    ) -> None:
+        """The WebSocket surface of the request-error policy
+        (``test_request_errors.py`` pins the others)."""
+        session, client = session_and_client
+        session.generate.side_effect = error
+
+        with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
+            ws.send_json({"type": "generate", "input": "hi"})
+            assert ws.receive_json()["type"] == "started"
+            frame = ws.receive_json()
+
+        assert frame["type"] == "error"
+        assert (frame["status"], frame["message"], frame["code"]) == (status, message, type(error).__name__)
+        assert "/home/user" not in json.dumps(frame)
 
     def test_generate_rejects_unknown_fields(self, session_and_client: Any) -> None:
         _, client = session_and_client
