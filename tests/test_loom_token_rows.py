@@ -79,7 +79,7 @@ def _stateful_tap_session(tree: LoomTree, node_id: str) -> Any:
         gated_probe_names=lambda: set(),
     )
     session._start_loom_assistant = lambda *_args, **_kwargs: node_id
-    session._pending_authored_prompt_targets = lambda *_args, **_kwargs: []
+    session._tokenizer = None  # no measuring channel: nothing is tokenized
     session._snapshot_steering_alphas = lambda: {}
     session._generation_preamble = lambda *_args, **_kwargs: (
         torch.tensor([[1]], dtype=torch.long),

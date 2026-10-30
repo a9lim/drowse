@@ -119,3 +119,27 @@ def test_a_generation_reserves_its_subtree_until_it_ends(
     assert refused and "reservation" in refused[0]
     assert session.tree.reservation is None
     session.tree.edit(user, "free again")
+
+
+def test_authored_turns_gain_rows_only_when_a_channel_measures_them(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    """End to end: an authored user turn stays uncaptured on a probe-less
+    generation (F11 skips it), and gains measured token rows the first time
+    a generation with a live geometry probe re-reads it."""
+    from tests.support.sessions import register_vectors
+
+    session, _script = make_tiny_session.scripted("ok")
+    user = session.append_turn(None, "plain words", role="user")
+    session.generate(None, on_token=lambda *_a, **_k: None)
+    assert session.tree.nodes[user].tokens is None
+
+    register_vectors(session, "probe_axis")
+    session.add_probe("probe_axis")
+    session.tree.navigate(user)
+    session.generate(None, on_token=lambda *_a, **_k: None)
+
+    rows = session.tree.nodes[user].tokens
+    assert rows, "the authored turn was not captured"
+    assert "".join(row["text"] for row in rows) == "plain words"
+    assert all("measurements" in row for row in rows)
