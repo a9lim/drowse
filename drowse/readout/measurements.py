@@ -2,10 +2,7 @@
 
 Every surface that ships per-token, aggregate, or replayed instrument
 data — the native WS ``token``/``done`` frames, loom token rows, the
-token-replay endpoints — carries this single versioned shape (5.x; it
-replaces the ``captured`` record and the six legacy top-level aliases:
-``scores`` / ``per_layer_scores`` / ``probe_readings`` / ``lens_readout``
-/ ``lens_aggregate`` / ``sae_readout``).
+token-replay endpoints — carries this single versioned shape.
 
 Shape::
 
@@ -30,9 +27,8 @@ Shape::
       }
     }
 
-The two axes sol's review named are explicit: a family's ``readings``
-are its *attached probes'* values; its ``readout`` is the *native
-discovery* surface (per-layer top-k matrix / feature list).  ``scores``
+A family's ``readings`` are its *attached probes'* values; its
+``readout`` is the *native discovery* surface (per-layer top-k matrix / feature list).  ``scores``
 and ``per_layer_scores`` stay envelope-level because their consumers
 (transcript tinting, the loom heatmap) key probes across families by
 name — they are flat views derived from the same readings, never extra
@@ -60,11 +56,9 @@ MeasurementProvenance = Literal["captured", "replayed"]
 # --------------------------------------------------------------------------
 # The envelope, declared
 # --------------------------------------------------------------------------
-# The wire contract used to live only in hand-mirrored TypeScript, which is
-# how `probe_measurements_aggregate`'s output went unread and how a unit no
-# producer held ended up on the wire.  These TypedDicts are the Python-side
-# declaration; ``tests/test_measurements_envelope.py`` pins the exact key
-# sets of a token frame, a done aggregate, and all three replay envelopes,
+# The Python-side declaration of the wire contract (the dashboard types are
+# generated from it); ``tests/test_measurements_envelope.py`` pins the exact
+# key sets of a token frame, a done aggregate, and all three replay envelopes,
 # so wire drift is a test failure rather than a dashboard bug.
 
 class MeasurementBinding(TypedDict):
