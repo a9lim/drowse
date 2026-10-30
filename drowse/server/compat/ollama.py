@@ -36,7 +36,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from drowse.errors import DrowseError
+from drowse.errors import RequestError
 from drowse.generation.results import GenerationResult
 from drowse.server.compat import (
     CompatGeneration,
@@ -63,11 +63,8 @@ log = logging.getLogger(__name__)
 _PROBE_KEY = "x-drowse-probe-readings"
 
 
-class OllamaBadRequest(ValueError, DrowseError):
+class OllamaBadRequest(RequestError):
     """400-grade Ollama compatibility error for a malformed request field."""
-
-    def user_message(self) -> tuple[int, str]:
-        return 400, str(self)
 
 
 # ---------------------------------------------------------------------------

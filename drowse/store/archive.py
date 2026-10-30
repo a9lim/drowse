@@ -33,7 +33,7 @@ from typing import Any, Callable, Iterator
 import torch
 from safetensors import SafetensorError, safe_open
 
-from drowse.errors import DrowseError
+from drowse.errors import RequestError
 from drowse.base.atomic import fsync_directory
 from drowse.base.integrity import NAME_REGEX, hash_file
 from drowse.store.manifold_folder import (
@@ -69,11 +69,8 @@ _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 LOCAL_ONLY_MANIFOLD_KEYS = ("artifact_id", "fit_epochs")
 
 
-class DrowseArchiveError(ValueError, DrowseError):
+class DrowseArchiveError(RequestError):
     """A ``.drowse`` archive is malformed or unsafe."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 @dataclass(frozen=True)

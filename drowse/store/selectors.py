@@ -21,18 +21,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from drowse.errors import DrowseError
+from drowse.errors import RequestError
 from drowse.naming import canonical_concept_name
 from drowse.base.integrity import NAME_REGEX
 from drowse.base.paths import VARIANT_SUFFIX_RE, manifolds_dir
 
 
-
-class SelectorError(ValueError, DrowseError):
+class SelectorError(RequestError):
     """Raised when a selector string cannot be parsed."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 class AmbiguousSelectorError(SelectorError):
