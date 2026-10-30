@@ -335,6 +335,7 @@ class TestMonitor:
             v = hist[0][0]
             assert math.isfinite(v)
 
+    @pytest.mark.perf
     def test_throughput_regression(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any, layer_means: Any) -> None:
         """Steered generation should be at least 85% of vanilla throughput."""
         from drowse.steering.hooks import SteeringManager
@@ -439,6 +440,7 @@ class TestAblationPerformance:
     does one extra matmul per active ablation layer per step. Intentional.
     """
 
+    @pytest.mark.perf
     def test_throughput_with_ablation(
         self, model_and_tokenizer: Any, layers: Any, layer_means: Any,
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
