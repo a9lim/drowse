@@ -185,7 +185,7 @@ def resolve_scope_role(
     role_variants: set[str] = set()
     any_plain_term = False
     for key, entry in entries.items():
-        if not isinstance(entry, tuple):
+        if not isinstance(entry, (tuple, ProjectedTerm)):
             continue
         if ":" not in key:
             any_plain_term = True
@@ -322,15 +322,6 @@ class SteeringScope:
                 raise
 
 
-@dataclass(frozen=True)
-class _ProjectionSpec:
-    """A resolved ``~``/``|`` term: concrete operand keys and the operator."""
-
-    base: str
-    onto: str
-    operator: str
-
-
 @dataclass
 class _CachedPlan:
     """A composed plan plus the registry objects it was composed from.
@@ -390,7 +381,6 @@ class SteeringComposer:
         # Projection operands by synthetic key, and the projected profile
         # memoized on the identities of its inputs (base, onto, whitener) so
         # plans that use it stay cached.  Projections never enter the registry.
-        self._projection_specs: dict[str, _ProjectionSpec] = {}
         self._projections: dict[str, tuple[object, object, object, dict[int, torch.Tensor]]] = {}
 
     # ------------------------------------------------------------- scopes
@@ -438,7 +428,7 @@ class SteeringComposer:
         concretizes to its registry key (bare ``:sae`` / ``:role`` / ``:from``
         variants pick the unique fitted tensor for this model) and loads,
         every manifold term loads its artifact, and every ``~``/``|`` term
-        records its concrete operands (the projection itself is computed at
+        carries its concrete operands (the projection itself is computed at
         composition, against the composed whitener).  Failures raise here —
         an unknown name is :class:`~drowse.errors.ProfileNotRegisteredError` —
         so composition only ever looks loaded artifacts up.
@@ -462,16 +452,14 @@ class SteeringComposer:
                 )
                 continue
             if isinstance(val, ProjectedTerm):
-                spec = _ProjectionSpec(
-                    base=artifacts.concretize_key(val.base),
-                    onto=artifacts.concretize_key(val.onto),
-                    operator=val.operator,
+                base = artifacts.concretize_key(val.base)
+                onto = artifacts.concretize_key(val.onto)
+                artifacts.ensure_profile_registered(base, role="projection base")
+                artifacts.ensure_profile_registered(onto, role="projection onto")
+                entries[name] = (
+                    val if (base, onto) == (val.base, val.onto)
+                    else replace(val, base=base, onto=onto)
                 )
-                artifacts.ensure_profile_registered(spec.base, role="projection base")
-                artifacts.ensure_profile_registered(spec.onto, role="projection onto")
-                if self._projection_specs.get(name) != spec:
-                    self._projection_specs[name] = spec
-                entries[name] = (float(val.coeff), val.trigger)
                 continue
             alpha, trig = term_entry(val, steering.trigger)
             key = name if name in artifacts.profiles else artifacts.concretize_key(name)
@@ -713,16 +701,16 @@ class SteeringComposer:
             record((lambda: artifacts.profiles.get(name), prof))
             return prof
 
-        def _projected(name: str, spec: _ProjectionSpec) -> dict[int, torch.Tensor]:
-            base = _profile(spec.base, "projection base")
-            onto = _profile(spec.onto, "projection onto")
+        def _projected(name: str, term: ProjectedTerm) -> dict[int, torch.Tensor]:
+            base = _profile(term.base, "projection base")
+            onto = _profile(term.onto, "projection onto")
             memo = self._projections.get(name)
             if (
                 memo is not None and memo[0] is base and memo[1] is onto
                 and memo[2] is whitener
             ):
                 return memo[3]
-            projected = project_profile(base, onto, spec.operator, whitener=whitener)
+            projected = project_profile(base, onto, term.operator, whitener=whitener)
             self._projections[name] = (base, onto, whitener, projected)
             return projected
 
@@ -762,12 +750,12 @@ class SteeringComposer:
                         trigger=entry.trigger,
                     )
                 continue
-            alpha, trigger = entry
-            spec = self._projection_specs.get(name)
-            directions = (
-                _projected(name, spec) if spec is not None
-                else _profile(name, "vector")
-            )
+            if isinstance(entry, ProjectedTerm):
+                alpha, trigger = float(entry.coeff), entry.trigger
+                directions = _projected(name, entry)
+            else:
+                alpha, trigger = entry
+                directions = _profile(name, "vector")
             folded = fold_directions_to_subspace(
                 name, directions, neutral_means, whitener=whitener,
             )
@@ -802,10 +790,6 @@ class SteeringComposer:
             self._plans.move_to_end(key)
             return cached.plan
         deps: list[tuple[Callable[[], object], object]] = []
-        for name in entries:
-            spec = self._projection_specs.get(name)
-            if spec is not None:
-                deps.append((lambda n=name: self._projection_specs.get(n), spec))
         plan = self.compose(entries, deps)
         self._plans[key] = _CachedPlan(plan, deps)
         self._plans.move_to_end(key)
@@ -840,7 +824,7 @@ class SteeringComposer:
         """
         snap: dict[str, float] = {}
         for name, entry in self.flatten_stack().items():
-            if isinstance(entry, (AblationTerm, ManifoldTerm)):
+            if isinstance(entry, (AblationTerm, ManifoldTerm, ProjectedTerm)):
                 snap[name] = entry.coeff
                 continue
             snap[name] = entry[0]

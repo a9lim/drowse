@@ -36,11 +36,13 @@ AlphaEntry = Union[
     "ManifoldTerm",
 ]
 
-#: One entry of a pushed steering scope after resolution: scalar terms
-#: (vectors, projections) as ``(alpha, Trigger)``, ablation and manifold terms
-#: whole.  :func:`entry_trigger` / :func:`entry_coeff` read either shape.
+#: One entry of a pushed steering scope after resolution: vectors as
+#: ``(alpha, Trigger)``; projection, ablation and manifold terms whole, with
+#: their operands concretized to registry keys.  :func:`entry_trigger` /
+#: :func:`entry_coeff` read every shape.
 SteeringStackEntry = Union[
     "tuple[float, Trigger]",
+    "ProjectedTerm",
     "AblationTerm",
     "ManifoldTerm",
 ]

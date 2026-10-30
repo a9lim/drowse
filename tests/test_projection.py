@@ -19,7 +19,8 @@ import torch
 
 from drowse.errors import WhitenerError
 from drowse.errors import ProfileNotRegisteredError
-from drowse.steering.grammar import parse_expr
+from drowse.steering.grammar import ProjectedTerm, parse_expr
+from drowse.steering.terms import entry_coeff
 from drowse.steering.triggers import Trigger
 from drowse.geometry.fold import project_profile
 from tests._whitener import synthetic_whitener
@@ -218,9 +219,8 @@ class _Stub:
         if flat:
             self.composer.compose(flat)
         self._rebuild_entries.append(dict(flat))
-        flat_any: dict[str, Any] = flat
         self._rebuild_calls.append(
-            {name: alpha for name, (alpha, _trig) in flat_any.items()},
+            {name: entry_coeff(entry) for name, entry in flat.items()},
         )
 
 
@@ -269,7 +269,10 @@ class TestSessionProjection:
         steering = parse_expr("0.5 a|b@after")
         with s.steering(steering):
             entries = s._rebuild_entries[-1]
-            assert entries["a|b"] == (0.5, Trigger.AFTER_THINKING)
+            assert entries["a|b"] == ProjectedTerm(
+                coeff=0.5, trigger=Trigger.AFTER_THINKING,
+                operator="|", base="a", onto="b",
+            )
 
     def test_projection_missing_base_raises(self):
         s = _Stub({"b": _profile_b()})  # no "a" registered
