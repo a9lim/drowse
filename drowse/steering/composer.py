@@ -511,28 +511,6 @@ class SteeringComposer:
         memo = self._projections.get(key)
         return None if memo is None else memo[3]
 
-    def curved_manifold_terms(self, value: "str | Steering | None") -> list[str]:
-        """Registry keys of the curved ``%`` terms in ``value``.
-
-        A curved term's ``along`` is a slide fraction toward a position, so it
-        has no sign to invert; a caller that negates steering (loom's
-        ``inverted`` regen) can ask which terms that excludes.  Loads each
-        manifold term's artifact.
-        """
-        steering = Steering.from_value(
-            value, profile_names=set(self._artifacts.profiles),
-        )
-        if steering is None:
-            return []
-        curved: list[str] = []
-        for val in steering.alphas.values():
-            if not isinstance(val, ManifoldTerm):
-                continue
-            key = self._artifacts.concretize_key(val.manifold)
-            if not self._artifacts.ensure_manifold_loaded(key).is_affine:
-                curved.append(key)
-        return curved
-
     # -------------------------------------------------------- stack push / pop
 
     def push(

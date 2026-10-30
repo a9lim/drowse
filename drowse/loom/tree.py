@@ -133,8 +133,8 @@ class LoomNode:
     # ``"pirate"`` on an assistant node — or ``None`` for the family's
     # standard label.  Stamped at send time (immutable afterward) so the
     # chat-render walks each turn with its own role and the transcript /
-    # glyph display matches.  Distinct from the steering-driven
-    # ``_active_role`` (transient, never persisted here).
+    # glyph display matches.  Distinct from the steering-driven role
+    # (``SteeringComposer.active_role``: transient, never persisted here).
     role_label: str | None = None
     # Verbatim thinking text for the turn — a committed thinking block
     # the author typed (any role), or the decoded thinking channel of a
