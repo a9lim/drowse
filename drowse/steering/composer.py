@@ -770,13 +770,13 @@ class SteeringComposer:
         """Return a closure that scores latest captures into a
         ``dict[str, float]`` for ``generate_steered``'s ``score_callback``.
 
-        The closure pulls ``session._capture.latest_per_layer()`` (the
-        most-recent ``[D]`` slice per layer the steering hooks captured) and
-        runs it through :meth:`Monitor.score_single_token` — one unified pass
-        over every probe shape — flattening to gate scalars via
-        :meth:`Monitor.flat_scalars`.  Returns an empty dict when the capture
-        is empty (e.g. before the first forward) so probe gates report
-        inactive instead of seeing stale values from a previous gen.
+        Geometry gate keys read the capture sink's row for this forward when
+        one exists, else score exactly the planned keys from
+        ``session._capture.latest_per_layer()``
+        (:meth:`Monitor.score_planned_gate_scalars`).  Keys naming no attached
+        probe score nothing.  Returns an empty dict when the capture is empty
+        (e.g. before the first forward) so probe gates report inactive instead
+        of seeing stale values from a previous gen.
 
         Caller-side guard: only invoked when
         :meth:`steering_needs_probe_gating` is True, so the no-gate
@@ -792,11 +792,6 @@ class SteeringComposer:
         session = self._session
         capture = session._capture
         monitor = session._monitor
-        # The bound geometry run (the callback is built after the capture
-        # transaction's bind) — the full-roster reads below consult its
-        # step-keyed observe memo, sharing the FULL-incremental sink's
-        # per-forward scoring pass.
-        geometry_run = session._geometry_instrument.current_run
         # J-lens token probes referenced by active gates score on the lens
         # path (readout-channel strength), not through the Monitor —
         # detected once per generation here, merged into every return below.
@@ -837,78 +832,47 @@ class SteeringComposer:
                 if plan else {}
             )
 
-        def _monitor_scalars(step_id: int) -> dict[str, float]:
+        def _monitor_scalars() -> dict[str, float]:
             incremental_readings = session._incremental_readings
             incremental_gate_scores = session._incremental_gate_scores
-            # The step sink already scored this token's readings — reuse them so
-            # the gate doesn't trigger a second pass.  In gating-only-subset mode
-            # (FIX #4) the rows hold just the gated probes, which is exactly the
-            # set the gate consults; in the full incremental mode they hold the
-            # whole roster.  Both reuse the latest appended row.
             state = session._capture_state
             gating_subset = state.gating_subset
             gate_keys = state.gating_keys or monitor_gate_keys
-            if (
-                not gate_keys
-                and (has_lens_gates or has_sae_gates)
-            ):
+            if not gate_keys:
+                # No gate names an attached geometry probe — readout-family
+                # gates, or a gate on a probe nothing attached.  Nothing the
+                # monitor could score would ever fire, so score nothing.
                 return {}
+            # The step sink already scored this token — reuse its row.  In
+            # gating-only-subset mode the rows hold just the gated scalars; in
+            # FULL-incremental mode the whole roster's readings.
             if gating_subset and incremental_gate_scores:
                 return incremental_gate_scores[-1]
             if state.incremental and incremental_readings:
-                # FULL-incremental: the sink primed the run's observe memo
-                # for this forward — a hit returns the sink's exact row.
-                # A miss falls back to the sink's appended row (rows align
-                # 1:1 with forwards, so ``[-1]`` IS this forward's — the
-                # miss cases are an empty-capture row, which never primes,
-                # and a narrow test stub's idle run).
-                scalars = monitor.flat_scalars(
-                    geometry_run.observe(step_id, {})
-                    or incremental_readings[-1]
-                )
-                if gate_keys:
-                    missing = gate_keys - set(scalars)
-                    if missing:
-                        latest = capture.latest_per_layer()
-                        if latest:
-                            scalars.update(
-                                _score_monitor_gate_keys(
-                                    latest,
-                                    missing,
-                                    probe_names=gating_subset if gating_subset else None,
-                                )
+                scalars = monitor.flat_scalars(incremental_readings[-1])
+                missing = gate_keys - set(scalars)
+                if missing:
+                    latest = capture.latest_per_layer()
+                    if latest:
+                        scalars.update(
+                            _score_monitor_gate_keys(
+                                latest,
+                                missing,
+                                probe_names=gating_subset if gating_subset else None,
                             )
+                        )
                 return scalars
-            if not monitor.probe_names:
-                return {}
             latest = capture.latest_per_layer()
             if not latest:
                 return {}
-            if gate_keys:
-                return _score_monitor_gate_keys(
-                    latest,
-                    gate_keys,
-                    probe_names=gating_subset if gating_subset else None,
-                )
-            # Flatten the coordinate readings into gate-callback scalars
-            # (``name`` aliases axis 0, ``name[i]`` per axis, ``name:fraction``,
-            # ``name@label`` for curved nearest).  Scope to the gated subset
-            # when the per-token path is gating-only (avoids the full roster).
-            # The full-roster read goes through the geometry run's step-keyed
-            # ``observe`` — same scope as the token tap's read of this
-            # forward, so whichever runs first primes the memo and the other
-            # hits it (subset reads stay on the planned direct path above:
-            # widening them to the full roster would regress large-K).
-            if gating_subset:
-                agg = monitor.score_single_token(latest, only=gating_subset)
-            else:
-                agg = session._geometry_instrument.current_run.observe(
-                    step_id, latest,
-                )
-            return monitor.flat_scalars(agg)
+            return _score_monitor_gate_keys(
+                latest,
+                gate_keys,
+                probe_names=gating_subset if gating_subset else None,
+            )
 
         def _score(step_id: int) -> dict[str, float]:
-            out = _monitor_scalars(step_id)
+            out = _monitor_scalars()
             if has_lens_gates:
                 # Once per forward: band lens logits → strength
                 # scalars (also stashed step-keyed for the display step to

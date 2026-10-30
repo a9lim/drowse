@@ -216,7 +216,7 @@ def test_session_facades_are_the_instruments() -> None:
 _INSTRUMENT_SURFACE = (
     "specs", "probe_hash", "prepare", "plan", "bind", "close_run",
 )
-_RUN_SURFACE = ("observe", "prime_observation", "observe_aggregate", "close")
+_RUN_SURFACE = ("observe", "observe_aggregate", "close")
 
 
 def test_every_family_carries_the_uniform_instrument_surface() -> None:

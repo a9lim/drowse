@@ -623,45 +623,7 @@ def test_failed_override_eviction_holds_geometry_state_lock():
     assert "toy" not in session._monitor.probe_names
 
 
-# ============================================= observe memo priming ===
-
-def test_geometry_run_prime_observation_contract():
-    """``prime_observation`` fills the bound run's step memo so a later
-    ``observe(step_id, …)`` for the same forward returns the primed
-    readings without rescoring; a different step recomputes; an idle run
-    never primes (it persists indefinitely)."""
-    session = _stub_session()
-    m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
-    session.add_probe("toy")
-    inst = session._geometry_instrument
-
-    # Idle run: priming is a no-op.
-    idle = inst.current_run
-    assert idle.bound is False
-    idle.prime_observation(5, {"toy": object()})
-    assert idle._memo_step is None
-
-    from drowse.readout.types import ReadRequest
-    prep = inst.prepare(ReadRequest(final_aggregate=True))
-    run = inst.bind(inst.plan(prep), prep)
-
-    primed = {"toy": object()}
-    run.prime_observation(5, primed)
-    # Memo hit: same step returns the primed dict without touching the
-    # monitor (empty hidden would otherwise score to an empty dict).
-    assert run.observe(5, {}) is primed
-    # A different step rescores from the given hidden states.
-    latest = {
-        layer_idx: sub.mean + sub.basis[0]
-        for layer_idx, sub in m.layers.items()
-    }
-    fresh = run.observe(6, latest)
-    assert fresh is not primed and "toy" in fresh
-    inst.close_run()
-
+# ================================== per-forward reuse of the sink row ===
 
 def _wire_begin_capture(session: Any) -> dict[str, Any]:
     """Minimal extra wiring so the real ``_begin_capture`` runs on the
@@ -687,131 +649,9 @@ def _wire_begin_capture(session: Any) -> dict[str, Any]:
     return holder
 
 
-def test_full_incremental_sink_primes_geometry_observe_memo():
-    """The FULL-incremental sink's rows ARE complete per-probe readings,
-    so it primes the geometry run's observe memo — the gate callback and
-    the token tap consult ``observe(step)`` for the same forward and hit
-    it instead of rescoring."""
-    session = _stub_session()
-    m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
-    session.add_probe("toy")
-    holder = _wire_begin_capture(session)
-
-    ok = DrowseSession._begin_capture(
-        session, ReadDemand(need_per_token=True), widen=False,
-    )
-    assert ok is True
-    assert session._capture_state.mode is CaptureMode.INCREMENTAL
-    run = session._geometry_instrument.current_run
-    assert run.bound is True
-
-    latest = {
-        layer_idx: sub.mean + sub.basis[0]
-        for layer_idx, sub in m.layers.items()
-    }
-    holder["sink"](3, latest)
-
-    assert session._incremental_readings and (
-        "toy" in session._incremental_readings[-1]
-    )
-    # The memo holds the sink's exact rows for step 3 — observe() is a hit
-    # (identity, not a rescore).
-    assert run.observe(3, {}) is session._incremental_readings[-1]
-    session._geometry_instrument.close_run()
-
-
-def test_lean_and_gating_sinks_never_prime_observe_memo():
-    """LEAN rows are ``coords_only`` (no nearest / assignment / per-layer
-    trace) and gating rows are scalar subsets — priming either as the full
-    ``observe`` reading is the completeness trap, so neither sink primes."""
-    session = _stub_session()
-    m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
-    session.add_probe("toy")
-    holder = _wire_begin_capture(session)
-
-    ok = DrowseSession._begin_capture(
-        session,
-        ReadDemand(need_per_token=True, lean_per_token=True),
-        widen=False,
-    )
-    assert ok is True
-    assert session._capture_state.mode is CaptureMode.LEAN_INCREMENTAL
-    run = session._geometry_instrument.current_run
-
-    latest = {
-        layer_idx: sub.mean + sub.basis[0]
-        for layer_idx, sub in m.layers.items()
-    }
-    holder["sink"](2, latest)
-    assert session._incremental_readings  # the lean row landed
-    assert run._memo_step is None  # …but never primed the memo
-    session._geometry_instrument.close_run()
-
-    # Gating-subset sink: same contract.
-    session._incremental_readings = []
-    session._incremental_gate_scores = []
-    ok = DrowseSession._begin_capture(
-        session,
-        ReadDemand(
-            need_per_token=True,
-            per_token_full_consumer=False,
-            gating_only_probes={"toy"},
-            gating_probe_keys={"toy"},
-            final_probe_aggregate=False,
-        ),
-        widen=False,
-    )
-    assert ok is True
-    assert session._capture_state.mode is CaptureMode.GATING_SUBSET
-    run = session._geometry_instrument.current_run
-    holder["sink"](7, latest)
-    assert session._incremental_gate_scores  # the scalar row landed
-    assert run._memo_step is None
-    session._geometry_instrument.close_run()
-
-
-def test_negative_step_never_caches_or_primes():
-    """``step_id < 0`` is the no-identity sentinel: repeated negative
-    observations rescore every time (a -1 memo would serve one stale read
-    to every later sentinel call — sol's round-1 P2), and a negative
-    prime is a no-op."""
-    session = _stub_session()
-    m = _toy_manifold()
-    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
-        {key: m},
-    )
-    session.add_probe("toy")
-    inst = session._geometry_instrument
-    from drowse.readout.types import ReadRequest
-    prep = inst.prepare(ReadRequest(final_aggregate=True))
-    run = inst.bind(inst.plan(prep), prep)
-
-    run.prime_observation(-1, {"toy": object()})
-    assert run._memo_step is None  # negative prime is a no-op
-
-    latest = {
-        layer_idx: sub.mean + sub.basis[0]
-        for layer_idx, sub in m.layers.items()
-    }
-    first = run.observe(-1, latest)
-    assert run._memo_step is None  # negative observe never caches
-    second = run.observe(-1, {})
-    # A fresh scoring, not the first result served stale.
-    assert second is not first and second == {}
-    inst.close_run()
-
-
-def test_gate_callback_consumes_the_full_incremental_memo():
-    """The composer's FULL-incremental branch reads this forward's row
-    through ``run.observe(step, {})`` — a memo hit on the sink's exact
-    object, no rescore (the monitor is poisoned after the sink to prove
-    it)."""
+def test_gate_callback_reuses_the_full_incremental_sink_row():
+    """The composer's FULL-incremental branch reads this forward's sink row —
+    no rescore (the monitor is poisoned after the sink to prove it)."""
     session = _stub_session()
     m = _toy_manifold()
     session.ensure_manifold_loaded = lambda key: session._manifolds.update(
@@ -832,19 +672,20 @@ def test_gate_callback_consumes_the_full_incremental_memo():
 
     def _poisoned(*_a: Any, **_k: Any) -> dict[str, Any]:
         raise AssertionError(
-            "the gate callback must consume the primed memo, not rescore"
+            "the gate callback must reuse the sink row, not rescore"
         )
 
     session._monitor.score_single_token = _poisoned  # type: ignore[method-assign]
+    _gated(session, "0.3 a@when:toy>0 + 0.3 b@when:toy:fraction>0")
     cb = session._steering_composer.build_gating_score_callback()
     flat = cb(0)
     assert "toy" in flat and "toy:fraction" in flat
     session._geometry_instrument.close_run()
 
 
-def test_token_payload_consumes_the_full_incremental_memo():
-    """``build_token_probe_payload``'s FULL-incremental branch is a memo
-    hit too — the payload's geometry readings ARE the sink's row."""
+def test_token_payload_reuses_the_full_incremental_sink_row():
+    """``build_token_probe_payload``'s FULL-incremental branch reads the sink
+    row too — the payload's geometry readings ARE the sink's row."""
     from drowse.generation.token_payloads import build_token_probe_payload
 
     session = _stub_session()
@@ -867,7 +708,7 @@ def test_token_payload_consumes_the_full_incremental_memo():
 
     def _poisoned(*_a: Any, **_k: Any) -> dict[str, Any]:
         raise AssertionError(
-            "the token payload must consume the primed memo, not rescore"
+            "the token payload must reuse the sink row, not rescore"
         )
 
     session._monitor.score_single_token = _poisoned  # type: ignore[method-assign]
@@ -981,45 +822,66 @@ def test_pooled_aggregate_slice_is_one_position_for_every_family():
 
 # ===================================================== gating callback ===
 
+def _gated(session: Any, expr: str) -> None:
+    from drowse.steering.grammar import parse_expr
+
+    session._steering_composer._stack.append(dict(parse_expr(expr).alphas))
+
+
+def _latest_on_subspace(session: Any, m: Any) -> None:
+    """Latest-per-layer captures placed inside the manifold's subspace."""
+    latest = {L: sub.mean + sub.basis[0] for L, sub in m.layers.items()}
+    session._capture.latest_per_layer = lambda: dict(latest)
+
+
 def test_gating_callback_emits_probe_scalars():
-    """The composer-built gating callback must score the latest captures
-    through the unified monitor and emit gate scalars — fraction + per-node
-    distance + coordinate axis — for every attached probe (a vector probe is
-    the rank-1 case of the same readout)."""
+    """The composer-built gating callback scores the gated keys of attached
+    probes from the latest captures — fraction, per-node distance (the
+    virtual neutral candidate included) and coordinate axis 0."""
     session = _stub_session()
     m = _toy_manifold()
     session.ensure_manifold_loaded = lambda key: session._manifolds.update(
         {key: m},
     )
     session.add_probe("toy")
+    _latest_on_subspace(session, m)
+    _gated(
+        session,
+        "0.3 a@when:toy:fraction>0.1 + 0.3 b@when:toy@neutral>-9 "
+        "+ 0.3 c@when:toy>0",
+    )
 
-    # Latest-per-layer captures: place activation inside the manifold's
-    # subspace at every fit layer.
-    latest: dict[int, torch.Tensor] = {}
-    for layer_idx, sub in m.layers.items():
-        latest[layer_idx] = sub.mean + sub.basis[0]
-    session._capture._per_layer = {
-        idx: [tensor] for idx, tensor in latest.items()
-    }
+    flat = session._steering_composer.build_gating_score_callback()(0)
 
-    # latest_per_layer reads bucket[-1] per layer.
-    session._capture.latest_per_layer = lambda: {
-        idx: bucket[-1]
-        for idx, bucket in session._capture._per_layer.items()
-        if bucket
-    }
+    assert set(flat) == {"toy:fraction", "toy@neutral", "toy"}
+    full = session._monitor.flat_scalars(
+        session._monitor.score_single_token(
+            session._capture.latest_per_layer(),
+        ),
+    )
+    for key, value in flat.items():
+        assert value == pytest.approx(full[key], abs=1e-5)
 
-    cb = session._steering_composer.build_gating_score_callback()
-    flat = cb(0)
-    # Manifold keys are present: fraction + per-node distance + coord axis 0.
-    assert "toy:fraction" in flat
-    # Per-node distance channels emit; the activation sits near the frame
-    # origin, so the virtual neutral candidate competes in the nearest ranking
-    # (it can displace a farther node from the default top-3) and exposes the
-    # uniform ``toy@neutral`` gate channel.
-    assert "toy@neutral" in flat
-    assert any(f"toy@{label}" in flat for label in m.node_labels)
-    assert "toy" in flat  # bare name aliases coordinate axis 0
+
+def test_gate_on_unattached_probe_scores_nothing():
+    """A gate naming a probe no family attached can never fire, so the
+    callback must not fall back to scoring the whole roster every token."""
+    session = _stub_session()
+    m = _toy_manifold()
+    session.ensure_manifold_loaded = lambda key: session._manifolds.update(
+        {key: m},
+    )
+    session.add_probe("toy")
+    _latest_on_subspace(session, m)
+    _gated(session, "0.3 a@when:ghost>0.1")
+
+    def _poisoned(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("an unowned gate must not score the roster")
+
+    session._monitor.score_single_token = _poisoned  # type: ignore[method-assign]
+    session._monitor.score_planned_gate_scalars = _poisoned  # type: ignore[method-assign]
+
+    assert session._steering_composer.build_gating_score_callback()(0) == {}
 
 
 def test_gating_callback_empty_capture_returns_empty():

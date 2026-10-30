@@ -6142,8 +6142,6 @@ class DrowseSession:
                 # sole consumer); append even an empty dict to keep row indices
                 # aligned with decode forwards.  The full roster is pooled once at
                 # finalize from the tail ring (``_score_aggregate_only``).
-                # NEVER primes the observe memo — these rows are a scalar
-                # subset, not full readings (the completeness trap).
                 del step_id
                 self._incremental_gate_scores.append(
                     self._monitor.score_planned_gate_scalars(latest, gate_plan)
@@ -6182,10 +6180,6 @@ class DrowseSession:
             def _score_step_lean(
                 step_id: int, latest: dict[int, torch.Tensor],
             ) -> None:
-                # NEVER primes the observe memo — ``coords_only`` readings
-                # omit nearest / assignment / per-layer traces, so exposing
-                # them as the full ``observe()`` result would be the second
-                # completeness trap beyond the gating subset.
                 del step_id
                 self._incremental_readings.append(
                     self._monitor.score_single_token(latest, coords_only=True)
@@ -6201,7 +6195,6 @@ class DrowseSession:
             self._monitor.reset_curved_feet()
             self._monitor.enable_curved_warm(True)
         elif not widen and self._monitor.probe_names and demand.need_per_token:
-            geometry_run = self._geometry_instrument.current_run
 
             def _score_step(
                 step_id: int, latest: dict[int, torch.Tensor],
@@ -6210,17 +6203,11 @@ class DrowseSession:
                 # only retained device payload.  Append even an empty dict so
                 # row indices remain aligned with decode forwards; finalization
                 # trims any terminal EOS-only overcapture to generated_ids.
-                readings = (
+                # The gate callback and the token tap read this row.
+                del step_id
+                self._incremental_readings.append(
                     self._monitor.score_single_token(latest) if latest else {}
                 )
-                self._incremental_readings.append(readings)
-                # FULL-incremental rows ARE the complete per-probe readings,
-                # so prime the geometry run's step-keyed observe memo — the
-                # gate callback and the token tap consult ``observe(step)``
-                # for this forward and hit it instead of rescoring.  The
-                # gating-subset and lean sinks never prime (partial rows).
-                if readings:
-                    geometry_run.prime_observation(step_id, readings)
 
             if (
                 lens_plan.final_aggregate or has_lens_gate
@@ -9165,8 +9152,7 @@ class DrowseSession:
                 # ``step_id`` is the decode loop's forward index (the internal
                 # StepTokenCallback contract) — the SAME value this forward's
                 # gate callback received, so the lens/SAE display steps below
-                # can reuse the gate's step-keyed stash rows and the geometry
-                # payload can hit the run's observe memo.  User callbacks keep
+                # can reuse the gate's step-keyed stash rows.  User callbacks keep
                 # the public six-argument TokenCallback shape (invoked below).
                 nonlocal mean_logprob_sum, mean_logprob_count, mean_logprob_missing
                 self._last_token_probe_payload = None

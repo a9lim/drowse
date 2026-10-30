@@ -24,12 +24,14 @@ from drowse.geometry.manifold import (
     fit_layer_subspace as _fit_layer_subspace_with_ev,
 )
 from drowse.readout.monitor import (
-    DEFAULT_NEAREST_TOP_N,
-    NEUTRAL_LABEL,
-    AttachedManifoldProbe,
     Monitor,
     _mean_coordinate_space,
     _mean_domain_coordinates,
+)
+from drowse.readout.monitor_attach import (
+    DEFAULT_NEAREST_TOP_N,
+    NEUTRAL_LABEL,
+    AttachedManifoldProbe,
 )
 from drowse.generation.results import ProbeReading
 
