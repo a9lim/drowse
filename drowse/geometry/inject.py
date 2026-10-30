@@ -666,7 +666,7 @@ def subspace_inject(
 
     Decomposes ``h = mean + H_m + H_n + H_o`` against the layer's affine
     subspace and its RBF surface ``M``, then applies two near-orthogonal
-    operations, each a coefficient in ``[0, 1]``:
+    operations (``along`` is unclamped on the affine path; ``onto`` is in ``[0, 1]``):
 
     - **along** (``a``): **translate** the projected foot ``p*`` by the fixed
       neutral→target offset (scaled by ``a``) via
@@ -760,7 +760,7 @@ def subspace_inject(
         # mask from ``synthesize_subspace`` (0 push / 1 ablate).
         p_new = q + along * (target - kappa * q)        # (.., n==R)
         h_new = h_f32 + ((p_new - q) @ basis)           # keep H_o verbatim
-        # No ``_soft_norm_cap`` on the affine branch.  The cap only ever guarded
+        # No soft norm cap on the affine branch.  The cap only ever guarded
         # off-domain RBF *extrapolation* blowup; a flat affine fit has no RBF
         # surface (``clamp_position`` is identity on the flat ``CustomDomain``),
         # so ``p_new`` is always in-frame and the displacement ``(p_new − q)@basis``

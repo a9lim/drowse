@@ -81,7 +81,7 @@ class LayerSubspace:
     # subspace's pole / node sits at distance ∝ ‖δ_L‖ from the neutral
     # origin here, so the synthesizer reads ``node_coords[index]`` per layer
     # as the ``along`` target.  The shared ``Manifold.node_coords`` stays the
-    # label/display layout; *these* are the geometry (§5 neutral-anchor).
+    # label/display layout; *these* are the neutral-anchored geometry.
     affine_map: torch.Tensor | None = None
     # (m, R) authoring-to-reduced coordinate map for affine subspaces.  ``None``
     # is the canonical identity map (m == R). Cross-model transfer may need a
@@ -202,9 +202,9 @@ class LayerSubspace:
         supplies an ``(m, R)`` map after cross-model reparameterization.
         ``basis`` is ``(R, D)``;
         the implied intrinsic dimension is ``n = R`` (the surface fills the
-        span).  Backs the folded-vector / flat-subspace representation
-        (Phase 2 §1).  ``node_coords`` ``(K, R)`` carries the per-layer real
-        neutral-anchored node positions (the steer-target source — §5);
+        span).  Backs the folded-vector / flat-subspace representation.
+        ``node_coords`` ``(K, R)`` carries the per-layer real
+        neutral-anchored node positions (the steer-target source);
         ``None`` for a bare span with no associated nodes.
         """
         r = int(basis.shape[0])
@@ -237,7 +237,7 @@ class LayerSubspace:
         stored ``mean`` without the raw anchor, since the anchor's per-axis
         coords are ``mean @ basisᵀ`` (the basis is orthonormal).  Affine only
         — a curved subspace's per-axis pruning would force an RBF re-fit, so
-        the split is flat-yes / curved-no (§5).  ``kept`` indexes into
+        the split is flat-yes / curved-no.  ``kept`` indexes into
         ``[0, rank)``; an empty ``kept`` is a caller error (drop the layer).
 
         Bakes the DLS keep set into the stored basis at fit time (the N-node

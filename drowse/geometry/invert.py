@@ -98,7 +98,6 @@ def invert_parameterization(
     warm_start: torch.Tensor | None = None,
     warm_iter: int = DEFAULT_INVERSION_WARM_ITER,
     damping: float = DEFAULT_INVERSION_DAMPING,
-    node_values: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Nearest-point projection of ``query`` ``(.., R)`` onto the fitted surface.
 
@@ -112,8 +111,7 @@ def invert_parameterization(
     query wins, guarding against a fold/periodic local minimum.  Warm path
     (``warm_start``, the curved-probe foot-follower): ``warm_iter`` steps over
     two restarts — the carried previous-token foot and the single nearest fit
-    node.  ``node_values`` ``(K, R)`` optionally supplies the surface values at
-    the fit nodes (the seed metric), which per-token callers can cache.
+    node.
     """
     n = domain.intrinsic_dim
     R = query.shape[-1]
@@ -134,10 +132,8 @@ def invert_parameterization(
     node_coords = node_coords.to(device=device, dtype=dtype)  # (K, n)
     K = node_coords.shape[0]
 
-    node_vals = (
-        eval_rbf(np_, rw, pc, np_) if node_values is None
-        else node_values.to(device=device, dtype=dtype)
-    )  # (K, R)
+    # Surface values at the fit nodes: the seed metric for the restarts.
+    node_vals = eval_rbf(np_, rw, pc, np_)  # (K, R)
     if warm_start is not None:
         ws = warm_start.to(device=device, dtype=dtype).reshape(N, n)  # (N, n)
         near1 = torch.cdist(flat, node_vals).argmin(dim=-1)  # (N,)

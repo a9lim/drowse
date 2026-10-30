@@ -8,7 +8,7 @@ mmap row spools. They live in ``io`` — the persistence layer — rather than
 math with no session/IO coupling.
 
 ``io`` importing ``core``'s dataclasses (:class:`~drowse.geometry.manifold.Manifold`,
-:class:`~drowse.geometry.manifold.LayerSubspace`, :class:`~drowse.geometry.manifold.ManifoldDomain` via :func:`~drowse.geometry.manifold.domain_from_spec`) is the
+:class:`~drowse.geometry.subspace.LayerSubspace`, :class:`~drowse.geometry.domains.ManifoldDomain` via :func:`~drowse.geometry.domains.domain_from_spec`) is the
 correct layering arrow: the codec needs those types, so the codec belongs beside
 the format it serializes, not inside the geometry module. These functions lived
 in ``core`` only because that arrow used to run the wrong way.

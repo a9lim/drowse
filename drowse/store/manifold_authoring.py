@@ -436,7 +436,7 @@ def create_discover_manifold_folder(
     not per-manifold scenario lists.
 
     Coords are derived per-model at fit time
-    (:func:`drowse.geometry.manifold.discover_coords` runs over the per-node
+    (:func:`drowse.geometry.topology.discover_coords` runs over the per-node
     centroids), so authoring quality cannot be advised here the way it
     is for authored manifolds — the spectral connectivity check and PCA
     variance-floor diagnostics surface only on the fit itself.

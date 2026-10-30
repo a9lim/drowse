@@ -4698,7 +4698,7 @@ class DrowseSession:
         (it leads every system prompt), so it cancels at extraction.  Responses
         are emitted samples-outer / prompts-inner so ``response[i]`` aligns to
         ``prompt[i % k]`` -- the alignment
-        :func:`~drowse.geometry.manifold.compute_manifold_node_stats` and the node
+        :func:`~drowse.fit.node_stats.compute_manifold_node_stats` and the node
         corpus files assume.
 
         ``custom_system`` is the system template used for any concept whose

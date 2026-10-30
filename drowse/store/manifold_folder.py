@@ -70,7 +70,7 @@ _LABEL_REGEX = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 # ``fit_mode == "authored"``. Current manifests always carry the discriminator.
 # ``auto`` is a discover mode whose *resolved* geometry (flat ``pca`` vs curved
 # ``spectral``, plus periodic ``BoxDomain`` axes) is chosen per-model at fit
-# time by ``geometry.manifold.select_topology`` — the folder declares only the
+# time by ``geometry.topology.select_topology`` — the folder declares only the
 # corpus + hyperparams, exactly like ``pca``/``spectral``.
 _FIT_MODES_DISCOVER: frozenset[str] = frozenset({"pca", "spectral", "auto"})
 # A baked manifold is a pre-fitted, corpus-less artifact: its geometry is
@@ -782,7 +782,7 @@ def min_nodes(n: int) -> int:
     so every axis is sampled at three levels and curvature is fittable.
     At ``n == 1`` this is 3, the historic floor.  This is *necessary* but
     not *sufficient*: the nodes must also be poised (affinely span the
-    embedding), which :func:`drowse.geometry.manifold.fit_rbf_interpolant`
+    embedding), which :func:`drowse.geometry.rbf.RbfFitPlan`
     enforces.
     """
     return 2 * n + 1
@@ -1042,11 +1042,11 @@ class ManifoldFolder:
     - ``fit_mode == "authored"``: the
       user supplied per-node ``coords`` on a declared ``domain``.  The
       fit pipeline embeds the coords and runs straight into
-      ``fit_layer_subspace``.
+      ``fit_curved_subspace``.
     - ``fit_mode in {"pca", "spectral"}`` (discover mode): nodes carry
       ``{label}`` only — no coords, no top-level ``domain``.  The fit
       pipeline pools per-node centroids, derives coords via
-      :func:`drowse.geometry.manifold.discover_coords` (per-model, since
+      :func:`drowse.geometry.topology.discover_coords` (per-model, since
       different models embed the same heap differently), wraps them in
       a ``CustomDomain(k)`` with identity embedding, and fits.
 

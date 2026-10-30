@@ -1428,7 +1428,7 @@ def _resolve_fit_geometry(
 
     discover_metadata: dict[str, Any] = {}
     # ``max_subspace_dim`` caps the per-layer PCA subspace in the
-    # **curved** fit (``fit_layer_subspace``; default
+    # **curved** fit (``fit_curved_subspace``; default
     # :data:`DEFAULT_N_COMPONENTS` = 64).  Smaller values constrain the
     # dim count that ``subspace_inject`` displaces at steer time — finer-
     # grained steering control at the cost of representing less per-layer
@@ -1550,7 +1550,7 @@ def _resolve_fit_geometry(
         if "max_subspace_dim" in hyperparams:
             max_subspace_dim_override = int(hyperparams.pop("max_subspace_dim"))
         # ``smoothing`` is consumed by the penalized curved fit
-        # (``fit_layer_subspace`` → ``fit_rbf_smoothed``), not by
+        # (``fit_curved_subspace`` → ``RbfFitPlan.fit``), not by
         # ``discover_coords`` — pop it before the dispatch so it isn't an
         # unexpected kwarg.  Only the curved (``spectral``) path has an RBF
         # surface to smooth; the flat (``pca``) path's affine span has no
@@ -1662,7 +1662,7 @@ class ManifoldExtractionPipeline:
     centroid through the SAE (encode then decode) before the fit — a
     denoised, sparse-feature-supported centroid — and restricts the
     manifold to the SAE's covered layers.  Either way the fitted
-    :class:`~drowse.geometry.manifold.LayerSubspace` is model-space, so the
+    :class:`~drowse.geometry.subspace.LayerSubspace` is model-space, so the
     steering hook never touches the SAE.
     """
 

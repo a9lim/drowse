@@ -224,7 +224,7 @@ class ManifoldTerm:
     named :class:`~drowse.geometry.manifold.Manifold` artifact on scope entry
     and hands the hook a per-layer subspace + domain + the authoring
     ``position`` coords; the hook runs the unified along/onto injection
-    (:func:`~drowse.geometry.manifold.subspace_inject`).  Stored as a value
+    (:func:`~drowse.geometry.inject.subspace_inject`).  Stored as a value
     inside ``Steering.alphas`` under the key ``"<manifold>%<position>"`` so
     two positions on the same manifold compose as distinct entries and
     never collide with plain / projected / ablation keys.

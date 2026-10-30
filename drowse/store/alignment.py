@@ -5,7 +5,7 @@ model isn't directly usable on a different model — different tokenizers,
 different hidden dims, different basis rotation in the residual stream.
 This module fits a per-layer linear map between two models' neutral
 activations (``Procrustes`` for matched dim, low-rank PCA-and-lift for
-mismatched dim); ``geometry.manifold.transfer_manifold_subspaces``, driven by
+mismatched dim); ``geometry.transfer.transfer_manifold_subspaces``, driven by
 ``store.manifold_lifecycle.transfer_manifold``, is what applies it.
 
 Public surface:

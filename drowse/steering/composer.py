@@ -940,7 +940,7 @@ class SteeringComposer:
         - **push** terms (vectors, poles, ``~``/``|`` projections, affine-``%``
           manifolds) and **ablation** terms (``!``) are grouped by trigger;
           each group is synthesized into one merged affine subspace via
-          :func:`~drowse.geometry.manifold.synthesize_subspace` and registered with
+          :func:`~drowse.geometry.inject.synthesize_subspace` and registered with
           :meth:`SteeringManager.add_subspace`;
         - **curved-``%``** manifold terms each get their own two-op via
           :meth:`SteeringManager.add_manifold`.

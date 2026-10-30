@@ -516,7 +516,7 @@ def _compute_assign_bandwidth(
     node-thickness variance:
 
     * **curved + σ-field**: each node's reduced within-node thickness
-      ``σ(z)`` (:meth:`~drowse.geometry.manifold.LayerSubspace.sigma_at`) mapped
+      ``σ(z)`` (:meth:`~drowse.geometry.subspace.LayerSubspace.sigma_at`) mapped
       into the whitened metric by the isotropic scale ``√(tr(M_R)/R)``
       (``M_R = chol cholᵀ``), so a reduced-space σ is comparable to the
       chol-whitened distances; the neutral anchor takes the per-layer median
@@ -624,7 +624,7 @@ def _layer_geometry(
     * ``cdist_query`` — ``(1, R)`` query (``Lᵀc``) so a plain cdist against
       ``cdist_nodes`` is the Mahalanobis distance.
     * ``invert_query`` — ``(R,)`` M-orthogonal projection coords
-      ``c = M_R⁻¹ g`` for :func:`~drowse.geometry.manifold.invert_parameterization`.
+      ``c = M_R⁻¹ g`` for :func:`~drowse.geometry.invert.invert_parameterization`.
     * ``cdist_nodes`` — ``(K, R)`` whitened node coords.
 
     ``Σ⁻¹h`` depends only on the layer's hidden state + the shared whitener,
