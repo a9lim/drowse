@@ -51,12 +51,12 @@ class _StubSession:
         self.tree = LoomTree(model_id=model_id)
         self.config = _Config(system_prompt=system_prompt)
         self.monitor = _Monitor(probe_names=probe_names)
-        self._probe_hash_cache = probe_hashes or {
+        self._probe_digests = probe_hashes or {
             name: f"hash_of_{name}" for name in self.monitor.probe_names
         }
 
     def probe_hashes(self) -> dict[str, str]:
-        return dict(self._probe_hash_cache)
+        return dict(self._probe_digests)
 
 
 # ---------------------------------------------------------------------------

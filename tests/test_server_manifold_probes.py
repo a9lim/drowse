@@ -834,15 +834,6 @@ class TestWebSocketProbeReadings:
         session.monitor.score_single_token.side_effect = _score
         return reading
 
-    def _wire_capture(self, session: Any) -> None:
-        """Wire ``session._capture._per_layer`` so the inline probe
-        scoring branch sees non-empty per-layer captures and therefore
-        actually runs.  The values themselves don't matter — the mocked
-        ``score_single_token`` ignores its input."""
-        capture = MagicMock()
-        capture._per_layer = {4: ["sentinel"], 8: ["sentinel"]}
-        session._capture = capture
-
     def _attach_generate(self, session: Any, tokens: Any, aggregate: Any = None) -> None:
         """Install a fake ``session.generate`` that drives ``on_token``.
 
@@ -901,7 +892,6 @@ class TestWebSocketProbeReadings:
     def test_token_frame_carries_probe_readings(self, session_and_client: Any) -> None:
         session, client = session_and_client
         self._attach_probe(session)
-        self._wire_capture(session)
         self._attach_generate(session, ["Hello", " ", "world"])
 
         with client.websocket_connect(
@@ -942,7 +932,6 @@ class TestWebSocketProbeReadings:
     def test_done_frame_carries_probe_aggregate(self, session_and_client: Any) -> None:
         session, client = session_and_client
         self._attach_probe(session)
-        self._wire_capture(session)
         aggregate = ProbeReading(
             fraction=0.42,
             fraction_per_layer={4: 0.4, 8: 0.5},

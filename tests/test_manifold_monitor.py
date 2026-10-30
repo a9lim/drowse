@@ -54,8 +54,9 @@ def _gate_scalars(
     """The production gate path: parse the key space once, score the plan.
 
     ``plan_gate_scalars`` + ``score_planned_gate_scalars`` is the pair the
-    composer and ``_begin_capture`` use (plan once per generation, score every
-    token); the tests below drive both halves through it.
+    read plane's gate callback and gated-subset step sink use (plan once per
+    generation, score every token); the tests below drive both halves
+    through it.
     """
     return mon.score_planned_gate_scalars(hidden, mon.plan_gate_scalars(keys))
 

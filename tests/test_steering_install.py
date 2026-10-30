@@ -74,8 +74,6 @@ def _session(*, compiled: bool = True) -> tuple[DrowseSession, dict[int, torch.T
     s._gen_lock = threading.RLock()
     attach_engine(s, runtime=CompiledRuntime(compiled=compiled))
     s._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _on: None)
-    s._end_capture = lambda: None
-    s._close_instrument_runs = lambda: None
     s.events = EventBus()
     s.tree = LoomTree()
     wire_stub_steering(
