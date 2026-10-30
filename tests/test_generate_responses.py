@@ -72,6 +72,26 @@ def test_system_for_abstract_vs_concrete() -> None:
     assert system_for("happy", None).startswith("You are someone happy")
 
 
+def test_system_for_custom_formats_the_callers_template() -> None:
+    assert system_for("january", "custom", "I am {c}, {art} month. {{braces}}") == (
+        "I am january, a month. {braces}"
+    )
+
+
+@pytest.mark.parametrize("template", ["I am {c", "I am {mood}", "I am {0}", None])
+def test_system_for_custom_rejects_an_unusable_template_as_a_request_error(
+    template: str | None,
+) -> None:
+    """Regression: a request's malformed ``custom_system`` escaped as the
+    ``str.format`` error itself — a ``KeyError``/``IndexError`` 500, or a
+    bare ``ValueError`` whose text never named the template."""
+    from drowse.errors import RequestError
+
+    with pytest.raises(RequestError, match="custom system template") as caught:
+        system_for("january", "custom", template)
+    assert caught.value.user_message()[0] == 400
+
+
 def test_role_for_abstract_vs_concrete() -> None:
     assert role_for("happy", "abstract") == "someone_happy"
     assert role_for("pirate", "concrete") == "pirate"

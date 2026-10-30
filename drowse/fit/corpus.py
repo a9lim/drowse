@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import torch
 
+from drowse.errors import RequestError
 from drowse.fit import capture as _capture
 from drowse.generation.decode import build_chat_input
 from drowse.naming import BIPOLAR_SEP, _slug
@@ -76,8 +77,15 @@ def system_for(concept_h: str, kind: str | None, custom: str | None = None) -> s
     """
     if (kind or "abstract") == "custom":
         if not custom:
-            raise ValueError("system_for: kind='custom' requires a custom system template")
-        return custom.format(c=concept_h, art=article(concept_h))
+            raise RequestError("system_for: kind='custom' requires a custom system template")
+        try:
+            return custom.format(c=concept_h, art=article(concept_h))
+        except (IndexError, KeyError, ValueError) as exc:
+            raise RequestError(
+                f"custom system template {custom!r} is not a valid template "
+                f"({exc!r}): use only the {{c}} and {{art}} placeholders and "
+                f"double any literal brace"
+            ) from None
     template = KIND_TEMPLATES.get(kind or "abstract", KIND_TEMPLATES["abstract"])
     return template.format(c=concept_h, art=article(concept_h))
 
@@ -164,7 +172,7 @@ class CorpusGenerator:
         call reproduces its corpora on the same device.
         """
         if any((k or "abstract") == "custom" for k in kinds) and not custom_system:
-            raise ValueError(
+            raise RequestError(
                 "generate_responses: kind='custom' requires custom_system "
                 "(a system template with a {c} placeholder)"
             )
