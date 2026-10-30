@@ -1,83 +1,64 @@
-"""generate_responses / generate_neutral_responses — CPU, mocked generator.
+"""generate_responses / generate_neutral_responses on a real CPU session.
 
-The 4.0 conversational (A2) corpus generator: the model answers the shared
-baseline prompts in character (concept in the system prompt + a kind-derived
-elicitation role).  These tests stub ``_run_generator`` and override the
-baseline prompt set, so no real model is needed.
+The conversational corpus generator: the model answers the shared baseline
+prompts in character (concept in the system prompt plus a kind-derived
+assistant-role label).  A scripted tiny model answers each prompt with
+``resp::<prompt>`` and records the system turn, user turn and assistant
+label it was actually rendered with; the baseline set is overridden to three
+prompts through the user override file.
 """
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
 import torch
 
-from drowse.fit import capture as V
-from drowse.generation.decode import GenerationState
-from drowse.session.session import DrowseSession, _SessionStopCriteria, _role_for, _system_for
 from drowse.fit.capture import _LENGTH_DIRECTIVE
+from drowse.generation.decode import GenerationState
+from drowse.session.session import _SessionStopCriteria, _role_for, _system_for
+from tests.support.sessions import TinySessionFactory
+
+_TURN = re.compile(
+    r"<\|start_header_id\|>(.*?)<\|end_header_id\|>\n\n(.*?)<\|eot_id\|>", re.DOTALL,
+)
 
 
-class _FakeSession(DrowseSession):
-    """Bypass real construction; record each generator call."""
+class _Answerer:
+    """Scripted reply source: echo the user prompt and record the frame.
 
-    def __init__(self) -> None:
+    ``blank`` prompts get an empty reply (immediate end-of-turn) on their
+    first ``blank_attempts`` generations.
+    """
+
+    def __init__(self, *, blank: tuple[str, ...] = (), blank_attempts: int = 1,
+                 prefix: str = "resp") -> None:
         self.calls: list[dict[str, Any]] = []
+        self._blank = blank
+        self._blank_attempts = blank_attempts
+        self._prefix = prefix
 
-    def _run_generator_batch(
-        self, system_msg: str, prompts: list[str], max_new_tokens: int,
-        **kw: Any,
-    ) -> list[str]:
-        # The batched seam generate_responses / generate_neutral_responses call.
-        # Record one entry per prompt (preserving order) so the alignment +
-        # count assertions are identical to the old per-prompt seam.
-        role = kw.get("role")
-        out: list[str] = []
-        for prompt in prompts:
-            self.calls.append(
-                {"system": system_msg, "prompt": prompt, "role": role},
-            )
-            # Echo so the caller can see which prompt produced which response.
-            out.append(f"resp::{prompt}")
-        return out
-
-
-class _BlankThenContentSession(_FakeSession):
-    def __init__(self) -> None:
-        super().__init__()
-        self.retry_calls: list[dict[str, Any]] = []
-
-    def _run_generator_batch(
-        self, system_msg: str, prompts: list[str], max_new_tokens: int,
-        **kw: Any,
-    ) -> list[str]:
-        if kw.get("deterministic"):
-            self.retry_calls.append({
-                "system": system_msg,
-                "prompts": list(prompts),
-                "role": kw.get("role"),
-                "min_new_tokens": kw.get("min_new_tokens"),
-            })
-            return [f"repaired::{prompt}" for prompt in prompts]
-        return ["" if prompt == "P1" else f"sampled::{prompt}" for prompt in prompts]
-
-
-class _AlwaysBlankSession(_BlankThenContentSession):
-    def _run_generator_batch(
-        self, system_msg: str, prompts: list[str], max_new_tokens: int,
-        **kw: Any,
-    ) -> list[str]:
-        return ["" for _ in prompts]
+    def __call__(self, label: str, prompt_text: str) -> str:
+        turns = dict(_TURN.findall(prompt_text))
+        prompt = turns["user"]
+        self.calls.append({"system": turns.get("system"), "prompt": prompt, "role": label})
+        seen = sum(call["prompt"] == prompt for call in self.calls)
+        if prompt in self._blank and seen <= self._blank_attempts:
+            return ""
+        return f"{self._prefix}::{prompt}"
 
 
 @pytest.fixture(autouse=True)
-def _small_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        V, "_load_baseline_prompts", lambda: ["P0", "P1", "P2"],
-    )
+def _three_baseline_prompts(isolated_home: Path) -> None:
+    (isolated_home / "baseline_prompts.json").write_text(json.dumps(["P0", "P1", "P2"]))
 
 
-# --- helpers --------------------------------------------------------------
+def _session(factory: TinySessionFactory, answerer: _Answerer) -> Any:
+    session, _script = factory.scripted(answerer, warm=False)
+    return session
 
 
 @pytest.mark.parametrize("score_kind", ["none", "tensor", "tuple"])
@@ -113,79 +94,93 @@ def test_role_for_abstract_vs_concrete() -> None:
 # --- generate_responses ---------------------------------------------------
 
 
-def test_round_robin_alignment_and_count() -> None:
-    s = _FakeSession()
-    out = s.generate_responses(["happy"], ["abstract"], samples_per_prompt=2)
-    # 2 samples x 3 prompts = 6 responses, samples-outer / prompts-inner.
-    # The length directive rides the system prompt, so user turns stay bare.
+def test_round_robin_alignment_and_count(make_tiny_session: TinySessionFactory) -> None:
+    answerer = _Answerer()
+    out = _session(make_tiny_session, answerer).generate_responses(
+        ["happy"], ["abstract"], samples_per_prompt=2,
+    )
+    # 2 samples x 3 prompts, samples-outer / prompts-inner: response[i]
+    # answers baseline prompt[i % 3].
     assert out["happy"] == [
         "resp::P0", "resp::P1", "resp::P2",
         "resp::P0", "resp::P1", "resp::P2",
     ]
-    # response[i] was generated from baseline prompt[i % 3]
-    prompts = [c["prompt"] for c in s.calls]
-    assert prompts == ["P0", "P1", "P2", "P0", "P1", "P2"]
-    # every node system leads with the shared brevity directive
-    assert all(c["system"].startswith(_LENGTH_DIRECTIVE) for c in s.calls)
+    assert [c["prompt"] for c in answerer.calls] == ["P0", "P1", "P2"] * 2
+    # The length directive leads every node system; user turns stay bare.
+    assert all(c["system"].startswith(_LENGTH_DIRECTIVE) for c in answerer.calls)
 
 
-def test_kind_drives_system_and_role() -> None:
-    s = _FakeSession()
-    s.generate_responses(["pirate"], ["concrete"])
-    call = s.calls[0]
-    assert call["system"] == (
+def test_kind_drives_system_and_role(make_tiny_session: TinySessionFactory) -> None:
+    concrete = _Answerer()
+    _session(make_tiny_session, concrete).generate_responses(["pirate"], ["concrete"])
+    assert concrete.calls[0]["system"] == (
         f"{_LENGTH_DIRECTIVE} You are a pirate. Respond exactly as a pirate would."
     )
-    assert call["role"] == "pirate"
+    assert concrete.calls[0]["role"] == "pirate"
 
-    s2 = _FakeSession()
-    s2.generate_responses(["happy"], ["abstract"])
-    assert s2.calls[0]["role"] == "someone_happy"
-
-
-def test_explicit_role_overrides_kind() -> None:
-    s = _FakeSession()
-    s.generate_responses(["happy"], ["abstract"], roles={"happy": "oracle"})
-    assert all(c["role"] == "oracle" for c in s.calls)
+    # The role slug ``someone_happy`` renders as the header label "someone happy".
+    abstract = _Answerer()
+    _session(make_tiny_session, abstract).generate_responses(["happy"], ["abstract"])
+    assert abstract.calls[0]["role"] == "someone happy"
 
 
-def test_multiple_concepts_keyed_separately() -> None:
-    s = _FakeSession()
-    out = s.generate_responses(["happy", "sad"], ["abstract", "abstract"])
-    assert set(out) == {"happy", "sad"}
-    assert len(out["happy"]) == 3 and len(out["sad"]) == 3
+def test_explicit_role_overrides_kind(make_tiny_session: TinySessionFactory) -> None:
+    answerer = _Answerer()
+    _session(make_tiny_session, answerer).generate_responses(
+        ["happy"], ["abstract"], roles={"happy": "oracle"},
+    )
+    assert {c["role"] for c in answerer.calls} == {"oracle"}
 
 
-def test_blank_row_is_retried_in_place_with_same_elicitation_frame() -> None:
-    s = _BlankThenContentSession()
-    out = s.generate_responses(["sad"], ["abstract"])
+def test_multiple_concepts_keyed_separately(make_tiny_session: TinySessionFactory) -> None:
+    out = _session(make_tiny_session, _Answerer()).generate_responses(
+        ["happy", "sad"], ["abstract", "abstract"],
+    )
+    assert out == {
+        "happy": ["resp::P0", "resp::P1", "resp::P2"],
+        "sad": ["resp::P0", "resp::P1", "resp::P2"],
+    }
 
-    assert out["sad"] == ["sampled::P0", "repaired::P1", "sampled::P2"]
-    assert s.retry_calls == [{
+
+def test_blank_row_is_retried_in_place_with_same_elicitation_frame(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    answerer = _Answerer(blank=("P1",))
+    out = _session(make_tiny_session, answerer).generate_responses(["sad"], ["abstract"])
+
+    assert out["sad"] == ["resp::P0", "resp::P1", "resp::P2"]
+    frame = {
         "system": (
             f"{_LENGTH_DIRECTIVE} You are someone sad. "
             "Respond exactly as someone sad would."
         ),
-        "prompts": ["P1"],
-        "role": "someone_sad",
-        "min_new_tokens": 8,
-    }]
+        "role": "someone sad",
+    }
+    p1_calls = [c for c in answerer.calls if c["prompt"] == "P1"]
+    assert p1_calls == [{**frame, "prompt": "P1"}] * 2
+    assert [c["prompt"] for c in answerer.calls] == ["P0", "P1", "P2", "P1"]
 
 
-def test_blank_deterministic_retry_fails_before_authoring() -> None:
+def test_blank_deterministic_retry_fails_before_authoring(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    session = _session(make_tiny_session, _Answerer(blank=("P1",), blank_attempts=2))
     with pytest.raises(RuntimeError, match="including the deterministic retry"):
-        _AlwaysBlankSession().generate_responses(["sad"], ["abstract"])
+        session.generate_responses(["sad"], ["abstract"])
 
 
 # --- generate_neutral_responses -------------------------------------------
 
 
-def test_neutral_responses_brevity_system_no_persona_no_role() -> None:
-    s = _FakeSession()
-    out = s.generate_neutral_responses(samples_per_prompt=2)
-    assert len(out) == 6  # 2 x 3 prompts
-    # neutral's only system is the shared brevity directive (no persona); the
-    # user turn stays bare and there is no role swap.
-    assert all(c["system"] == _LENGTH_DIRECTIVE for c in s.calls)
-    assert all(c["prompt"] in {"P0", "P1", "P2"} for c in s.calls)
-    assert all(c["role"] is None for c in s.calls)
+def test_neutral_responses_brevity_system_no_persona_no_role(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    answerer = _Answerer()
+    out = _session(make_tiny_session, answerer).generate_neutral_responses(
+        samples_per_prompt=2,
+    )
+    assert out == ["resp::P0", "resp::P1", "resp::P2"] * 2
+    # Neutral's only system is the shared length directive (no persona), the
+    # user turn stays bare, and the assistant keeps its own label.
+    assert all(c["system"] == _LENGTH_DIRECTIVE for c in answerer.calls)
+    assert {c["role"] for c in answerer.calls} == {"assistant"}

@@ -1,49 +1,133 @@
-"""Shared test infrastructure for the CPU-only suite.
+"""Suite-wide pytest fixtures and hooks.
 
-The bulk of drowse' CPU tests need a tiny HF-causal-LM-like stub: something
-that, called with ``input_ids``, returns an object exposing ``.logits`` of
-shape ``(1, T, V)``.  Before this module each test file rolled its own
-(``_MockModel`` lived in both ``test_joint_logprobs`` and ``test_naturalness``,
-``_StopModel`` in ``test_generation``, and so on), differing only in *how the
-logits are produced* — the boilerplate (the ``.logits`` wrapper, an optional
-``parameters()`` for ``next(model.parameters()).device``) was copy-pasted every
-time.
+Fixtures (helpers they build on live in ``tests/support``):
 
-:class:`FakeLogitsModel` is that boilerplate, parametrized by the one thing
-that actually varies: a ``logits_fn(input_ids) -> Tensor`` callable.  Tests
-that want a constant log-uniform distribution, a seeded-random one, or a
-scripted argmax pass their own ``logits_fn`` and inherit everything else.
+- ``_isolated_drowse_home`` (session, autouse): every worker runs under a
+  scratch ``DROWSE_HOME``; nothing reaches the user's real home.
+- ``isolated_home``: a fresh per-test ``DROWSE_HOME`` with selector caches
+  reset, for tests that write artifacts.
+- ``tiny_checkpoint`` (session): a 4-layer Llama-3-format checkpoint with a
+  byte-level tokenizer, written once per worker.
+- ``make_tiny_session``: a :class:`~tests.support.sessions.TinySessionFactory`;
+  every session it builds is closed at teardown.
+- ``tiny_session``: one real, warmed CPU ``DrowseSession`` (``probes=[]``).
+- ``app_client``: ``app_client(session, **create_app_kwargs)`` returns a
+  started FastAPI ``TestClient`` over the real app.
+- ``gpu_session`` (session): the real GPU model (``DROWSE_TEST_MODEL``),
+  skipped without CUDA/MPS; tests using it are marked ``gpu`` automatically.
 
-What this deliberately does *not* unify: the config-introspection stubs
-(``test_model_loading``'s ``load_model`` stand-in, ``test_static_cache``'s
-StaticCache probe) carry no forward pass, and ``test_capture``'s
-``_ToyModel`` returns ``last_hidden_state`` (a real layer stack), not logits.
-Those have materially different shapes and stay local.
+Markers: ``perf`` tests measure wall-clock throughput and are skipped inside
+xdist workers (contention makes them meaningless); run them serially with
+``pytest -m perf -p no:xdist``.
+
+``FakeLogitsModel``/``CharTokenizer`` below are imported by test modules as
+``tests.conftest`` helpers and stay here until those imports move to
+``tests.support``.
 """
 
 from __future__ import annotations
 
-import os
+from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterator
 
 import pytest
 import torch
 
+from tests.support.sessions import TinyCheckpoint, TinySessionFactory, drowse_home
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_drowse_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     """Point every test (and every module/session fixture) at a scratch home.
 
-    Tests that need their own home still ``monkeypatch.setenv("DROWSE_HOME", ...)``;
-    this only guarantees nothing ever falls through to the user's real home.
+    Tests that need their own home use ``isolated_home`` (or
+    ``monkeypatch.setenv("DROWSE_HOME", ...)``); this only guarantees nothing
+    ever falls through to the user's real home.
     """
-    previous = os.environ.get("DROWSE_HOME")
-    os.environ["DROWSE_HOME"] = str(tmp_path_factory.mktemp("drowse-home"))
-    yield
-    if previous is None:
-        os.environ.pop("DROWSE_HOME", None)
-    else:
-        os.environ["DROWSE_HOME"] = previous
+    with drowse_home(tmp_path_factory.mktemp("drowse-home")):
+        yield
+
+
+@pytest.fixture
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A fresh ``DROWSE_HOME`` for one test, with selector caches reset."""
+    from drowse.store import selectors
+
+    home = tmp_path / "drowse-home"
+    home.mkdir()
+    monkeypatch.setenv("DROWSE_HOME", str(home))
+    selectors.invalidate()
+    yield home
+    selectors.invalidate()
+
+
+@pytest.fixture(scope="session")
+def tiny_checkpoint(tmp_path_factory: pytest.TempPathFactory) -> TinyCheckpoint:
+    return TinyCheckpoint.write(tmp_path_factory.mktemp("tiny-checkpoint"))
+
+
+@pytest.fixture(scope="session")
+def _tiny_neutral_seed(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("tiny-neutral-seed")
+
+
+@pytest.fixture
+def make_tiny_session(
+    tiny_checkpoint: TinyCheckpoint, _tiny_neutral_seed: Path,
+) -> Iterator[TinySessionFactory]:
+    factory = TinySessionFactory(tiny_checkpoint, _tiny_neutral_seed)
+    yield factory
+    factory.close()
+
+
+@pytest.fixture
+def tiny_session(make_tiny_session: TinySessionFactory) -> Any:
+    return make_tiny_session()
+
+
+@pytest.fixture
+def app_client() -> Iterator[Callable[..., Any]]:
+    from fastapi.testclient import TestClient
+
+    from drowse.server.app import create_app
+
+    with ExitStack() as stack:
+        def _client(session: Any, **create_app_kwargs: Any) -> TestClient:
+            app = create_app(session, **create_app_kwargs)
+            return stack.enter_context(TestClient(app))
+
+        yield _client
+
+
+@pytest.fixture(scope="session")
+def gpu_session() -> Iterator[Any]:
+    if not (torch.cuda.is_available() or torch.backends.mps.is_available()):
+        pytest.skip("No GPU backend available (neither CUDA nor MPS)")
+    from drowse.session.session import DrowseSession
+    from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
+
+    model_id = gpu_model_id()
+    session = load_or_skip_inaccessible(
+        lambda: DrowseSession.from_pretrained(model_id, device="auto", probes=[]),
+        model_id,
+    )
+    yield session
+    session.close()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    in_xdist_worker = hasattr(config, "workerinput")
+    serial_only = pytest.mark.skip(
+        reason="perf test: run serially with `pytest -m perf -p no:xdist`",
+    )
+    for item in items:
+        if "gpu_session" in getattr(item, "fixturenames", ()):
+            item.add_marker(pytest.mark.gpu)
+        if in_xdist_worker and item.get_closest_marker("perf") is not None:
+            item.add_marker(serial_only)
 
 
 __all__ = [
