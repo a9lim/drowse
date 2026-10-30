@@ -352,7 +352,7 @@ def _manifold_json(
             stale = True
 
     # Roles are index-aligned with ``node_labels``; ``manifold_summary``
-    # already padded them via ``_roles_padded`` so a consumer can ``zip``
+    # already padded them (``ManifoldFolder.roles``) so a consumer can ``zip``
     # against ``node_labels`` without a length check.  Reuse below.
     node_roles_padded = out["node_roles"]
 

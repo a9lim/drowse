@@ -92,13 +92,10 @@ def _run_pack_show(args: argparse.Namespace) -> None:
         except (FileNotFoundError, KeyError, ValueError):
             derived_node_coords = []
 
-    # Per-node roles ride alongside coords in the JSON shape; ``None``
-    # for a given node means "pooled under the standard assistant
-    # baseline" (the legacy / non-role default).  Padded to the label
-    # count so consumers can index by node.
-    node_roles_padded = list(mf.node_roles) + [None] * (
-        len(mf.node_labels) - len(mf.node_roles)
-    )
+    # Per-node roles ride alongside coords; ``None`` for a given node means
+    # "pooled under the standard assistant baseline".  ``mf.roles`` is
+    # padded to the label count so consumers can index by node.
+    node_roles_padded = mf.roles
     if getattr(args, "json_output", False):
         # Share the session-independent summary serializer with the
         # server's ``GET /drowse/v1/manifolds/{ns}/{name}`` route so both
