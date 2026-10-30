@@ -271,6 +271,33 @@ def test_resolve_override_without_anchor_layers_the_partial_on_the_call():
     assert out.sampling == SamplingConfig(temperature=0.9, seed=7)
 
 
+@pytest.mark.parametrize("call", [
+    {"recipe_override": "unsteered"},
+    {"recipe_override": "inverted"},   # the anchor below is unsteered
+    {"steering": ""},
+    {"steering": "   "},
+])
+def test_composed_blank_steering_reaches_generation_as_no_steering(call: dict):
+    """Regression: the ``unsteered`` / ``inverted`` modes (and an explicit
+    ``steering=""``) composed ``""``, which the grammar rejects, so every
+    such regen failed with "empty steering expression" on a real session."""
+    from tests.test_loom_token_rows import _stateful_tap_session
+
+    tree = LoomTree()
+    user = tree.add_user_turn("hi")
+    anchor = tree.begin_assistant(user, recipe=Recipe(sampling=SamplingConfig(seed=3)))
+    tree.finalize_assistant(anchor, text="hello")
+    session = _stateful_tap_session(tree, anchor)
+    prepared: list[Any] = []
+    real_prepare = session._prepare_generation_call
+    session._prepare_generation_call = lambda steering, *rest: (
+        prepared.append(steering) or real_prepare(steering, *rest)
+    )
+    session._run_generation_loop = lambda *_args, **_kwargs: ([1], 0.1)
+    DrowseSession._generate_core(session, None, parent_node_id=user, **call)
+    assert prepared == [None]
+
+
 def test_anchor_recipe_resolution():
     tree, uid, aid = _anchored_tree()
     assert tree.anchor_recipe(aid) is tree.get(aid).recipe

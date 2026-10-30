@@ -8847,6 +8847,12 @@ class DrowseSession:
                     thinking=thinking,
                     system_prompt=system_prompt,
                 )
+            # ``""`` is the composition tiers' explicit "unsteered" (it stops
+            # a cast default from filling the slot, and is what the
+            # ``unsteered`` / ``inverted`` modifiers produce); once composed
+            # it means no steering, which the grammar spells ``None``.
+            if isinstance(steering, str) and not steering.strip():
+                steering = None
 
             # Ordinary one-shot continuation is message-oriented: if the
             # selected leaf already occupies the same structural seat under
