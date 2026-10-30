@@ -133,7 +133,9 @@ def test_websocket_auth_subprotocol_keeps_credentials_out_of_url() -> None:
 
 
 @pytest.mark.parametrize("key", ["synthetic-secret", "invalid-secret"])
-def test_websocket_query_credentials_are_never_accepted(key: str) -> None:
+def test_websocket_query_credentials_are_rejected_and_scrubbed_before_access_logging(key: str) -> None:
+    """URL credentials never authenticate, and a stale client's ``?token=``
+    is removed from the scope the access log reads, valid key or not."""
     from starlette.websockets import WebSocket
     from drowse.server.security import ws_auth_ok
 
@@ -148,6 +150,7 @@ def test_websocket_query_credentials_are_never_accepted(key: str) -> None:
         pass
 
     assert ws_auth_ok(WebSocket(scope, unused_receive, unused_send)) is False
+    assert scope["query_string"] == b"view=tree"
 
 
 @pytest.mark.parametrize("accept", ["application/json", "text/event-stream"])

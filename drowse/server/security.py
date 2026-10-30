@@ -18,7 +18,7 @@ from __future__ import annotations
 import base64
 import hmac
 import ipaddress
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from fastapi import HTTPException, Request, WebSocket
 from starlette.datastructures import Headers, MutableHeaders
@@ -115,12 +115,28 @@ def _authenticate(request: Request) -> None:
         raise HTTPException(401, "Invalid API key")
 
 
+def _scrub_query_credentials(scope: Scope) -> None:
+    """Drop ``token`` query parameters so the WebSocket access log never records one.
+
+    URL credentials are not accepted, but a stale or third-party client may
+    still send ``?token=<key>``; the server's access log reads this scope.
+    """
+    raw = scope.get("query_string", b"")
+    if not raw:
+        return
+    query = parse_qsl(raw.decode("latin-1"), keep_blank_values=True)
+    if any(name == "token" for name, _ in query):
+        scope["query_string"] = urlencode([(name, value) for name, value in query if name != "token"]).encode()
+
+
 def ws_auth_ok(websocket: WebSocket) -> bool:
     """Validate host, browser Origin, and credentials before accepting a WebSocket.
 
     The credential is an ``Authorization: Bearer`` header or exactly one
-    ``drowse.auth.<base64url-utf8-key>`` subprotocol — never a URL parameter.
+    ``drowse.auth.<base64url-utf8-key>`` subprotocol — never a URL parameter
+    (one is scrubbed from the scope either way, before anything logs it).
     """
+    _scrub_query_credentials(websocket.scope)
     expected = websocket.app.state.api_key
     if not expected and not _local_host_ok(websocket):
         return False
