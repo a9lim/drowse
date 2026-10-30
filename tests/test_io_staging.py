@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from drowse.base.staging import stage_verify_swap
+from drowse.base.staging import stage_verify_swap, staging_paths
 
 
 class _InstallError(RuntimeError):
@@ -29,8 +29,7 @@ def test_stage_verify_swap_promotes_valid_staging(tmp_path: Path) -> None:
 
     assert out == target
     assert (target / "payload.txt").read_text() == "new"
-    assert not target.with_name("happy.staging").exists()
-    assert not target.with_name("happy.bak").exists()
+    assert not any(path.exists() for path in staging_paths(target))
 
 
 def test_stage_verify_swap_build_failure_preserves_existing_target(tmp_path: Path) -> None:
@@ -52,13 +51,12 @@ def test_stage_verify_swap_build_failure_preserves_existing_target(tmp_path: Pat
         )
 
     assert (target / "payload.txt").read_text() == "old"
-    assert not target.with_name("happy.staging").exists()
-    assert not target.with_name("happy.bak").exists()
+    assert not any(path.exists() for path in staging_paths(target))
 
 
 def test_stage_verify_swap_recovers_backup_before_new_build(tmp_path: Path) -> None:
     target = tmp_path / "packs" / "happy"
-    backup = target.with_name("happy.bak")
+    _staging, backup = staging_paths(target)
     backup.mkdir(parents=True)
     (backup / "payload.txt").write_text("old")
 
@@ -76,8 +74,7 @@ def test_stage_verify_swap_recovers_backup_before_new_build(tmp_path: Path) -> N
         )
 
     assert (target / "payload.txt").read_text() == "old"
-    assert not target.with_name("happy.staging").exists()
-    assert not backup.exists()
+    assert not any(path.exists() for path in staging_paths(target))
 
 
 def test_stage_verify_swap_refuses_existing_target_without_force(tmp_path: Path) -> None:
@@ -98,9 +95,9 @@ def test_stage_verify_swap_refuses_existing_target_without_force(tmp_path: Path)
 
 
 def test_failed_backup_recovery_keeps_the_only_good_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    target = tmp_path / "happy"
-    backup = tmp_path / "happy.bak"
-    backup.mkdir()
+    target = tmp_path / "packs" / "happy"
+    _staging, backup = staging_paths(target)
+    backup.mkdir(parents=True)
     (backup / "payload.txt").write_text("only good copy")
     original_rename = Path.rename
     builds: list[Path] = []
@@ -118,9 +115,9 @@ def test_failed_backup_recovery_keeps_the_only_good_copy(tmp_path: Path, monkeyp
 
 
 def test_recovered_install_is_not_overwritten_without_force(tmp_path: Path) -> None:
-    target = tmp_path / "happy"
-    backup = tmp_path / "happy.bak"
-    backup.mkdir()
+    target = tmp_path / "packs" / "happy"
+    _staging, backup = staging_paths(target)
+    backup.mkdir(parents=True)
     (backup / "payload.txt").write_text("recovered")
 
     def build(staging: Path) -> None:
@@ -129,3 +126,15 @@ def test_recovered_install_is_not_overwritten_without_force(tmp_path: Path) -> N
     with pytest.raises(_InstallError, match="exists; pass force=True"):
         stage_verify_swap(target, force=False, label="happy", build=build, make_error=_err)
     assert (target / "payload.txt").read_text() == "recovered"
+
+
+def test_staging_and_backup_live_outside_the_namespace(tmp_path: Path) -> None:
+    """A crash-left stage or backup must never sit beside installed artifacts."""
+    target = tmp_path / "manifolds" / "local" / "happy"
+    staging, backup = staging_paths(target)
+    for path in (staging, backup):
+        assert path.parent == tmp_path / "manifolds" / ".staging"
+        assert not path.is_relative_to(target.parent)
+    assert staging_paths(tmp_path / "manifolds" / "local.x" / "y")[0] != staging_paths(
+        tmp_path / "manifolds" / "local" / "x.y"
+    )[0]

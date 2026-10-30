@@ -35,7 +35,7 @@ from drowse.store.manifolds import (
     ManifoldFormatError,
 )
 from drowse.base.integrity import NAME_REGEX
-from drowse.base.staging import stage_verify_swap
+from drowse.base.staging import recover_backup, stage_verify_swap, staging_paths
 
 #: Row ceiling for a Hub search.  The picker renders one card per row, so a
 #: wider result set costs a slower search for a list nobody scrolls.
@@ -149,13 +149,13 @@ def _pull_manifold_locked(
     """Download ``coord`` from HF and install into ``target_folder``.
 
     Stage-verify-swap discipline (:mod:`drowse.base.staging`):
-    the manifold folder is built under ``<target_folder>.staging/``,
+    the manifold folder is built under ``manifolds/.staging/``,
     then validated by ``ManifoldFolder.load`` (which already checks
     format version + ``NAME_REGEX`` + the ``files`` integrity manifest
     when populated).  Only after a clean load does the staging dir
-    atomically swap into place via ``target → .bak``, ``staging →
-    target``, ``rmtree .bak``.  A crash mid-swap is recoverable from
-    ``.bak``.
+    atomically swap into place via ``target → backup``, ``staging →
+    target``, ``rmtree backup``.  A crash mid-swap is recoverable from the
+    backup.
 
     The downloaded repository must carry the current ``manifold.json`` shape.
     """
@@ -164,14 +164,7 @@ def _pull_manifold_locked(
     # force replacement will now see the recovered folder and quiesce all its
     # fitted pair readers; a non-force install must preserve it as an existing
     # destination rather than silently overwrite it.
-    backup = target_folder.with_name(target_folder.name + ".bak")
-    if not target_folder.exists() and backup.exists():
-        try:
-            backup.rename(target_folder)
-        except OSError as exc:
-            raise HFError(
-                f"{coord}: could not recover interrupted install ({exc})"
-            ) from exc
+    recover_backup(target_folder, label=coord, make_error=HFError)
     if target_folder.exists() and not force:
         raise HFError(f"{target_folder} exists; pass force=True to overwrite")
 
@@ -823,18 +816,10 @@ def _install_local_manifold(
     if not same_path and destination_resolved.is_relative_to(source_resolved):
         raise ValueError("local manifold install destination is inside the source")
     from drowse.store.manifold_folder import _locked_manifest
-    from drowse.base.staging import stage_verify_swap
 
     def _install_from(source_path: Path) -> Path:
         with _locked_manifest(dst):
-            backup = dst.with_name(dst.name + ".bak")
-            if not dst.exists() and backup.exists():
-                try:
-                    backup.rename(dst)
-                except OSError as exc:
-                    raise ManifoldInstallConflict(
-                        f"{dst}: could not recover interrupted local install ({exc})"
-                    ) from exc
+            recover_backup(dst, label=str(src), make_error=ManifoldInstallConflict)
             if same_path:
                 if not force:
                     raise ManifoldInstallConflict(
@@ -892,10 +877,7 @@ def _install_local_manifold(
                     return _swap()
             return _swap()
 
-    reserved = {
-        dst.with_name(dst.name + ".staging").resolve(strict=False),
-        dst.with_name(dst.name + ".bak").resolve(strict=False),
-    }
+    reserved = {path.resolve(strict=False) for path in staging_paths(dst)}
     if any(source_resolved.is_relative_to(path) for path in reserved):
         import tempfile
 

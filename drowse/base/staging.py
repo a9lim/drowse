@@ -1,4 +1,12 @@
-"""Crash-recoverable staging helpers for cache installs."""
+"""Crash-recoverable stage-and-swap for whole artifact folders.
+
+An artifact folder ``<root>/<ns>/<name>`` is replaced by building its new
+content under ``<root>/.staging/`` and renaming it into place, so readers see
+either the old folder or the complete new one.  The staging and backup
+directories live outside every namespace directory: a crash-left half-built
+tree is never discovered as an installed artifact.  Their names are
+deterministic per target so a later attempt recovers or clears them.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +19,37 @@ from typing import Callable
 ErrorFactory = Callable[[str], Exception]
 StageBuilder = Callable[[Path], None]
 
+STAGING_DIRNAME = ".staging"
+
+
+def staging_paths(target_folder: Path) -> tuple[Path, Path]:
+    """``(staging, backup)`` directories for ``<root>/<ns>/<name>``.
+
+    Both live under ``<root>/.staging/`` and are keyed ``<ns>~<name>`` (``~``
+    is outside the artifact-name grammar, so keys cannot collide).
+    """
+    target = Path(target_folder)
+    root = target.parent.parent / STAGING_DIRNAME
+    key = f"{target.parent.name}~{target.name}"
+    return root / f"{key}.staging", root / f"{key}.bak"
+
+
+def recover_backup(target_folder: Path, *, label: str, make_error: ErrorFactory) -> None:
+    """Restore a crash-left backup when the destination itself is missing.
+
+    A swap that died between moving the old folder aside and promoting the
+    new one leaves only the backup; callers run this before their conflict
+    policy so the recovered folder counts as an existing destination.
+    """
+    _staging, backup = staging_paths(target_folder)
+    if Path(target_folder).exists() or not backup.exists():
+        return
+    try:
+        Path(target_folder).parent.mkdir(parents=True, exist_ok=True)
+        backup.rename(target_folder)
+    except OSError as error:
+        raise make_error(f"{label}: could not recover the previous install ({error})") from error
+
 
 def stage_verify_swap(
     target_folder: Path,
@@ -20,23 +59,17 @@ def stage_verify_swap(
     build: StageBuilder,
     make_error: ErrorFactory,
 ) -> Path:
-    """Build ``target_folder`` under ``.staging`` and atomically promote it.
+    """Build ``target_folder`` in staging and atomically promote it.
 
     The caller owns artifact-specific staging and validation through
-    ``build(staging)``. This helper owns the shared install choreography:
-    recover a previous ``.bak`` when the destination is missing, wipe stale
-    staging, build a fully validated staging tree, then promote via
-    ``target -> .bak`` and ``.staging -> target`` with best-effort restore on
-    failure.
+    ``build(staging)``.  This helper owns the shared choreography: recover a
+    previous backup when the destination is missing, clear stale staging,
+    build a fully validated tree, then promote via ``target -> backup`` and
+    ``staging -> target`` with best-effort restore on failure.
     """
-    staging = target_folder.with_name(target_folder.name + ".staging")
-    backup = target_folder.with_name(target_folder.name + ".bak")
-
-    if not target_folder.exists() and backup.exists():
-        try:
-            backup.rename(target_folder)
-        except OSError as error:
-            raise make_error(f"{label}: could not recover the previous install ({error})") from error
+    target_folder = Path(target_folder)
+    staging, backup = staging_paths(target_folder)
+    recover_backup(target_folder, label=label, make_error=make_error)
 
     if target_folder.exists() and not force:
         raise make_error(f"{target_folder} exists; pass force=True to overwrite")
@@ -53,6 +86,7 @@ def stage_verify_swap(
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
+    target_folder.parent.mkdir(parents=True, exist_ok=True)
     had_existing = target_folder.exists()
     if had_existing:
         try:

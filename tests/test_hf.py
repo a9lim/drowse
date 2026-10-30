@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from drowse.base.staging import staging_paths
+
 from drowse.base import hf
 def _write_fitted_manifold(
     folder: Path,
@@ -168,7 +170,7 @@ def test_pull_recovers_backup_before_nonforce_conflict(
     from drowse.store import hub as hfm
     source = _author_fake_manifold(tmp_path, monkeypatch)
     target = tmp_path / "installed" / "mood"
-    backup = target.with_name("mood.bak")
+    backup = staging_paths(target)[1]
     shutil.copytree(source, backup)
     monkeypatch.setattr(
         hfm, "_hf_snapshot_download",
@@ -194,7 +196,7 @@ def test_force_pull_recovered_backup_waits_for_logical_pair_lock(
     source = _author_fake_manifold(tmp_path, monkeypatch)
     monkeypatch.setattr(hfm, "_hf_snapshot_download", lambda **_kw: str(source))
     target = tmp_path / "installed" / "mood"
-    backup = target.with_name("mood.bak")
+    backup = staging_paths(target)[1]
     shutil.copytree(source, backup)
     logical_tensor = target / next(backup.glob("*.safetensors")).name
     started = threading.Event()
@@ -651,7 +653,7 @@ def test_force_local_install_copy_failure_preserves_destination(
 
     assert (target / "manifold.json").read_bytes() == manifest_before
     ManifoldFolder.load(target)
-    assert not target.with_name("target.staging").exists()
+    assert not staging_paths(target)[0].exists()
 
 
 def test_local_install_recovers_backup_before_nonforce_conflict(
@@ -664,7 +666,8 @@ def test_local_install_recovers_backup_before_nonforce_conflict(
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     target = _author_fake_manifold(home, monkeypatch, name="target")
-    backup = target.with_name("target.bak")
+    backup = staging_paths(target)[1]
+    backup.parent.mkdir(parents=True, exist_ok=True)
     target.rename(backup)
 
     with pytest.raises(hfm.ManifoldInstallConflict, match="exists"):
@@ -687,7 +690,8 @@ def test_force_local_install_snapshots_reserved_sibling_source(
 
     source = _author_fake_manifold(home, monkeypatch, name="source")
     target = manifold_dir("local", "target")
-    reserved_source = target.with_name(target.name + suffix)
+    reserved_source = staging_paths(target)[0 if suffix == ".staging" else 1]
+    reserved_source.parent.mkdir(parents=True, exist_ok=True)
     source.rename(reserved_source)
 
     installed = hfm.install_manifold(
