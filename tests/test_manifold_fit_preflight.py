@@ -21,7 +21,6 @@ from typing import Any
 import pytest
 import torch
 
-import drowse.cli.runners as cli_runners
 from drowse.fit import capture as V
 from drowse.model import loading as model_mod
 from drowse.events import EventBus
@@ -387,126 +386,77 @@ def test_corrupt_sidecar_still_raises(fitted: Any) -> None:
 # ---- CLI adoption ----------------------------------------------------------
 
 
-def _poison_session(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
-    def _make(*_args: Any, **_kwargs: Any) -> Any:
-        calls.append("make_session")
-        raise AssertionError("CLI loaded the model on a proven no-op")
+def _run_cli(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Run ``drowse <argv>`` with model loads poisoned; returns the attempts.
 
-    monkeypatch.setattr(cli_runners, "_make_session", _make)
-    monkeypatch.setattr(cli_runners, "_print_startup", lambda _args: None)
-    monkeypatch.setattr(cli_runners, "_print_model_info", lambda _session: None)
+    A proven no-op returns normally with no attempt; anything else reaches
+    the load and stops there with ``RuntimeError``.
+    """
+    from drowse.cli.main import main
+    from tests._cli_fakes import poison_session
+
+    attempts = poison_session(monkeypatch)
+    try:
+        main(argv)
+    except RuntimeError as exc:
+        assert "model load attempted" in str(exc)
+    return attempts
 
 
 def test_cli_fit_reports_the_hit_without_constructing_a_session(
     fitted: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any,
 ) -> None:
-    import drowse.cli as cli
-
-    calls: list[str] = []
-    _poison_session(monkeypatch, calls)
-    cli_runners._run_manifold_fit(cli.parse_args([
-        "manifold", "fit", str(fitted.folder), "-m", _MODEL_ID,
-    ]))
-    out = capsys.readouterr().out
-    assert "nothing to do" in out
-    assert "mood" in out
-    assert calls == []
+    assert _run_cli(["manifold", "fit", str(fitted.folder), "-m", _MODEL_ID], monkeypatch) == []
+    captured = capsys.readouterr()
+    assert "nothing to do" in captured.err
+    assert "mood" in captured.out
 
 
-def test_cli_fit_force_still_loads_the_model(
-    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("unproven", [False, True], ids=["force", "unproven-source"])
+def test_cli_fit_loads_the_model_when_forced_or_unproven(
+    fitted: Any, unproven: bool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import drowse.cli as cli
-
-    calls: list[str] = []
-
-    def _make(*_args: Any, **_kwargs: Any) -> Any:
-        calls.append("make_session")
-        raise RuntimeError("stop here")
-
-    monkeypatch.setattr(cli_runners, "_make_session", _make)
-    monkeypatch.setattr(cli_runners, "_print_startup", lambda _args: None)
-    with pytest.raises(RuntimeError, match="stop here"):
-        cli_runners._run_manifold_fit(cli.parse_args([
-            "manifold", "fit", str(fitted.folder), "-m", _MODEL_ID, "-f",
-        ]))
-    assert calls == ["make_session"]
+    if unproven:
+        monkeypatch.setattr(model_mod, "model_source_fingerprint", lambda *_a, **_k: None)
+    argv = ["manifold", "fit", str(fitted.folder), "-m", _MODEL_ID]
+    assert _run_cli(argv if unproven else [*argv, "-f"], monkeypatch) == [_MODEL_ID]
 
 
-def test_cli_fit_falls_through_when_a_component_is_unproven(
-    fitted: Any, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import drowse.cli as cli
+def _republish_as(fitted: Any, name: str) -> None:
+    """Copy the fixture's ``local/mood`` artifact to the folder ``extract``
+    would author for ``name``."""
+    import shutil
 
-    monkeypatch.setattr(
-        model_mod, "model_source_fingerprint", lambda *_a, **_k: None,
+    target = fitted.folder.parent / name
+    shutil.copytree(fitted.folder, target)
+    payload = json.loads((target / "manifold.json").read_text())
+    payload["name"] = name
+    (target / "manifold.json").write_text(json.dumps(payload))
+    sidecar_path = target / fitted.tensor.with_suffix(".json").name
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar["name"] = name
+    sidecar_path.write_text(json.dumps(sidecar))
+    ManifoldFolder.load(target, verify_manifest=False).update_file_hashes(
+        target / fitted.tensor.name, sidecar_path,
     )
-    calls: list[str] = []
-
-    def _make(*_args: Any, **_kwargs: Any) -> Any:
-        calls.append("make_session")
-        raise RuntimeError("stop here")
-
-    monkeypatch.setattr(cli_runners, "_make_session", _make)
-    monkeypatch.setattr(cli_runners, "_print_startup", lambda _args: None)
-    with pytest.raises(RuntimeError, match="stop here"):
-        cli_runners._run_manifold_fit(cli.parse_args([
-            "manifold", "fit", str(fitted.folder), "-m", _MODEL_ID,
-        ]))
-    assert calls == ["make_session"]
 
 
 def test_cli_extract_reports_the_hit_without_constructing_a_session(
     fitted: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any,
 ) -> None:
     """``extract calm frantic`` canonicalizes onto the same folder."""
-    import drowse.cli as cli
-
-    calls: list[str] = []
-    _poison_session(monkeypatch, calls)
-    # The fixture's folder is local/mood; extract addresses local/calm.frantic,
-    # so republish the same artifact under the name extract would author.
-    target = fitted.folder.parent / "calm.frantic"
-    import shutil
-
-    shutil.copytree(fitted.folder, target)
-    payload = json.loads((target / "manifold.json").read_text())
-    payload["name"] = "calm.frantic"
-    (target / "manifold.json").write_text(json.dumps(payload))
-    sidecar_path = target / fitted.tensor.with_suffix(".json").name
-    sidecar = json.loads(sidecar_path.read_text())
-    sidecar["name"] = "calm.frantic"
-    sidecar_path.write_text(json.dumps(sidecar))
-    ManifoldFolder.load(target, verify_manifest=False).update_file_hashes(
-        target / fitted.tensor.name, sidecar_path,
-    )
-
-    cli_runners._run_manifold_extract(cli.parse_args([
-        "manifold", "extract", "calm", "frantic", "-m", _MODEL_ID,
-    ]))
-    out = capsys.readouterr().out
-    assert "nothing to do" in out
-    assert "calm.frantic" in out
-    assert calls == []
+    _republish_as(fitted, "calm.frantic")
+    argv = ["manifold", "extract", "calm", "frantic", "-m", _MODEL_ID]
+    assert _run_cli(argv, monkeypatch) == []
+    captured = capsys.readouterr()
+    assert "nothing to do" in captured.err
+    assert "calm.frantic" in captured.out
 
 
-def test_cli_extract_role_mismatch_falls_through_to_the_error_path(
+def test_cli_extract_role_mismatch_falls_through_to_the_loaded_path(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A role request against a role-free corpus is an error, not a hit."""
-    import drowse.cli as cli
-
-    calls: list[str] = []
-
-    def _make(*_args: Any, **_kwargs: Any) -> Any:
-        calls.append("make_session")
-        raise RuntimeError("stop here")
-
-    monkeypatch.setattr(cli_runners, "_make_session", _make)
-    monkeypatch.setattr(cli_runners, "_print_startup", lambda _args: None)
-    with pytest.raises(RuntimeError, match="stop here"):
-        cli_runners._run_manifold_extract(cli.parse_args([
-            "manifold", "extract", "calm", "frantic", "-m", _MODEL_ID,
-            "--role", "pirate",
-        ]))
-    assert calls == ["make_session"]
+    _republish_as(fitted, "calm.frantic")
+    argv = ["manifold", "extract", "calm", "frantic", "-m", _MODEL_ID, "--role", "pirate"]
+    assert _run_cli(argv, monkeypatch) == [_MODEL_ID]

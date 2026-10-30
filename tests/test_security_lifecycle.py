@@ -404,18 +404,17 @@ def test_closed_stream_does_not_cancel_a_later_generation() -> None:
 
 
 def test_serve_default_is_loopback_and_remote_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    from drowse.cli import parse_args
-    from drowse.cli.runners.serve import _run_serve
-    import drowse.cli.runners as runners
+    from drowse.cli.main import main, parse_args
+    from tests._cli_fakes import poison_session
 
     assert parse_args(["serve", "model"]).host == "127.0.0.1"
     monkeypatch.delenv("DROWSE_API_KEY", raising=False)
-    monkeypatch.setattr(runners, "_load_effective_config", lambda args: None)
+    attempts = poison_session(monkeypatch)
     for host in ("0.0.0.0", "::", "192.168.1.10"):
-        args = parse_args(["serve", "model", "--host", host])
         with pytest.raises(SystemExit) as exc:
-            _run_serve(args)
+            main(["serve", "model", "--host", host])
         assert exc.value.code == 2
+    assert attempts == []
 
 
 def test_sse_send_failure_keeps_lock_until_real_worker_exits() -> None:
@@ -516,26 +515,23 @@ def test_ipv6_websocket_origins(url: str, origin: str, allowed: bool) -> None:
 
 @pytest.mark.parametrize("cli_key", [None, "cli-secret"])
 def test_remote_serve_honors_key_precedence_and_transport_limit(monkeypatch: pytest.MonkeyPatch, cli_key: str | None) -> None:
-    from drowse.cli import parse_args
-    import drowse.cli.runners as runners
-    import drowse.cli.runners.serve as serve
+    import drowse.cli.verbs.serve as serve
     import drowse.server as server
     import uvicorn
+    from drowse.cli.main import main
     from drowse.server.ws_stream import MAX_WS_MESSAGE_BYTES
+    from tests._cli_fakes import install_fake_session
 
     captured: dict[str, Any] = {}
     monkeypatch.setenv("DROWSE_API_KEY", "env-secret")
-    for name in ("_load_effective_config", "_print_startup", "_print_model_info"):
-        monkeypatch.setattr(runners, name, lambda *args, **kwargs: None)
-    monkeypatch.setattr(runners, "_make_session", lambda args: object())
-    for name in ("_setup_steering_vectors", "_warmup_session", "_enable_serve_live_lens_if_compatible"):
-        monkeypatch.setattr(serve, name, lambda *args, **kwargs: None)
+    install_fake_session(monkeypatch)
+    monkeypatch.setattr(serve, "enable_live_lens", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "create_app", lambda *args, **kwargs: captured.update(kwargs))
     monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: captured.update(kwargs))
     argv = ["serve", "model", "--host", "0.0.0.0", "--no-web"]
     if cli_key:
         argv += ["--api-key", cli_key]
-    serve._run_serve(parse_args(argv))
+    main(argv)
     assert captured["api_key"] == (cli_key or "env-secret")
     assert captured["host"] == "0.0.0.0"
     assert captured["ws_max_size"] == MAX_WS_MESSAGE_BYTES

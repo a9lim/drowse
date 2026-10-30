@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from drowse.cli import config_file as cfg
+from drowse.store.manifold_authoring import RESERVED_NAMESPACES
 
 
 def test_parse_minimal(tmp_path: Path) -> None:
@@ -125,7 +126,7 @@ def test_ensure_vectors_installed_all_present(monkeypatch: pytest.MonkeyPatch, t
     # DROWSE_HOME (in a real CLI run, config load is the first materialize).
     monkeypatch.setattr("drowse.store.manifolds._materialized_home", None)
     c = cfg.ConfigFile(vectors="0.5 default/confident.uncertain")
-    missing = cfg.ensure_vectors_installed(c, strict=False)
+    missing = cfg.ensure_vectors_installed(c.vectors, strict=False)
     assert missing == []
 
 
@@ -160,7 +161,7 @@ def test_ensure_vectors_installed_missing_hf(monkeypatch: pytest.MonkeyPatch, tm
     # install path, not the retired pack one.
     monkeypatch.setattr("drowse.store.hub.install_manifold", fake_install)
     c = cfg.ConfigFile(vectors="0.5 user/happy")
-    missing = cfg.ensure_vectors_installed(c, strict=False)
+    missing = cfg.ensure_vectors_installed(c.vectors, strict=False)
     assert installed["target"] == "user/happy"
     assert missing == []
 
@@ -171,7 +172,7 @@ def test_ensure_vectors_installed_strict_raises_on_local_missing(monkeypatch: py
     invalidate()
     c = cfg.ConfigFile(vectors="0.5 local/bard")
     with pytest.raises(cfg.ConfigFileError, match="local/bard"):
-        cfg.ensure_vectors_installed(c, strict=True)
+        cfg.ensure_vectors_installed(c.vectors, strict=True)
 
 
 def test_load_default_returns_none_when_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -235,5 +236,34 @@ def test_bare_pole_validates_against_installed_packs(monkeypatch: pytest.MonkeyP
 
     c = cfg.ConfigFile(vectors="0.5 wolf")
     # Install check passes because bare `wolf` matches the `deer.wolf` node.
-    missing = cfg.ensure_vectors_installed(c, strict=True)
+    missing = cfg.ensure_vectors_installed(c.vectors, strict=True)
     assert missing == []
+
+
+@pytest.mark.parametrize("namespace", sorted(RESERVED_NAMESPACES))
+def test_reserved_readout_atoms_are_never_hf_coordinates(
+    namespace: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Regression: ``jlens/<word>`` / ``sae/<id>`` atoms were handed to
+    ``install_manifold`` as HF coordinates (a warning, or a hard failure
+    under ``-s``).  Every reserved namespace names a readout, not a manifold."""
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+
+    def fail_install(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("reserved atom treated as an HF coordinate")
+
+    monkeypatch.setattr("drowse.store.hub.install_manifold", fail_install)
+    atom = f"{namespace}/123" if namespace == "sae" else f"{namespace}/orange"
+    assert cfg.ensure_vectors_installed(f"0.3 {atom}", strict=True) == []
+
+
+def test_dry_run_reports_without_installing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "drowse.store.hub.install_manifold",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("dry run installed")),
+    )
+    assert cfg.ensure_vectors_installed("0.3 alice/honest", strict=True, dry_run=True) == []
+    assert cfg.ensure_vectors_installed(
+        "0.3 local/nope + 0.2 unknown_bare", strict=False, dry_run=True,
+    ) == ["local/nope", "unknown_bare"]

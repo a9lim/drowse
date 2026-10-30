@@ -12,9 +12,9 @@ import torch
 
 from drowse.steering.composer import SteeringComposer
 from drowse.steering.grammar import format_expr, parse_expr
-from drowse.cli.runners import (
-    _lens_fit_source_preflight_matches,
-    _try_lens_fit_noop_preflight,
+from drowse.cli.verbs.lens import (
+    fit_covers_layers,
+    lens_fit_is_noop,
 )
 from drowse.store.manifold_folder import ManifoldFormatError
 from drowse.store.manifold_authoring import create_discover_manifold_folder
@@ -280,7 +280,7 @@ def test_lens_preflight_rejects_contiguous_prefix_for_all_layers() -> None:
         "source_layers": list(range(5)),
         "model_layer_count": 12,
     }
-    assert not _lens_fit_source_preflight_matches(sidecar, "all")
+    assert not fit_covers_layers(sidecar, "all")
 
 
 def test_lens_preflight_resolves_workspace_from_model_depth() -> None:
@@ -288,9 +288,9 @@ def test_lens_preflight_resolves_workspace_from_model_depth() -> None:
         "source_layers": [4, 5, 6, 7, 8, 9],
         "model_layer_count": 11,
     }
-    assert _lens_fit_source_preflight_matches(sidecar, "workspace")
+    assert fit_covers_layers(sidecar, "workspace")
     sidecar["source_layers"] = [4, 5, 6]
-    assert not _lens_fit_source_preflight_matches(sidecar, "workspace")
+    assert not fit_covers_layers(sidecar, "workspace")
 
 
 def test_lens_noop_preflight_requires_exact_model_source(
@@ -333,14 +333,14 @@ def test_lens_noop_preflight_requires_exact_model_source(
     )
     args = argparse.Namespace(
         force=False, model="toy/model", quantize=None, device="cpu",
-        seq_len=None, corpus=None, prompts=100,
+        seq_len=None, corpus=None, prompts=100, kind="j",
     )
-    assert _try_lens_fit_noop_preflight(args, [0], hf_corpus=corpus)
+    assert lens_fit_is_noop(args, [0], hf_corpus=corpus)
     shard_path.write_bytes(b"corrupt")
-    assert not _try_lens_fit_noop_preflight(args, [0], hf_corpus=corpus)
+    assert not lens_fit_is_noop(args, [0], hf_corpus=corpus)
     shard_path.write_bytes(b"lens")
     sidecar["model_source_fingerprint"] = "source-b"
-    assert not _try_lens_fit_noop_preflight(args, [0], hf_corpus=corpus)
+    assert not lens_fit_is_noop(args, [0], hf_corpus=corpus)
 
 
 def test_lens_noop_preflight_rejects_changed_dataset_revision(
@@ -378,16 +378,16 @@ def test_lens_noop_preflight_rejects_changed_dataset_revision(
     )
     args = argparse.Namespace(
         force=False, model="toy/model", quantize=None, device="cpu",
-        seq_len=None, corpus=None, prompts=100,
+        seq_len=None, corpus=None, prompts=100, kind="j",
     )
-    assert _try_lens_fit_noop_preflight(args, [0], hf_corpus=old)
-    assert not _try_lens_fit_noop_preflight(args, [0], hf_corpus=new)
+    assert lens_fit_is_noop(args, [0], hf_corpus=old)
+    assert not lens_fit_is_noop(args, [0], hf_corpus=new)
     # Another dataset, or the same one read from another column, is another
     # corpus even at the recorded commit.
-    assert not _try_lens_fit_noop_preflight(
+    assert not lens_fit_is_noop(
         args, [0], hf_corpus=HfLensCorpus("other/repo", "config", "0" * 40),
     )
-    assert not _try_lens_fit_noop_preflight(
+    assert not lens_fit_is_noop(
         args, [0],
         hf_corpus=HfLensCorpus("repo", "config", "0" * 40, "content"),
     )
@@ -419,8 +419,8 @@ def test_lens_noop_preflight_holds_fit_lock_during_sidecar_read(
     monkeypatch.setattr(lens_io, "load_local_lens_sidecar", read_sidecar)
     args = argparse.Namespace(
         force=False, model="toy/model", quantize=None, device="cpu",
-        seq_len=None, corpus=None, prompts=100,
+        seq_len=None, corpus=None, prompts=100, kind="j",
     )
 
-    assert not _try_lens_fit_noop_preflight(args, [0])
+    assert not lens_fit_is_noop(args, [0])
     assert not held

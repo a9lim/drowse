@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
-import pytest
 import torch
 
 from tests.conftest import CharTokenizer, FakeLogitsModel
@@ -174,63 +172,3 @@ def test_naturalness_end_to_end_mock():
     scores = trajectory_naturalness(traj, behavior, domain, coords)
     assert scores.shape[0] == traj.shape[0]
     assert torch.all(scores >= 0)
-
-
-def test_naturalness_preflight_does_not_hash_fitted_payloads(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import json
-    from argparse import Namespace
-
-    import drowse.cli.runners as runners
-    from drowse.base import integrity
-    from drowse.store.manifolds import (
-        ManifoldFolder,
-        create_manifold_folder,
-    )
-    from drowse.store.manifold_folder import canonical_manifold_sidecar_payload
-
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    domain = {"type": "box", "axes": [
-        {"name": "t", "periodic": False, "period": 1.0,
-         "lo": 0.0, "hi": 1.0},
-    ]}
-    nodes = [
-        {"label": label, "coords": [i / 2], "statements": [label]}
-        for i, label in enumerate(("a", "b", "c"))
-    ]
-    folder, _ = create_manifold_folder("local", "behavior", "", domain, nodes)
-    tensor = folder / "unrelated.safetensors"
-    sidecar = folder / "unrelated.json"
-    tensor.write_bytes(b"unrelated fitted payload")
-    sidecar.write_text(json.dumps(canonical_manifold_sidecar_payload(
-        name="behavior", method="manifold_pca", drowse_version="0",
-        domain=domain, node_labels=["a", "b", "c"], feature_space="raw",
-        fit_mode="authored",
-    )))
-    ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
-        tensor, sidecar,
-    )
-    integrity._FINGERPRINT_CACHE.clear()
-    real_hash = integrity.hash_file
-    hashed: list[Path] = []
-
-    def track_hash(path: Path) -> str:
-        hashed.append(Path(path))
-        return real_hash(Path(path))
-
-    class StopAfterPreflight(Exception):
-        pass
-
-    def stop(_args: Namespace) -> None:
-        raise StopAfterPreflight
-
-    monkeypatch.setattr(integrity, "hash_file", track_hash)
-    monkeypatch.setattr(
-        runners, "_load_effective_config", lambda _args, **_kw: None,
-    )
-    monkeypatch.setattr(runners, "_print_startup", stop)
-    with pytest.raises(StopAfterPreflight):
-        runners._run_experiment_naturalness(Namespace(manifold=str(folder)))
-
-    assert hashed == []

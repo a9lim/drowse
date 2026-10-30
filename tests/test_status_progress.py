@@ -298,105 +298,24 @@ def test_load_model_reports_device_and_memory(
 
 # --------------------------------------------------------------- the CLI leg --
 
-def test_progress_printer_prints_indented(capsys: pytest.CaptureFixture[str]) -> None:
-    from drowse.cli.runners import _progress_printer
-
-    sink = _progress_printer(argparse.Namespace())
-    assert sink is not None
-    sink("Device: mps")
-    assert capsys.readouterr().out == "  Device: mps\n"
-
-
-def test_progress_printer_suppressed_under_json_output() -> None:
-    """A ``-j`` verb keeps stdout parseable."""
-    from drowse.cli.runners import _progress_printer
-
-    assert _progress_printer(argparse.Namespace(json_output=True)) is None
-    assert _progress_printer(argparse.Namespace(json_output=False)) is not None
-
-
-def test_make_session_passes_the_printing_sink(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``_make_session`` is where every model-loading verb picks up narration."""
-    import drowse.session.session as session_mod
-    from drowse.cli.runners import _make_session
-
-    seen: dict[str, Any] = {}
-
-    def _from_pretrained(model_id: str, **kwargs: Any) -> object:
-        seen.update(kwargs, model_id=model_id)
-        return object()
-
-    monkeypatch.setattr(
-        session_mod.DrowseSession, "from_pretrained",
-        staticmethod(_from_pretrained),
-    )
-    args = argparse.Namespace(
-        model="test/model", device="auto", quantize=None, probes=None,
-    )
-    _make_session(args)
-
-    assert callable(seen["on_progress"])
-
-
-def test_manifold_extract_runner_narrates(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``manifold extract`` passes ``on_progress`` like ``fit`` / ``generate``.
-
-    Extract runs up to 96 in-character generations plus a full fit; without
-    the callback it printed the model info and then nothing until the final
-    "extracted" line.
-    """
-    import drowse.cli.runners as runners_pkg
-    from drowse.cli.runners.manifold import _run_manifold_extract
-
-    captured: dict[str, Any] = {}
-
-    class _Session:
-        def extract(self, *args: Any, **kwargs: Any) -> tuple[str, object]:
-            captured.update(kwargs)
-            captured["args"] = args
-            return "happy.sad", object()
-
-    monkeypatch.setattr(runners_pkg, "_print_startup", lambda _a: None)
-    monkeypatch.setattr(
-        runners_pkg, "_make_session", lambda _a, **_k: _Session(),
-    )
-    monkeypatch.setattr(runners_pkg, "_print_model_info", lambda _s: None)
-
-    _run_manifold_extract(argparse.Namespace(
-        concept=["happy", "sad"], model="test/model", force=False,
-        sae=None, role=None, namespace=None, kind="abstract",
-        custom_system=None, manifold_cmd="extract",
-    ))
-
-    assert callable(captured["on_progress"])
-    assert captured["kind"] == "abstract"
-    assert captured["custom_system"] is None
-
-
-def test_manifold_extract_runner_rejects_custom_without_system(
+def test_cli_progress_sink_narrates_indented_on_stderr(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Same rejection ``manifold generate`` applies, before the model loads."""
-    from drowse.cli.runners.manifold import _run_manifold_extract
+    """Narration is stderr-only, so a ``-j`` payload on stdout stays one
+    JSON document without a per-verb suppression switch."""
+    from drowse.cli.context import progress
 
-    with pytest.raises(SystemExit) as exc:
-        _run_manifold_extract(argparse.Namespace(
-            concept=["january", "july"], model="test/model", force=False,
-            sae=None, role=None, namespace=None, kind="custom",
-            custom_system=None, manifold_cmd="extract",
-        ))
-    assert exc.value.code == 2
-    assert "--kind custom requires --system" in capsys.readouterr().err
+    progress("Device: mps")
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("", "  Device: mps\n")
 
 
 def test_pack_install_runner_narrates(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """``pack install`` prints each stage the io layer reports."""
+    """``pack install`` relays each stage the io layer reports."""
     import drowse.store.hub as hfm
-    from drowse.cli.runners.pack import _run_pack_install
+    from drowse.cli.main import main
 
     def _install(
         target: str, as_: Any = None, *, force: bool = False,
@@ -408,14 +327,11 @@ def test_pack_install_runner_narrates(
         return Path("/home/.drowse/manifolds/local/mood")
 
     monkeypatch.setattr(hfm, "install_manifold", _install)
-    _run_pack_install(argparse.Namespace(
-        target="alice/mood", as_target=None, force=False,
-    ))
-
-    out = capsys.readouterr().out
-    assert "  Downloading alice/mood from Hugging Face..." in out
-    assert "  Validating staged alice/mood..." in out
-    assert "Installed alice/mood ->" in out
+    main(["pack", "install", "alice/mood"])
+    captured = capsys.readouterr()
+    assert "  Downloading alice/mood from Hugging Face..." in captured.err
+    assert "  Validating staged alice/mood..." in captured.err
+    assert captured.out.startswith("Installed alice/mood ->")
 
 
 def test_install_manifold_reports_every_stage(

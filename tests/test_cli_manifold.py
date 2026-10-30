@@ -12,122 +12,12 @@ backends themselves (those live in ``test_manifolds_io`` /
 from __future__ import annotations
 
 import json as _json
-import queue
-import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from drowse import cli
-
-
-def _cross_process_alignment_worker(
-    home: str,
-    target: str,
-    load_count: Any,
-    start: Any,
-    errors: Any,
-) -> None:
-    """Exercise the neutral-cache lock in a clean spawned interpreter."""
-    import time
-
-    import torch
-
-    import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
-    from drowse.cli import runners
-
-    patch = pytest.MonkeyPatch()
-    patch.setenv("DROWSE_HOME", home)
-    source_marker = Path(home) / "source-neutral-ready"
-    rows = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])}
-
-    def sidecar(model_id: str) -> dict[str, Any]:
-        return {
-            "method": "neutral_activations", "format_version": 4,
-            "capture_version": 1,
-            "model_fingerprint": f"fp:{model_id}",
-            "model_source_fingerprint": f"source:{model_id}",
-            "capture_sha256": model_id,
-            "tensor_sha256": {"0": "0" * 64},
-            "tensor_files": {"0": "neutral.layer-0.safetensors"},
-            "layers": [0],
-            "tensor_schema": {
-                "0": {"shape": [3, 2], "dtype": "torch.float32"},
-            },
-            "n_prompts": 3,
-        }
-
-    def metadata(model_id: str, **_kwargs: Any) -> dict[str, Any]:
-        if model_id == "shared/source" and not source_marker.exists():
-            raise FileNotFoundError(model_id)
-        return sidecar(model_id)
-
-    def load_rows(
-        model_id: str, *, requested_layers: object = None,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        del requested_layers
-        if model_id == "shared/source" and not source_marker.exists():
-            raise FileNotFoundError(model_id)
-        return rows, sidecar(model_id)
-
-    class Session:
-        def __init__(self, model_id: str) -> None:
-            assert model_id == "shared/source"
-            with load_count.get_lock():
-                load_count.value += 1
-            self.model = object()
-            self.tokenizer = object()
-            self.layers = [object()]
-
-        def __enter__(self) -> "Session":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    def capture(
-        _model: object, _tokenizer: object, _layers: object, *,
-        model_id: str, force: bool,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        assert model_id == "shared/source" and force is False
-        time.sleep(0.15)
-        source_marker.write_text("ready")
-        return rows, sidecar(model_id)
-
-    patch.setattr(alignment_mod, "validate_neutral_cache_metadata", metadata)
-    patch.setattr(alignment_mod, "load_validated_neutral_cache", load_rows)
-    patch.setattr(
-        alignment_mod, "_load_or_compute_neutral_activations_with_metadata_locked",
-        capture,
-    )
-    patch.setattr(
-        model_mod, "model_source_fingerprint",
-        lambda model_id: f"source:{model_id}",
-    )
-    patch.setattr(
-        session_mod.DrowseSession, "from_pretrained",
-        staticmethod(lambda model_id, **_kwargs: Session(model_id)),
-    )
-    patch.setattr(
-        alignment_mod, "load_alignment_map",
-        lambda *_args, **_kwargs: (
-            {0: torch.eye(2)}, {"quality_per_layer": {"0": 1.0}},
-        ),
-    )
-
-    try:
-        start.wait(timeout=120)
-        runners._load_or_fit_transfer_alignment(
-            "shared/source", target, force=False, label="test",
-            requested_layers=[0],
-        )
-    except BaseException as exc:
-        errors.put(repr(exc))
-    finally:
-        patch.undo()
+from drowse.cli.main import main
 
 
 def _materialize_bundles_for_cli_test(
@@ -142,171 +32,6 @@ def _materialize_bundles_for_cli_test(
     selectors.invalidate()
 
 
-# ---------------------------------------------------------------------------
-# Parser shape — each new subverb lands on the Namespace correctly
-# ---------------------------------------------------------------------------
-
-def test_parse_manifold_install():
-    args = cli.parse_args(["pack", "install", "alice/circumplex"])
-    assert args.command == "pack"
-    assert args.pack_cmd == "install"
-    assert args.target == "alice/circumplex"
-    assert args.as_target is None
-    assert args.force is False
-
-
-def test_parse_manifold_install_flags():
-    args = cli.parse_args([
-        "pack", "install", "alice/circumplex",
-        "-a", "local/mood", "-f",
-    ])
-    assert args.as_target == "local/mood"
-    assert args.force is True
-
-
-def test_parse_manifold_search():
-    args = cli.parse_args(["pack", "search", "mood", "-j", "-v"])
-    assert args.pack_cmd == "search"
-    assert args.query == "mood"
-    assert args.json_output is True
-    assert args.verbose is True
-
-
-def test_parse_manifold_search_empty_query():
-    args = cli.parse_args(["pack", "search"])
-    assert args.pack_cmd == "search"
-    assert args.query == ""
-
-
-def test_parse_manifold_merge():
-    args = cli.parse_args([
-        "manifold", "merge", "combined", "a", "local/b", "c",
-        "--method", "spectral", "-f",
-    ])
-    assert args.manifold_cmd == "merge"
-    assert args.name == "combined"
-    assert args.sources == ["a", "local/b", "c"]
-    assert args.method == "spectral"
-    assert args.force is True
-
-
-def test_parse_manifold_merge_needs_at_least_one_source():
-    # argparse requires >=1 positional source; the runner enforces >=2.
-    with pytest.raises(SystemExit):
-        cli.parse_args(["manifold", "merge", "combined"])
-
-
-def test_parse_manifold_generate_seed():
-    # ``--seed`` is parity with ``vector clone --seed`` (default unseeded).
-    args = cli.parse_args([
-        "manifold", "generate", "mood",
-        "--concepts", "happy", "sad", "--seed", "42",
-    ])
-    assert args.manifold_cmd == "generate"
-    assert args.seed == 42
-    default = cli.parse_args([
-        "manifold", "generate", "mood", "--concepts", "happy", "sad",
-    ])
-    assert default.seed is None
-
-
-def test_require_model_reports_manifold_leaf_verb(capsys: pytest.CaptureFixture[str]):
-    """The -m error names the manifold leaf verb (``manifold fit``), not just ``manifold``."""
-    with pytest.raises(SystemExit) as ex:
-        cli.main(["manifold", "fit", "/tmp/some_folder"])
-    assert ex.value.code == 2
-    assert "manifold fit: -m/--model is required" in capsys.readouterr().err
-
-
-def test_parse_manifold_push():
-    args = cli.parse_args([
-        "pack", "push", "local/circumplex",
-        "-a", "alice/circumplex", "-m", "google/gemma-3-4b-it",
-        "--variant", "sae", "--private", "--dry-run",
-    ])
-    assert args.pack_cmd == "push"
-    assert args.selector == "local/circumplex"
-    assert args.as_target == "alice/circumplex"
-    assert args.model == "google/gemma-3-4b-it"
-    assert args.variant == "sae"
-    assert args.private is True
-    assert args.dry_run is True
-
-
-@pytest.mark.parametrize("flag", ["-p", "-d"])
-def test_parse_manifold_push_rejects_short_forms(flag: str):
-    """``-p`` is ``--probes`` and ``-d`` is ``--device`` everywhere else;
-    ``pack push`` is the one publishing verb, so both are long-only."""
-    with pytest.raises(SystemExit) as ex:
-        cli.parse_args(["pack", "push", "circumplex", flag])
-    assert ex.value.code == 2
-
-
-def test_parse_manifold_push_variant_default_raw():
-    args = cli.parse_args(["pack", "push", "circumplex"])
-    # Aligned with `pack push` — SAE variants are opt-in.
-    assert args.variant == "raw"
-    assert args.private is False
-    assert args.dry_run is False
-
-
-def test_parse_manifold_push_variant_rejects_unknown():
-    with pytest.raises(SystemExit):
-        cli.parse_args([
-            "pack", "push", "circumplex", "--variant", "weird",
-        ])
-
-
-def test_parse_manifold_rm():
-    args = cli.parse_args(["pack", "rm", "local/mood", "-y"])
-    assert args.pack_cmd == "rm"
-    assert args.selector == "local/mood"
-    assert args.yes is True
-
-
-def test_parse_manifold_clear():
-    args = cli.parse_args([
-        "pack", "clear", "circumplex",
-        "-m", "foo/bar", "--variant", "raw",
-    ])
-    assert args.pack_cmd == "clear"
-    assert args.selector == "circumplex"
-    assert args.model == "foo/bar"
-    assert args.variant == "raw"
-
-
-def test_parse_manifold_clear_variant_default_all():
-    args = cli.parse_args(["pack", "clear", "circumplex"])
-    assert args.variant == "all"
-
-
-def test_parse_manifold_refresh():
-    args = cli.parse_args(["pack", "refresh", "alice/circumplex"])
-    assert args.pack_cmd == "refresh"
-    assert args.selector == "alice/circumplex"
-    assert args.model is None
-
-
-def test_parse_manifold_from_template():
-    args = cli.parse_args([
-        "manifold", "from-template", "weekday",
-        "--name", "wd", "--fit-mode", "auto", "--max-dim", "3", "-f",
-    ])
-    assert args.manifold_cmd == "from-template"
-    assert args.template == "weekday"
-    assert args.name == "wd"
-    assert args.fit_mode == "auto"
-    assert args.max_dim == 3
-    assert args.force is True
-
-
-def test_parse_manifold_from_template_fit_mode_default_auto():
-    args = cli.parse_args(["manifold", "from-template", "weekday"])
-    assert args.fit_mode == "auto"
-    assert args.name is None
-    assert args.max_dim is None
-
-
 def test_run_manifold_from_template_writes_folder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -318,13 +43,13 @@ def test_run_manifold_from_template_writes_folder(
         {"user": "what day is it?", "assistant": "today is [DAY]"},
         {"user": "which day?", "assistant": "it's [DAY]"},
     ]))
-    cli.main([
+    main([
         "template", "create", "weekday",
         "--slot", "[DAY]",
         "--values", "Monday", "Tuesday", "Wednesday",
         "--contexts", str(ctx_file),
     ])
-    cli.main(["manifold", "from-template", "weekday", "--fit-mode", "auto"])
+    main(["manifold", "from-template", "weekday", "--fit-mode", "auto"])
     out = capsys.readouterr().out
     assert "3 nodes x 2 contexts" in out
 
@@ -342,54 +67,7 @@ def test_run_manifold_from_template_missing_template_exits(
 ):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     with pytest.raises(SystemExit):
-        cli.main(["manifold", "from-template", "nonexistent"])
-
-
-def test_parse_manifold_transfer():
-    args = cli.parse_args([
-        "manifold", "transfer", "circumplex",
-        "--from", "google/gemma-3-4b-it", "--to", "Qwen/Qwen3-4B", "-f", "-j",
-    ])
-    assert args.manifold_cmd == "transfer"
-    assert args.name == "circumplex"
-    assert args.src_model == "google/gemma-3-4b-it"
-    assert args.tgt_model == "Qwen/Qwen3-4B"
-    assert args.force is True
-    assert args.json_output is True
-
-
-def test_parse_manifold_transfer_missing_from_errors():
-    with pytest.raises(SystemExit):
-        cli.parse_args([
-            "manifold", "transfer", "circumplex",
-            "--to", "Qwen/Qwen3-4B",
-        ])
-
-
-def test_parse_manifold_ls_verbose():
-    args = cli.parse_args(["pack", "ls", "-v"])
-    assert args.pack_cmd == "ls"
-    assert args.verbose is True
-
-
-def test_parse_pack_no_verb_lists_lifecycle_subverbs(capsys: pytest.CaptureFixture[str]):
-    with pytest.raises(SystemExit) as ex:
-        cli.main(["pack"])
-    assert ex.value.code == 0
-    out = capsys.readouterr().out
-    for verb in ("install", "search", "push", "rm", "clear",
-                 "refresh", "ls", "show", "export"):
-        assert verb in out
-
-
-def test_parse_manifold_no_verb_lists_compute_subverbs(capsys: pytest.CaptureFixture[str]):
-    with pytest.raises(SystemExit) as ex:
-        cli.main(["manifold"])
-    assert ex.value.code == 0
-    out = capsys.readouterr().out
-    for verb in ("extract", "generate", "fit", "bake", "merge",
-                 "transfer", "compare", "why"):
-        assert verb in out
+        main(["manifold", "from-template", "nonexistent"])
 
 
 # ---------------------------------------------------------------------------
@@ -407,13 +85,13 @@ def test_run_manifold_install_calls_backend(monkeypatch: pytest.MonkeyPatch, cap
         return Path("/home/.drowse/manifolds/local/circumplex")
 
     monkeypatch.setattr("drowse.store.hub.install_manifold", fake_install)
-    cli.main(["pack", "install", "alice/circumplex", "-a", "local/mood", "-f"])
+    main(["pack", "install", "alice/circumplex", "-a", "local/mood", "-f"])
     assert calls == [("alice/circumplex", "local/mood", True)]
-    out = capsys.readouterr().out
-    # Announced before the network call (hub progress bars vanish off-TTY),
-    # mirroring ``lens fetch``'s convention.
-    assert out.startswith("Installing alice/circumplex...\n")
-    assert "Installed alice/circumplex" in out
+    captured = capsys.readouterr()
+    # Narrated on stderr before the network call (hub progress bars vanish
+    # off-TTY); the result line is stdout.
+    assert captured.err.startswith("Installing alice/circumplex...\n")
+    assert captured.out.startswith("Installed alice/circumplex")
 
 
 def test_run_manifold_search_calls_backend(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
@@ -428,12 +106,12 @@ def test_run_manifold_search_calls_backend(monkeypatch: pytest.MonkeyPatch, caps
         }]
 
     monkeypatch.setattr("drowse.store.hub.search_manifolds", fake_search)
-    cli.main(["pack", "search", "mood"])
+    main(["pack", "search", "mood"])
     assert seen == ["mood"]
-    out = capsys.readouterr().out
-    assert out.startswith("Searching Hugging Face for manifolds matching 'mood'...\n")
-    assert "circumplex" in out
-    assert "box(2d)" in out
+    captured = capsys.readouterr()
+    assert captured.err.startswith("Searching Hugging Face for manifolds matching 'mood'...\n")
+    assert "circumplex" in captured.out
+    assert "box(2d)" in captured.out
 
 
 def test_run_manifold_search_empty_query_passes_none(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
@@ -444,7 +122,7 @@ def test_run_manifold_search_empty_query_passes_none(monkeypatch: pytest.MonkeyP
         return []
 
     monkeypatch.setattr("drowse.store.hub.search_manifolds", fake_search)
-    cli.main(["pack", "search"])
+    main(["pack", "search"])
     # Empty CLI default coerces to None for the backend (list by recency).
     assert seen == [None]
     out = capsys.readouterr().out
@@ -458,7 +136,7 @@ def test_run_manifold_search_json(monkeypatch: pytest.MonkeyPatch, capsys: pytes
         "fit_mode": "authored", "tensor_models": [],
     }]
     monkeypatch.setattr("drowse.store.hub.search_manifolds", lambda q: rows)
-    cli.main(["pack", "search", "mood", "-j"])
+    main(["pack", "search", "mood", "-j"])
     out = capsys.readouterr().out
     data = _json.loads(out)
     assert data[0]["name"] == "circumplex"
@@ -477,8 +155,8 @@ def test_run_manifold_merge_calls_backend(monkeypatch: pytest.MonkeyPatch, capsy
         return Path("/home/.drowse/manifolds/local/combined")
 
     monkeypatch.setattr("drowse.store.manifolds.merge_discover_manifolds", fake_merge)
-    cli.main([
-        "manifold", "merge", "local/combined", "a", "alice/b",
+    main([
+        "manifold", "merge", "local/combined", "local/a", "alice/b",
         "--method", "spectral", "-f",
     ])
     assert len(calls) == 1
@@ -487,9 +165,29 @@ def test_run_manifold_merge_calls_backend(monkeypatch: pytest.MonkeyPatch, capsy
     assert c["sources"] == [("local", "a"), ("alice", "b")]
     assert c["fit_mode"] == "spectral"
     assert c["force"] is True
-    out = capsys.readouterr().out
-    assert "Merged manifold written to" in out
-    assert "fit local/combined" in out
+    captured = capsys.readouterr()
+    assert "Merged manifold written to" in captured.out
+    assert "fit local/combined" in captured.err
+
+
+def test_merge_sources_resolve_existing_manifolds_cross_namespace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Regression: bare merge *sources* were split as authoring names
+    (bare → ``local/``), so ``merge mix emotions personas`` looked for
+    ``local/emotions``.  Sources are existing manifolds and resolve
+    cross-namespace, reaching bundled ``default/``."""
+    _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
+    calls: list[Any] = []
+    monkeypatch.setattr(
+        "drowse.store.manifolds.merge_discover_manifolds",
+        lambda *_a, sources, **_k: calls.append(sources) or tmp_path,
+    )
+    main(["manifold", "merge", "mix", "personas", "formal.casual"])
+    assert calls == [[("default", "personas"), ("default", "formal.casual")]]
+    with pytest.raises(SystemExit) as exc:
+        main(["manifold", "merge", "mix", "personas", "not_installed_anywhere"])
+    assert exc.value.code == 1
 
 
 def test_run_manifold_merge_one_source_errors(monkeypatch: pytest.MonkeyPatch):
@@ -499,7 +197,7 @@ def test_run_manifold_merge_one_source_errors(monkeypatch: pytest.MonkeyPatch):
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
-        cli.main(["manifold", "merge", "combined", "only-one"])
+        main(["manifold", "merge", "combined", "only-one"])
     assert ex.value.code == 2
 
 
@@ -523,7 +221,7 @@ def test_run_manifold_push_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
     monkeypatch.setattr("drowse.store.hub.push_manifold", fake_push)
     # -a override means resolve_target_coord doesn't need whoami().
-    cli.main([
+    main([
         "pack", "push", "local/circumplex",
         "-a", "alice/circumplex", "-m", "google/gemma-3-4b-it",
         "--variant", "sae", "--private",
@@ -535,10 +233,25 @@ def test_run_manifold_push_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert c["variant"] == "sae"
     assert c["private"] is True
     assert c["dry_run"] is False
-    out = capsys.readouterr().out
-    assert out.startswith("Pushing local/circumplex to alice/circumplex...\n")
-    assert "Pushed alice/circumplex" in out
-    assert "abcdef123456" in out
+    captured = capsys.readouterr()
+    assert captured.err.startswith("Pushing local/circumplex to alice/circumplex...\n")
+    assert "Pushed alice/circumplex" in captured.out
+    assert "abcdef123456" in captured.out
+
+
+def test_push_resolves_a_bare_name_cross_namespace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Regression: push addressed an existing manifold with the authoring
+    split, so a bare bundled name looked under ``local/``."""
+    _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
+    pushed: list[Path] = []
+    monkeypatch.setattr(
+        "drowse.store.hub.push_manifold",
+        lambda folder, coord, **_k: pushed.append(folder) or (coord, None),
+    )
+    main(["pack", "push", "formal.casual", "-a", "alice/formal", "--dry-run"])
+    assert [p.parent.name for p in pushed] == ["default"]
 
 
 def test_run_manifold_push_dry_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
@@ -552,7 +265,7 @@ def test_run_manifold_push_dry_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         "drowse.store.hub.push_manifold",
         lambda f, coord, **k: (f"https://huggingface.co/{coord}", None),
     )
-    cli.main([
+    main([
         "pack", "push", "local/circumplex",
         "-a", "alice/circumplex", "--dry-run",
     ])
@@ -567,7 +280,7 @@ def test_run_manifold_push_missing_folder_errors(monkeypatch: pytest.MonkeyPatch
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
-        cli.main(["pack", "push", "local/nope", "-a", "x/y"])
+        main(["pack", "push", "local/nope", "-a", "x/y"])
     assert ex.value.code == 1
 
 
@@ -580,7 +293,7 @@ def test_run_manifold_rm_calls_backend(monkeypatch: pytest.MonkeyPatch, capsys: 
                 "removed": True, "rematerializes_on_restart": False}
 
     monkeypatch.setattr("drowse.store.manifolds.remove_manifold_folder", fake_rm)
-    cli.main(["pack", "rm", "local/mood", "-y"])
+    main(["pack", "rm", "local/mood", "-y"])
     assert calls == [("local", "mood")]
     out = capsys.readouterr().out
     assert "Removed local/mood" in out
@@ -596,7 +309,7 @@ def test_run_manifold_rm_local_refuses_without_yes(
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
-        cli.main(["pack", "rm", "local/mood"])
+        main(["pack", "rm", "local/mood"])
     assert ex.value.code == 2
     err = capsys.readouterr().err
     assert "local/mood" in err
@@ -609,7 +322,7 @@ def test_run_manifold_rm_bundled_refuses_without_yes(monkeypatch: pytest.MonkeyP
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
-        cli.main(["pack", "rm", "default/personas"])
+        main(["pack", "rm", "default/personas"])
     assert ex.value.code == 2
 
 
@@ -619,7 +332,7 @@ def test_run_manifold_rm_bundled_with_yes(monkeypatch: pytest.MonkeyPatch, capsy
                 "removed": True, "rematerializes_on_restart": True}
 
     monkeypatch.setattr("drowse.store.manifolds.remove_manifold_folder", fake_rm)
-    cli.main(["pack", "rm", "default/personas", "-y"])
+    main(["pack", "rm", "default/personas", "-y"])
     out = capsys.readouterr().out
     assert "Removed default/personas" in out
     assert "re-materializes" in out
@@ -631,7 +344,7 @@ def test_run_manifold_rm_missing_errors(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("drowse.store.manifolds.remove_manifold_folder", fake_rm)
     with pytest.raises(SystemExit) as ex:
-        cli.main(["pack", "rm", "local/nope", "-y"])
+        main(["pack", "rm", "local/nope", "-y"])
     assert ex.value.code == 1
 
 
@@ -651,7 +364,7 @@ def test_run_manifold_clear_calls_backend(
     # Bare ``personas`` resolves cross-namespace to the bundled ``default/personas``
     # (the only installed match) — the lifecycle verbs no longer hard-default
     # a bare name to ``local/``.
-    cli.main(["pack", "clear", "personas", "--variant", "raw"])
+    main(["pack", "clear", "personas", "--variant", "raw"])
     assert calls == [
         {"ns": "default", "name": "personas", "model_scope": None, "variant": "raw"},
     ]
@@ -674,7 +387,7 @@ def test_run_manifold_clear_passes_model_scope(
     monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare name resolves cross-namespace to bundled ``default/personas``.
-    cli.main(["pack", "clear", "personas", "-m", "foo/bar"])
+    main(["pack", "clear", "personas", "-m", "foo/bar"])
     assert calls == [
         {"ns": "default", "name": "personas", "model_scope": "foo/bar", "variant": "all"},
     ]
@@ -691,7 +404,7 @@ def test_run_manifold_refresh_tiers(monkeypatch: pytest.MonkeyPatch, capsys: pyt
             "drowse.store.manifolds.refresh_manifold",
             lambda ns, name, *, model_scope=None, t=tier: t,
         )
-        cli.main(["pack", "refresh", "alice/circumplex"])
+        main(["pack", "refresh", "alice/circumplex"])
         out = capsys.readouterr().out
         assert fragment in out
 
@@ -711,7 +424,7 @@ def test_run_manifold_refresh_passes_model_scope(
     monkeypatch.setattr("drowse.store.manifolds.refresh_manifold", fake_refresh)
     _materialize_bundles_for_cli_test(monkeypatch, tmp_path)
     # Bare name resolves cross-namespace to bundled ``default/personas``.
-    cli.main(["pack", "refresh", "personas", "-m", "foo/bar"])
+    main(["pack", "refresh", "personas", "-m", "foo/bar"])
     assert calls == [{"ns": "default", "name": "personas", "model_scope": "foo/bar"}]
     captured = capsys.readouterr()
     assert "foo/bar" in captured.out and "re-fits on next use" in captured.out
@@ -724,737 +437,8 @@ def test_run_manifold_refresh_missing_errors(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("drowse.store.manifolds.refresh_manifold", fake_refresh)
     with pytest.raises(SystemExit) as ex:
-        cli.main(["pack", "refresh", "local/nope"])
+        main(["pack", "refresh", "local/nope"])
     assert ex.value.code == 1
-
-
-def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """Cold transfer neither revalidates identities nor reloads target rows."""
-    import torch
-
-    import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
-    from drowse.cli import runners
-
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-
-    class _SessionContext:
-        def __init__(self, model_id: str) -> None:
-            self.model_id = model_id
-            self.model = object()
-            self.tokenizer = object()
-            self.layers = [object()]
-
-        def __enter__(self) -> "_SessionContext":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    monkeypatch.setattr(
-        session_mod.DrowseSession,
-        "from_pretrained",
-        staticmethod(lambda model_id, **_kwargs: _SessionContext(model_id)),
-    )
-    loaded: list[str] = []
-    src_acts = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [2.0, 1.0]])}
-    tgt_acts = {0: torch.tensor([[2.0, 1.0], [1.0, 3.0], [4.0, 2.0]])}
-
-    def load_with_metadata(
-        _model: object, _tokenizer: object, _layers: object, *,
-        model_id: str, force: bool,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        assert force is False
-        loaded.append(model_id)
-        acts = src_acts if model_id == "src/model" else tgt_acts
-        return acts, {
-            "method": "neutral_activations", "format_version": 4,
-            "capture_version": 1,
-            "model_fingerprint": f"fp:{model_id}",
-            "model_source_fingerprint": f"source:{model_id}",
-            "capture_sha256": model_id,
-            "tensor_sha256": {"0": "0" * 64},
-            "tensor_files": {"0": "neutral.layer-0.safetensors"},
-            "layers": [0],
-            "tensor_schema": {"0": {"shape": [3, 2], "dtype": "torch.float32"}},
-            "n_prompts": 3,
-        }
-
-    monkeypatch.setattr(
-        alignment_mod,
-        "_load_or_compute_neutral_activations_with_metadata_locked",
-        load_with_metadata,
-    )
-    monkeypatch.setattr(
-        alignment_mod, "validate_neutral_cache_metadata",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            FileNotFoundError("cold cache")
-        ),
-    )
-    monkeypatch.setattr(model_mod, "model_source_fingerprint", lambda *_args: None)
-    monkeypatch.setattr(
-        alignment_mod, "fit_alignment",
-        lambda _src, _tgt, **_kwargs: {0: torch.eye(2)},
-    )
-    monkeypatch.setattr(
-        alignment_mod, "alignment_quality",
-        lambda _maps, _src, _tgt: {0: 1.0},
-    )
-    monkeypatch.setattr(
-        alignment_mod, "save_alignment_map",
-        lambda *_args, **_kwargs: tmp_path / "alignment.safetensors",
-    )
-    maps, quality, _path, _src_id, _tgt_id, whitener, layer_means = (
-        runners._load_or_fit_transfer_alignment(
-            "src/model", "tgt/model", force=True, label="test transfer",
-        )
-    )
-
-    assert loaded == ["src/model", "tgt/model"]
-    assert quality == {0: 1.0}
-    assert torch.equal(maps[0], torch.eye(2))
-    assert whitener.layers == {0}
-    assert set(layer_means) == {0}
-
-
-def test_cold_narrow_alignment_releases_full_seed_rosters_before_fit(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    import gc
-    import weakref
-
-    import torch
-
-    import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
-    from drowse.cli import runners
-
-    class _SessionContext:
-        def __init__(self, model_id: str) -> None:
-            self.model_id = model_id
-            self.model = object()
-            self.tokenizer = object()
-            self.layers = [object() for _ in range(10)]
-
-        def __enter__(self) -> "_SessionContext":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    monkeypatch.setattr(
-        session_mod.DrowseSession,
-        "from_pretrained",
-        staticmethod(lambda model_id, **_kwargs: _SessionContext(model_id)),
-    )
-    monkeypatch.setattr(model_mod, "model_source_fingerprint", lambda *_args: None)
-    monkeypatch.setattr(
-        alignment_mod, "validate_neutral_cache_metadata",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            FileNotFoundError("cold cache")
-        ),
-    )
-
-    unrequested_refs: list[weakref.ReferenceType[torch.Tensor]] = []
-
-    def capture(
-        _model: object, _tokenizer: object, _layers: object, *,
-        model_id: str, force: bool,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        assert force is False
-        rows = {
-            layer: torch.tensor(
-                [[1.0 + layer, 0.0], [0.0, 1.0], [2.0, 1.0]],
-            )
-            for layer in range(10)
-        }
-        unrequested_refs.append(weakref.ref(rows[9]))
-        return rows, {
-            "method": "neutral_activations", "format_version": 4,
-            "capture_version": 1,
-            "model_fingerprint": f"fp:{model_id}",
-            "model_source_fingerprint": f"source:{model_id}",
-            "capture_sha256": model_id,
-            "tensor_sha256": {str(layer): "0" * 64 for layer in range(10)},
-            "tensor_files": {
-                str(layer): f"neutral.layer-{layer}.safetensors"
-                for layer in range(10)
-            },
-            "layers": list(range(10)),
-            "tensor_schema": {
-                str(layer): {
-                    "shape": [3, 2], "dtype": "torch.float32",
-                }
-                for layer in range(10)
-            },
-            "n_prompts": 3,
-        }
-
-    monkeypatch.setattr(
-        alignment_mod,
-        "_load_or_compute_neutral_activations_with_metadata_locked",
-        capture,
-    )
-    monkeypatch.setattr(alignment_mod, "load_alignment_map", lambda *_a, **_k: None)
-
-    def fit(
-        src: dict[int, torch.Tensor], tgt: dict[int, torch.Tensor], **kwargs: Any,
-    ) -> dict[int, torch.Tensor]:
-        gc.collect()
-        assert len(unrequested_refs) == 2
-        assert all(ref() is None for ref in unrequested_refs)
-        assert set(src) == set(tgt) == {5}
-        assert kwargs["requested_layers"] == {5}
-        return {5: torch.eye(2)}
-
-    monkeypatch.setattr(alignment_mod, "fit_alignment", fit)
-    monkeypatch.setattr(
-        alignment_mod, "alignment_quality", lambda *_args, **_kwargs: {5: 1.0},
-    )
-    monkeypatch.setattr(
-        alignment_mod, "save_alignment_map",
-        lambda *_args, **_kwargs: tmp_path / "alignment.safetensors",
-    )
-
-    result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=True, label="test transfer",
-        requested_layers=[5],
-    )
-
-    assert set(result[0]) == {5}
-    assert result[5].layers == {5}
-
-
-def test_cached_alignment_keeps_model_free_offline_whitener_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """A cached repeat loads target rows once and never loads model weights."""
-    import torch
-
-    import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
-    from drowse.cli import runners
-
-    def sidecar(model_id: str) -> dict[str, Any]:
-        return {
-            "method": "neutral_activations", "format_version": 4,
-            "capture_version": 1,
-            "model_fingerprint": f"fp:{model_id}",
-            "model_source_fingerprint": f"source:{model_id}",
-            "capture_sha256": model_id,
-            "tensor_sha256": {"0": "0" * 64},
-            "tensor_files": {"0": "neutral.layer-0.safetensors"},
-            "layers": [0],
-            "tensor_schema": {"0": {"shape": [3, 2], "dtype": "torch.float32"}},
-            "n_prompts": 3,
-        }
-
-    metadata_calls: list[str] = []
-    payload_calls: list[str] = []
-    target_acts = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])}
-
-    def metadata_only(model_id: str, **_kwargs: Any) -> dict[str, Any]:
-        metadata_calls.append(model_id)
-        return sidecar(model_id)
-
-    def load_validated(
-        model_id: str, **_kwargs: Any,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        payload_calls.append(model_id)
-        assert model_id == "tgt/model"
-        return target_acts, sidecar(model_id)
-
-    monkeypatch.setattr(
-        alignment_mod, "validate_neutral_cache_metadata", metadata_only,
-    )
-    monkeypatch.setattr(
-        alignment_mod, "load_validated_neutral_cache", load_validated,
-    )
-    monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
-        lambda model_id: f"source:{model_id}",
-    )
-    monkeypatch.setattr(
-        alignment_mod, "load_alignment_map",
-        lambda *_args, **_kwargs: (
-            {0: torch.eye(2)}, {"quality_per_layer": {"0": 0.75}},
-        ),
-    )
-    monkeypatch.setattr(
-        alignment_mod, "alignment_cache_path",
-        lambda *_args: (
-            tmp_path / "alignment.safetensors", tmp_path / "alignment.json",
-        ),
-    )
-    monkeypatch.setattr(
-        session_mod.DrowseSession,
-        "from_pretrained",
-        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("exact cached repeat loaded a model")
-        )),
-    )
-    result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=False, label="test transfer",
-    )
-
-    assert result[1] == {0: 0.75}
-    assert result[5].layers == {0}
-    assert metadata_calls == ["src/model", "tgt/model", "tgt/model"]
-    assert payload_calls == ["tgt/model"]
-
-
-def test_missing_cached_alignment_fits_offline_from_proven_neutral_rows(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """A map miss reuses both neutral caches and never loads either model."""
-    import torch
-
-    import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
-    from drowse.cli import runners
-
-    src_acts = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [2.0, 1.0]])}
-    tgt_acts = {0: torch.tensor([[2.0, 1.0], [1.0, 3.0], [4.0, 2.0]])}
-
-    def sidecar(model_id: str) -> dict[str, Any]:
-        return {
-            "method": "neutral_activations", "format_version": 4,
-            "capture_version": 1,
-            "model_fingerprint": f"fp:{model_id}",
-            "model_source_fingerprint": f"source:{model_id}",
-            "capture_sha256": model_id,
-            "tensor_sha256": {"0": "0" * 64},
-            "tensor_files": {"0": "neutral.layer-0.safetensors"},
-            "layers": [0],
-            "tensor_schema": {
-                "0": {"shape": [3, 2], "dtype": "torch.float32"},
-            },
-            "n_prompts": 3,
-        }
-
-    metadata_calls: list[str] = []
-    payload_calls: list[str] = []
-
-    def metadata_only(model_id: str, **_kwargs: Any) -> dict[str, Any]:
-        metadata_calls.append(model_id)
-        return sidecar(model_id)
-
-    def load_validated(
-        model_id: str, **_kwargs: Any,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        payload_calls.append(model_id)
-        return (
-            src_acts if model_id == "src/model" else tgt_acts,
-            sidecar(model_id),
-        )
-
-    monkeypatch.setattr(
-        alignment_mod, "validate_neutral_cache_metadata", metadata_only,
-    )
-    monkeypatch.setattr(
-        alignment_mod, "load_validated_neutral_cache", load_validated,
-    )
-    monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
-        lambda model_id: f"source:{model_id}",
-    )
-    monkeypatch.setattr(
-        alignment_mod, "load_alignment_map", lambda *_args, **_kwargs: None,
-    )
-    fitted: list[tuple[dict[int, torch.Tensor], dict[int, torch.Tensor]]] = []
-
-    def fit_offline(
-        src: dict[int, torch.Tensor], tgt: dict[int, torch.Tensor], **_kwargs: Any,
-    ) -> dict[int, torch.Tensor]:
-        fitted.append((src, tgt))
-        return {0: torch.eye(2)}
-
-    monkeypatch.setattr(alignment_mod, "fit_alignment", fit_offline)
-    monkeypatch.setattr(
-        alignment_mod, "alignment_quality",
-        lambda _maps, _src, _tgt: {0: 0.9},
-    )
-    saved: list[dict[str, Any]] = []
-
-    def save_offline(*_args: Any, **kwargs: Any) -> Path:
-        saved.append(kwargs)
-        return tmp_path / "alignment.safetensors"
-
-    monkeypatch.setattr(alignment_mod, "save_alignment_map", save_offline)
-    monkeypatch.setattr(
-        session_mod.DrowseSession,
-        "from_pretrained",
-        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("offline alignment fit loaded model weights")
-        )),
-    )
-
-    result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=False, label="test transfer",
-    )
-
-    assert metadata_calls == [
-        "src/model", "tgt/model", "tgt/model", "src/model",
-    ]
-    assert payload_calls == ["tgt/model", "src/model"]
-    assert len(fitted) == 1
-    assert fitted[0][0] is src_acts
-    assert set(fitted[0][1]) == {0}
-    assert fitted[0][1][0] is tgt_acts[0]
-    assert len(saved) == 1
-    assert saved[0]["source_identity"] == result[3]
-    assert saved[0]["target_identity"] == result[4]
-    assert result[1] == {0: 0.9}
-    assert result[5].layers == {0}
-
-
-def test_force_refits_only_requested_layer_without_loading_models(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    import torch
-
-    import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
-    from drowse.cli import runners
-
-    def sidecar(model_id: str) -> dict[str, Any]:
-        return {
-            "method": "neutral_activations", "format_version": 4, "capture_version": 1,
-            "model_fingerprint": f"fp:{model_id}",
-            "model_source_fingerprint": f"source:{model_id}",
-            "capture_sha256": model_id,
-            "tensor_sha256": {str(layer): "0" * 64 for layer in range(10)},
-            "tensor_files": {
-                str(layer): f"neutral.layer-{layer}.safetensors"
-                for layer in range(10)
-            },
-            "layers": list(range(10)),
-            "tensor_schema": {
-                str(layer): {"shape": [3, 2], "dtype": "torch.float32"}
-                for layer in range(10)
-            },
-            "n_prompts": 3,
-        }
-
-    rows = {
-        model_id: {
-            layer: torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
-            for layer in range(10)
-        }
-        for model_id in ("src/model", "tgt/model")
-    }
-    payload_calls: list[tuple[str, set[int] | None]] = []
-
-    def load_rows(
-        model_id: str, *, requested_layers: object = None,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        requested = (
-            None if requested_layers is None
-            else {int(layer) for layer in requested_layers}  # type: ignore[union-attr]
-        )
-        payload_calls.append((model_id, requested))
-        selected = set(rows[model_id]) if requested is None else requested
-        return ({layer: rows[model_id][layer] for layer in selected}, sidecar(model_id))
-
-    monkeypatch.setattr(
-        alignment_mod, "validate_neutral_cache_metadata",
-        lambda model_id, **_kwargs: sidecar(model_id),
-    )
-    monkeypatch.setattr(alignment_mod, "load_validated_neutral_cache", load_rows)
-    monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
-        lambda model_id: f"source:{model_id}",
-    )
-    requested_map_layers: list[set[int]] = []
-
-    def load_map(*_args: Any, **kwargs: Any) -> tuple[dict[int, Any], dict[str, Any]]:
-        requested_map_layers.append(set(kwargs["requested_layers"]))
-        return ({}, {"quality_per_layer": {"0": 0.5}})
-
-    monkeypatch.setattr(alignment_mod, "load_alignment_map", load_map)
-    fitted: list[tuple[set[int], dict[str, Any]]] = []
-
-    def fit(src: dict[int, Any], _tgt: dict[int, Any], **kwargs: Any) -> dict[int, Any]:
-        fitted.append((set(src), kwargs))
-        return {5: torch.eye(2)}
-
-    monkeypatch.setattr(alignment_mod, "fit_alignment", fit)
-    monkeypatch.setattr(
-        alignment_mod, "alignment_quality", lambda *_args, **_kwargs: {5: 0.9},
-    )
-    saved: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        alignment_mod, "save_alignment_map",
-        lambda *_args, **kwargs: saved.append(kwargs) or tmp_path / "alignment",
-    )
-    monkeypatch.setattr(
-        session_mod.DrowseSession, "from_pretrained",
-        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("force refit recaptured neutral activations")
-        )),
-    )
-
-    result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=True, label="test transfer",
-        requested_layers=[5],
-    )
-    assert requested_map_layers == [set()]
-    assert payload_calls == [("tgt/model", {5}), ("src/model", {5})]
-    assert fitted[0][0] == {5}
-    assert fitted[0][1]["requested_layers"] == {5}
-    assert fitted[0][1]["available_shared_layers"] == set(range(10))
-    assert saved[0]["extend"] is True
-    assert set(result[0]) == {5} and result[5].layers == {5}
-
-
-def test_target_neutral_generation_race_replans_cached_alignment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import torch
-
-    import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
-    from drowse.cli import runners
-
-    target_generation = "old"
-
-    def sidecar(model_id: str) -> dict[str, Any]:
-        generation = target_generation if model_id == "tgt/model" else "stable"
-        return {
-            "method": "neutral_activations", "format_version": 4, "capture_version": 1,
-            "model_fingerprint": f"fp:{model_id}:{generation}",
-            "model_source_fingerprint": f"source:{model_id}",
-            "capture_sha256": generation,
-            "tensor_sha256": {"0": "0" * 64},
-            "tensor_files": {"0": "neutral.layer-0.safetensors"},
-            "layers": [0],
-            "tensor_schema": {"0": {"shape": [3, 2], "dtype": "torch.float32"}},
-            "n_prompts": 3,
-        }
-
-    rows = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])}
-
-    def load_rows(
-        model_id: str, *, requested_layers: object = None,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        nonlocal target_generation
-        del requested_layers
-        if model_id == "tgt/model" and target_generation == "old":
-            target_generation = "new"
-            raise ValueError("target cache changed during payload load")
-        return rows, sidecar(model_id)
-
-    monkeypatch.setattr(
-        alignment_mod, "validate_neutral_cache_metadata",
-        lambda model_id, **_kwargs: sidecar(model_id),
-    )
-    monkeypatch.setattr(alignment_mod, "load_validated_neutral_cache", load_rows)
-    monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
-        lambda model_id: f"source:{model_id}",
-    )
-    map_generations: list[str] = []
-
-    def load_map(*_args: Any, **kwargs: Any):
-        generation = kwargs["target_identity"]["capture_sha256"]
-        map_generations.append(generation)
-        factor = 1.0 if generation == "old" else 2.0
-        return (
-            {0: factor * torch.eye(2)},
-            {"quality_per_layer": {"0": 0.8, "9": -5.0}},
-        )
-
-    monkeypatch.setattr(alignment_mod, "load_alignment_map", load_map)
-    monkeypatch.setattr(
-        session_mod.DrowseSession, "from_pretrained",
-        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("identity replan loaded a model")
-        )),
-    )
-
-    result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=False, label="test",
-        requested_layers=[0],
-    )
-
-    assert map_generations == ["old", "new"]
-    assert torch.equal(result[0][0].to_dense(), 2.0 * torch.eye(2))
-    assert result[1] == {0: 0.8}
-    assert result[4]["capture_sha256"] == "new"
-
-
-def test_concurrent_distinct_alignments_single_flight_shared_model_load(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    import torch
-
-    import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
-    from drowse.cli import runners
-
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    cached: dict[str, tuple[dict[int, torch.Tensor], dict[str, Any]]] = {}
-    loads: dict[str, int] = {}
-
-    def sidecar(model_id: str) -> dict[str, Any]:
-        return {
-            "method": "neutral_activations", "format_version": 4, "capture_version": 1,
-            "model_fingerprint": f"fp:{model_id}",
-            "model_source_fingerprint": f"source:{model_id}",
-            "capture_sha256": model_id,
-            "tensor_sha256": {str(layer): "0" * 64 for layer in range(10)},
-            "tensor_files": {
-                str(layer): f"neutral.layer-{layer}.safetensors"
-                for layer in range(10)
-            },
-            "layers": list(range(10)), "tensor_schema": {}, "n_prompts": 3,
-        }
-
-    def metadata(model_id: str, **_kwargs: Any) -> dict[str, Any]:
-        if model_id not in cached:
-            raise FileNotFoundError(model_id)
-        return cached[model_id][1]
-
-    def load_rows(
-        model_id: str, *, requested_layers: object = None,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        rows, sc = cached[model_id]
-        if requested_layers is None:
-            return rows, sc
-        wanted = {int(layer) for layer in requested_layers}  # type: ignore[union-attr]
-        return {layer: rows[layer] for layer in wanted if layer in rows}, sc
-
-    class Session:
-        def __init__(self, model_id: str) -> None:
-            loads[model_id] = loads.get(model_id, 0) + 1
-            self.model_id = model_id
-            self.model = object()
-            self.tokenizer = object()
-            self.layers = [object()]
-
-        def __enter__(self) -> "Session":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    def capture(
-        _model: object, _tokenizer: object, _layers: object, *,
-        model_id: str, force: bool,
-    ) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
-        assert force is False
-        rows = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])}
-        cached[model_id] = (rows, sidecar(model_id))
-        return cached[model_id]
-
-    monkeypatch.setattr(alignment_mod, "validate_neutral_cache_metadata", metadata)
-    monkeypatch.setattr(alignment_mod, "load_validated_neutral_cache", load_rows)
-    monkeypatch.setattr(
-        alignment_mod, "_load_or_compute_neutral_activations_with_metadata_locked",
-        capture,
-    )
-    monkeypatch.setattr(
-        model_mod, "model_source_fingerprint",
-        lambda model_id: f"source:{model_id}",
-    )
-    monkeypatch.setattr(
-        session_mod.DrowseSession, "from_pretrained",
-        staticmethod(lambda model_id, **_kwargs: Session(model_id)),
-    )
-    monkeypatch.setattr(alignment_mod, "load_alignment_map", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        alignment_mod, "fit_alignment",
-        lambda *_args, **_kwargs: {0: torch.eye(2)},
-    )
-    monkeypatch.setattr(
-        alignment_mod, "alignment_quality", lambda *_args: {0: 1.0},
-    )
-    monkeypatch.setattr(
-        alignment_mod, "save_alignment_map",
-        lambda *_args, **_kwargs: tmp_path / "alignment",
-    )
-    barrier = threading.Barrier(2)
-    errors: list[BaseException] = []
-
-    def run(target: str) -> None:
-        try:
-            barrier.wait()
-            runners._load_or_fit_transfer_alignment(
-                "shared/source", target, force=False, label="test",
-                requested_layers=[0],
-            )
-        except BaseException as exc:
-            errors.append(exc)
-
-    threads = [
-        threading.Thread(target=run, args=(target,))
-        for target in ("target/a", "target/b")
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5)
-    assert all(not thread.is_alive() for thread in threads)
-    assert errors == []
-    assert loads == {"shared/source": 1, "target/a": 1, "target/b": 1}
-
-
-def test_cross_process_distinct_alignments_single_flight_shared_model_load(
-    tmp_path: Path,
-) -> None:
-    """The filesystem neutral lock precedes model construction across commands."""
-    import multiprocessing
-
-    ctx = multiprocessing.get_context("spawn")
-    load_count = ctx.Value("i", 0)
-    start = ctx.Barrier(3)
-    errors = ctx.Queue()
-
-    processes = [
-        ctx.Process(
-            target=_cross_process_alignment_worker,
-            args=(str(tmp_path), target, load_count, start, errors),
-        )
-        for target in ("target/a", "target/b")
-    ]
-    timed_out: list[str] = []
-    exitcodes: list[int | None] = []
-    child_errors: list[str] = []
-    try:
-        for process in processes:
-            process.start()
-        start.wait(timeout=120)
-        for process in processes:
-            process.join(timeout=20)
-        timed_out = [process.name for process in processes if process.is_alive()]
-    finally:
-        for process in processes:
-            if process.is_alive():
-                process.terminate()
-        for process in processes:
-            process.join(timeout=5)
-        exitcodes = [process.exitcode for process in processes]
-        while True:
-            try:
-                child_errors.append(errors.get_nowait())
-            except queue.Empty:
-                break
-        errors.close()
-        errors.join_thread()
-
-    assert timed_out == []
-    assert exitcodes == [0, 0]
-    assert child_errors == []
-    assert load_count.value == 1
 
 
 def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
@@ -1500,7 +484,7 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
         )
 
     monkeypatch.setattr(
-        "drowse.cli.runners._load_or_fit_transfer_alignment", fake_alignment,
+        "drowse.store.alignment.load_or_fit_transfer_alignment", fake_alignment,
     )
 
     calls: list[dict[str, Any]] = []
@@ -1522,7 +506,7 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
         return folder_arg / "Qwen__Qwen3-4B_from-google__gemma-3-4b-it.safetensors"
 
     monkeypatch.setattr("drowse.store.manifolds.transfer_manifold", fake_transfer)
-    cli.main([
+    main([
         "manifold", "transfer", "local/circumplex",
         "--from", src_model, "--to", "Qwen/Qwen3-4B",
     ])
@@ -1558,7 +542,7 @@ def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     import torch
     target_whitener = object()
     monkeypatch.setattr(
-        "drowse.cli.runners._load_or_fit_transfer_alignment",
+        "drowse.store.alignment.load_or_fit_transfer_alignment",
         lambda *args, **kwargs: (
             {10: torch.eye(2)}, {10: 0.5}, tmp_path / "alignment.safetensors",
             {"model_fingerprint": "src-fp"},
@@ -1571,7 +555,7 @@ def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         "drowse.store.manifolds.transfer_manifold",
         lambda f, **k: f / "out.safetensors",
     )
-    cli.main([
+    main([
         "manifold", "transfer", "local/circumplex",
         "--from", src_model, "--to", "tgt/model", "-j",
     ])
@@ -1605,7 +589,7 @@ def test_run_manifold_transfer_retries_unproven_target(
 
     target_whitener = object()
     monkeypatch.setattr(
-        "drowse.cli.runners._load_or_fit_transfer_alignment",
+        "drowse.store.alignment.load_or_fit_transfer_alignment",
         lambda *args, **kwargs: (
             {0: torch.eye(2)}, {0: 0.5}, tmp_path / "alignment.safetensors",
             {"model_fingerprint": "src-fp"},
@@ -1633,8 +617,8 @@ def test_run_manifold_transfer_retries_unproven_target(
         "--from", src_model, "--to", tgt_model,
     ]
     with pytest.raises(RuntimeError, match="post-pair manifest"):
-        cli.main(argv)
-    cli.main(argv)
+        main(argv)
+    main(argv)
 
     assert calls == 2
 
@@ -1655,14 +639,14 @@ def test_run_manifold_transfer_trusted_target_skips_alignment(
         ),
     )
     monkeypatch.setattr(
-        "drowse.cli.runners._load_or_fit_transfer_alignment",
+        "drowse.store.alignment.load_or_fit_transfer_alignment",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("trusted target performed alignment work")
         ),
     )
 
     with pytest.raises(SystemExit) as exc:
-        cli.main([
+        main([
             "manifold", "transfer", "local/circumplex",
             "--from", "src/model", "--to", "tgt/model",
         ])
@@ -1678,7 +662,7 @@ def test_run_manifold_transfer_missing_source_fit_errors(monkeypatch: pytest.Mon
     (folder / "manifold.json").write_text("{}")
     # No source safetensors → runner exits before any alignment work.
     with pytest.raises(SystemExit) as ex:
-        cli.main([
+        main([
             "manifold", "transfer", "local/circumplex",
             "--from", "src/model", "--to", "tgt/model",
         ])
@@ -1697,7 +681,7 @@ def test_lifecycle_bare_name_not_found_exits(monkeypatch: pytest.MonkeyPatch, tm
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
-        cli.main(["pack", "clear", "nope_not_installed"])
+        main(["pack", "clear", "nope_not_installed"])
     assert ex.value.code == 1
 
 
@@ -1713,7 +697,7 @@ def test_lifecycle_bare_name_resolves_local(monkeypatch: pytest.MonkeyPatch, tmp
         return 0
 
     monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
-    cli.main(["pack", "clear", "moodlite"])
+    main(["pack", "clear", "moodlite"])
     assert calls == [("local", "moodlite")]
 
 
@@ -1735,7 +719,7 @@ def test_lifecycle_bare_name_ambiguous_exits(monkeypatch: pytest.MonkeyPatch, tm
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call backend")),
     )
     with pytest.raises(SystemExit) as ex:
-        cli.main(["pack", "clear", "dup"])
+        main(["pack", "clear", "dup"])
     assert ex.value.code == 2
 
 
@@ -1749,7 +733,7 @@ def test_lifecycle_explicit_ns_pins_without_walk(monkeypatch: pytest.MonkeyPatch
         return 0
 
     monkeypatch.setattr("drowse.store.manifolds.clear_manifold_tensors", fake_clear)
-    cli.main(["pack", "clear", "alice/ghost"])
+    main(["pack", "clear", "alice/ghost"])
     assert calls == [("alice", "ghost")]
 
 
@@ -1782,7 +766,7 @@ def test_run_manifold_ls_verbose_shows_description(monkeypatch: pytest.MonkeyPat
     _author_circumplex_lite(tmp_path)
     from drowse.store import selectors
     selectors.invalidate()
-    cli.main(["pack", "ls", "--namespace", "local", "-v"])
+    main(["pack", "ls", "--namespace", "local", "-v"])
     out = capsys.readouterr().out
     assert "local/moodlite" in out
     assert "a tiny test mood manifold" in out
@@ -1793,7 +777,7 @@ def test_run_manifold_ls_non_verbose_hides_description(monkeypatch: pytest.Monke
     _author_circumplex_lite(tmp_path)
     from drowse.store import selectors
     selectors.invalidate()
-    cli.main(["pack", "ls", "--namespace", "local"])
+    main(["pack", "ls", "--namespace", "local"])
     out = capsys.readouterr().out
     assert "local/moodlite" in out
     assert "a tiny test mood manifold" not in out
@@ -1804,7 +788,7 @@ def test_run_manifold_show_json_uses_summary_keys(monkeypatch: pytest.MonkeyPatc
     _author_circumplex_lite(tmp_path)
     from drowse.store import selectors
     selectors.invalidate()
-    cli.main(["pack", "show", "local/moodlite", "-j"])
+    main(["pack", "show", "local/moodlite", "-j"])
     out = capsys.readouterr().out
     data = _json.loads(out)
     # manifold_summary's contract keys (shared with the server route).
@@ -1832,6 +816,6 @@ def test_run_manifold_show_json_matches_summary_helper(monkeypatch: pytest.Monke
     from drowse.store.manifolds import manifold_summary
     expected = manifold_summary(folder, include_fits=True)
     assert "fitted" in expected
-    cli.main(["pack", "show", "local/moodlite", "-j"])
+    main(["pack", "show", "local/moodlite", "-j"])
     out = capsys.readouterr().out
     assert _json.loads(out) == expected

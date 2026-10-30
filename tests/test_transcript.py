@@ -360,22 +360,6 @@ def test_guard_probe_drift_warns_then_strict_raises():
 # ---------------------------------------------------------------------------
 
 
-def test_cli_verb_registered():
-    from drowse.cli.parsers import _build_root_parser
-    from drowse.cli.runners import _COMMAND_RUNNERS
-
-    parser = _build_root_parser()
-    ns = parser.parse_args([
-        "experiment", "transcript", "run", "/tmp/x.yaml", "m1",
-    ])
-    assert ns.command == "experiment"
-    assert ns.experiment_cmd == "transcript"
-    assert ns.transcript_cmd == "run"
-    assert ns.path == "/tmp/x.yaml"
-    assert "experiment" in _COMMAND_RUNNERS
-    assert "transcript" not in _COMMAND_RUNNERS
-
-
 # ---------------------------------------------------------------------------
 # v2 — the cast model (speaker, cast block, seat-general import)
 # ---------------------------------------------------------------------------
