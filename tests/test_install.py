@@ -39,9 +39,9 @@ def write_fitted_manifold(
     """Write one identity-consistent fitted 1-D affine pair into ``folder``."""
     import torch
 
-    from drowse.geometry.manifold import (
-        MANIFOLD_FIT_POLICY_VERSION, CustomDomain, LayerSubspace, Manifold,
-    )
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION, Manifold
+    from drowse.geometry.subspace import LayerSubspace
     from drowse.store.manifold_tensors import save_manifold
 
     mf = ManifoldFolder.load(folder, verify_manifest=False)

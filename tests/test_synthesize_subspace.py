@@ -1,4 +1,4 @@
-"""Dispatch-time subspace synthesis (drowse.geometry.manifold.synthesize_subspace).
+"""Dispatch-time subspace synthesis (drowse.geometry.inject.synthesize_subspace).
 
 Pure CPU tests for the Stage-1 primitive of the full-unification arc: composing
 an active steering term set (any-rank affine push fragments + ablation

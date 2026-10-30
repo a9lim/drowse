@@ -1266,7 +1266,7 @@ class LoweredAffine:
     """One layer's merged affine steering term in runtime form.
 
     The output of :func:`_lower_affine_subspaces` — a
-    :class:`~drowse.geometry.manifold.SynthesizedSubspace` layer reduced to exactly
+    :class:`~drowse.geometry.inject.SynthesizedSubspace` layer reduced to exactly
     what the injection needs: the (possibly curved-orthogonalized) affine
     ``subspace``, its ``(R,)`` push ``target`` (every active push term's
     coeff-scaled fragment already composed in by ``synthesize_subspace``), the
@@ -1465,7 +1465,7 @@ class SteeringManager:
         Labels are resolved through :meth:`Manifold.resolve_position` here so
         the downstream ``manifolds`` dict always carries a plain coord tuple.
         An unknown label raises
-        :class:`drowse.geometry.manifold.UnknownManifoldLabelError`; arity
+        :class:`drowse.errors.UnknownManifoldLabelError`; arity
         mismatches against the manifold's domain (only meaningful for
         coord-form input) raise
         :class:`drowse.steering.grammar.SteeringExprError`.

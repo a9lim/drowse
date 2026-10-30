@@ -32,129 +32,30 @@ def _run_experiment_naturalness(args: argparse.Namespace) -> None:
     """Score a steered generation's behavior-manifold naturalness."""
     import json as _json
 
-    import torch
-
-    from drowse.geometry.manifold import domain_from_spec
-    from drowse.fit.naturalness import (
-        compute_node_behavior_centroid,
-        compute_trajectory_distributions,
-        fit_behavior_manifold,
-        trajectory_naturalness,
-    )
-    from drowse.geometry.profile import Profile
-    from drowse.generation.sampling import SamplingConfig
-    from drowse.steering.grammar import ManifoldTerm, parse_expr
-    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.fit.naturalness import evaluate, preflight
 
     _pkg._load_effective_config(args, default_max_tokens=128)
-    mfolder = Path(args.manifold)
-    if not (mfolder / "manifold.json").exists():
-        print(
-            f"experiment naturalness: no manifold.json in {mfolder}",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    # Naturalness consumes only authoring geometry + node corpus; fitted
-    # payload integrity is irrelevant to this independent behavior-space fit.
-    mf = ManifoldFolder.load(mfolder, verify_manifest=False)
-    node_groups = mf.node_groups()
-    domain = domain_from_spec(mf.domain)
-    node_coords = torch.tensor(mf.node_coords, dtype=torch.float32)
-    node_params = domain.embed(node_coords)
-
+    # Reject a bad manifold / --compare-linear expression before the model load.
+    folder = preflight(args.manifold, args.steer, args.compare_linear)
     _pkg._print_startup(args)
     session = _pkg._make_session(args)
     _pkg._print_model_info(session)
-
-    # 1. Fit the behavior manifold from the node corpus — each node's
-    #    mean next-token distribution, in Hellinger space.
-    print(f"fitting behavior manifold ({len(node_groups)} nodes)...")
-    centroids = [
-        compute_node_behavior_centroid(
-            session.model, session.tokenizer, session.device, statements,
-        )
-        for _label, statements in node_groups
-    ]
-    behavior = fit_behavior_manifold(torch.stack(centroids), node_params)
-
-    sampling = SamplingConfig(max_tokens=args.max_tokens, seed=0)
-
-    def _score(steer: str | None) -> tuple[str, float, float]:
-        result = session.generate(
-            args.prompt, steering=steer, sampling=sampling,
-        ).first
-        text = result.text
-        traj = compute_trajectory_distributions(
-            session.model, session.tokenizer, session.device, text,
-        )
-        per_step = trajectory_naturalness(traj, behavior, domain, node_coords)
-        return text, float(per_step.mean()), float(per_step.max())
-
-    rows: list[dict[str, Any]] = []
-    _text, mean_d, max_d = _score(args.steer)
-    rows.append({
-        "label": "manifold", "steering": args.steer,
-        "mean_bhattacharyya": mean_d, "max_bhattacharyya": max_d,
-    })
-
-    if args.compare_linear:
-        steering = parse_expr(args.steer)
-        mterms = [
-            v for v in steering.alphas.values()
-            if isinstance(v, ManifoldTerm)
-        ]
-        if len(mterms) != 1 or len(steering.alphas) != 1:
-            print(
-                "experiment naturalness: --compare-linear requires the "
-                "steer expression to be a single manifold term",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        mt = mterms[0]
-        session.ensure_manifold_loaded(mt.manifold)
-        act_manifold = session.manifolds[mt.manifold]
-        # Resolve label-form positions to coords up front — every
-        # downstream call here wants a coord tuple, and the chord
-        # baseline is per-coord arithmetic that can't operate on a
-        # string label.
-        mt_position = act_manifold.resolve_position(mt.position)
-        # Linear baseline: the straight chord through activation space
-        # from the manifold point at node 0 to the term's position, per
-        # layer — what plain additive steering would do instead of
-        # following the manifold's curvature.
-        origin = act_manifold.node_coords[0]
-        chord = {
-            L: (
-                act_manifold.manifold_point(L, mt_position)
-                - act_manifold.manifold_point(L, origin)
-            )
-            for L in act_manifold.layer_indices
-        }
-        session.steer("__manifold_linear_baseline__", Profile(chord))
-        _ltext, lmean, lmax = _score(
-            f"{mt.coeff:g} __manifold_linear_baseline__"
-        )
-        pos_label = (
-            mt.position if isinstance(mt.position, str)
-            else ",".join(f"{c:g}" for c in mt_position)
-        )
-        rows.append({
-            "label": "linear-chord", "steering": f"chord@{pos_label}",
-            "mean_bhattacharyya": lmean, "max_bhattacharyya": lmax,
-        })
-
+    report = evaluate(
+        session, folder, args.prompt, args.steer, args.compare_linear,
+        max_tokens=args.max_tokens, on_progress=print,
+    )
     if args.json_output:
-        print(_json.dumps({"prompt": args.prompt, "results": rows}, indent=2))
+        print(_json.dumps(report.to_dict(), indent=2))
         return
     print()
     print("behavior-manifold naturalness  (lower = more natural)")
-    for r in rows:
+    for score in report.scores:
         print(
-            f"  {r['label']:<14} mean D_B={r['mean_bhattacharyya']:.4f}  "
-            f"max D_B={r['max_bhattacharyya']:.4f}"
+            f"  {score.label:<14} mean D_B={score.mean:.4f}  "
+            f"max D_B={score.max:.4f}"
         )
-    if len(rows) == 2:
-        delta = rows[1]["mean_bhattacharyya"] - rows[0]["mean_bhattacharyya"]
+    if len(report.scores) == 2:
+        delta = report.scores[1].mean - report.scores[0].mean
         verdict = (
             "manifold steering stays closer to the behavior manifold"
             if delta > 0 else
