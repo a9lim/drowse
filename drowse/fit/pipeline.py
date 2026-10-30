@@ -74,12 +74,8 @@ MANIFOLD_CAPTURE_VERSION = 3
 _ROW_CONSUMING_MODES = frozenset({"authored", "spectral", "auto"})
 
 
-class ModelHandle(Protocol):
-    """Read-only surface the pipeline needs from the live HF session.
-
-    Held as a *handle*, not a copy — the pipeline must see the same model
-    object the session uses; otherwise device-side state diverges.
-    """
+class ModelIdentity(Protocol):
+    """The loaded model a capture identity is rendered against."""
 
     @property
     def model_id(self) -> str: ...
@@ -89,6 +85,14 @@ class ModelHandle(Protocol):
 
     @property
     def tokenizer(self) -> Any: ...  # PreTrainedTokenizerBase
+
+
+class ModelHandle(ModelIdentity, Protocol):
+    """Read-only surface the pipeline needs from the live HF session.
+
+    Held as a *handle*, not a copy — the pipeline must see the same model
+    object the session uses; otherwise device-side state diverges.
+    """
 
     @property
     def device(self) -> torch.device: ...
@@ -286,7 +290,7 @@ class CaptureIdentity:
 
 
 def prepare_manifold_capture_identity(
-    handle: ModelHandle,
+    handle: ModelIdentity,
     mf: "ManifoldFolder",
     model_fingerprint: str,
     *,

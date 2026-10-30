@@ -344,6 +344,7 @@ def test_tap_hands_a_consumer_one_event_matching_the_loom_row() -> None:
     (event,) = events
     assert (event.text, event.token_id, event.index, event.raw_index) == (" a", 7, 0, 4)
     assert event.top_alts == alts and event.perplexity == 1.5
+    assert event.measurements is not None and event.probe_readings is not None
     lens = event.measurements["instruments"]["lens"]
     assert lens["binding"] == {"source": "local:default", "steering": "0.3 calm"}
     assert lens["readings"]["jlens/a"]["value"] == 0.25
@@ -403,6 +404,7 @@ def test_tap_reuses_the_capture_sinks_row_instead_of_rescoring() -> None:
     )
     tap("x", False, 1, None, None, None, 0)
     assert events[0].probe_readings == {"toy": reading}
+    assert events[0].measurements is not None
     assert events[0].measurements["scores"] == {"toy": pytest.approx(0.75)}
 
 

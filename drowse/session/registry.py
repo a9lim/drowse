@@ -173,7 +173,9 @@ class ArtifactRegistry:
             if artifact_key_matches(key, namespace, name, feature)
         ]
 
-    def fold_probe(self, key: str, tensors: Mapping[int, torch.Tensor]) -> Manifold:
+    def fold_probe(
+        self, key: str, tensors: "Mapping[int, torch.Tensor] | Profile",
+    ) -> Manifold:
         """Fold ``tensors`` (the direction registered or extracted under
         ``key``) into the ray a probe reads, and track it.
 
@@ -183,7 +185,8 @@ class ArtifactRegistry:
         """
         if self._probe_folder is None:
             raise RuntimeError("ArtifactRegistry.fold_probe: no probe folder installed")
-        manifold = self._probe_folder(key, tensors)
+        source = tensors.as_dict() if isinstance(tensors, Profile) else tensors
+        manifold = self._probe_folder(key, source)
         self._track_fold(key, manifold)
         return manifold
 
