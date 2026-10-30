@@ -58,7 +58,7 @@ class TestMergeVector:
         # on disk so the route's ``load_manifold`` + fold has a valid target
         # via the mocked ``merge_into_manifold`` output.
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        from drowse.fit.capture import (
+        from drowse.geometry.fold import (
             fold_directions_to_subspace, folded_directions,
         )
         from drowse.store.manifold_tensors import load_manifold

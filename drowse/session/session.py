@@ -1237,7 +1237,7 @@ class DrowseSession:
             return dict(prof)
         manifold = self._monitor.manifolds.get(name)
         if manifold is not None:
-            from drowse.fit.capture import (
+            from drowse.geometry.fold import (
                 folded_directions,
                 is_foldable_vector_manifold,
             )
