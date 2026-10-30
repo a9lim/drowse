@@ -392,13 +392,56 @@ class TestGgufFold:
         from drowse.store.gguf import export_gguf_manifold
 
         _make_full_manifold("default", "happy.sad")
-        out = tmp_path / "happy.gguf"
+        # ``tmp_path`` is DROWSE_HOME here; exports must land outside it.
+        out = tmp_path.parent / f"{tmp_path.name}-out" / "happy.gguf"
         written = export_gguf_manifold(
             "default", "happy.sad",
             model_scope=_MODEL, output=str(out), model_hint="llama",
         )
         assert written == [out]
         assert out.is_file()
+
+    def test_export_gguf_defaults_to_cwd_and_leaves_folder_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression: a default GGUF export used to land inside the manifold
+        folder and extend ``manifold.json::files`` with the ``.gguf``, which
+        then made ``.drowse`` export of that manifold fail."""
+        pytest.importorskip("gguf")
+        from drowse.store.archive import export_drowse_archive
+        from drowse.store.gguf import export_gguf_manifold
+
+        folder = _make_full_manifold("local", "happy.sad")
+        manifest_before = (folder / "manifold.json").read_bytes()
+        listing_before = sorted(p.name for p in folder.iterdir())
+        cwd = tmp_path.parent / f"{tmp_path.name}-cwd"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+
+        written = export_gguf_manifold(
+            "local", "happy.sad",
+            model_scope=_MODEL, output=None, model_hint="llama",
+        )
+
+        assert written == [cwd / "happy.sad.gguf"]
+        assert written[0].is_file()
+        assert (folder / "manifold.json").read_bytes() == manifest_before
+        assert sorted(p.name for p in folder.iterdir()) == listing_before
+        archive = export_drowse_archive("local", "happy.sad", output=cwd / "x.drowse")
+        assert archive.is_file()
+
+    def test_export_gguf_refuses_destination_inside_drowse_home(
+        self, tmp_path: Path,
+    ) -> None:
+        from drowse.store.gguf import export_gguf_manifold
+
+        folder = _make_full_manifold("local", "happy.sad")
+        with pytest.raises(RuntimeError, match="inside the drowse store"):
+            export_gguf_manifold(
+                "local", "happy.sad",
+                model_scope=_MODEL, output=str(folder), model_hint="llama",
+            )
+        assert not list(folder.glob("*.gguf"))
 
     def test_export_gguf_unfitted_errors(self, tmp_path: Path) -> None:
         from drowse.store.gguf import export_gguf_manifold
@@ -443,14 +486,17 @@ class TestGgufFold:
             hashed.append(Path(path).name)
             return real_hash(Path(path))
 
-        def fake_write(_profile: object, path: Path, **_kwargs: object) -> None:
+        def fake_write(_profile: object, path: Path, **_kwargs: object) -> Path:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_bytes(b"gguf")
+            return Path(path)
 
         monkeypatch.setattr(integrity, "hash_file", track_hash)
         monkeypatch.setattr(gguf_io, "write_gguf_profile", fake_write)
         export_gguf_manifold(
             "default", "happy.sad", model_scope=_MODEL,
-            output=str(tmp_path / "out.gguf"), model_hint="llama",
+            output=str(tmp_path.parent / f"{tmp_path.name}-out" / "out.gguf"),
+            model_hint="llama",
         )
 
         assert raw.name in hashed and raw.with_suffix(".json").name in hashed
