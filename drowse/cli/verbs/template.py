@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 
-from drowse.cli.context import CliError, emit_json, note, open_session, split_new
+from drowse.cli.context import (
+    CliError, check_steering, emit_json, note, open_session, split_new,
+)
 from drowse.cli.spec import FORCE, JSON, MODEL_LOAD, MODEL_REQ, STEER, YES, Verb, arg
 
 
@@ -120,6 +122,7 @@ def run_score(args: argparse.Namespace) -> None:
     from drowse.store.templates import resolve_template
 
     tmpl = resolve_template(args.name)
+    check_steering(args.steer)
     with open_session(args) as session:
         per_ctx = score_template(session, tmpl, steering=args.steer)
     if args.json_output:

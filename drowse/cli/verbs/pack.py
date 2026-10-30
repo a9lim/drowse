@@ -86,7 +86,9 @@ def run_show(args: argparse.Namespace) -> None:
     if args.json_output:
         emit_json(manifold_summary(folder, include_fits=True))
         return
-    mf = ManifoldFolder.load(folder)
+    # An inventory view: fitted payload hashes are verified where they are
+    # used, not where they are listed.
+    mf = ManifoldFolder.load(folder, verify_manifest=False)
     fits = [manifold_fit_summary(mf.sidecar(stem), stem) for stem in mf.tensor_models()]
     roles = list(mf.node_roles) + [None] * (len(mf.node_labels) - len(mf.node_roles))
 

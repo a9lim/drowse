@@ -741,6 +741,8 @@ def test_extract_corrupt_tensor_is_not_a_cache_hit(
     ["manifold", "generate", "months", "--concepts", "jan", "jul", "-m", "m/x", "--kind", "custom"],
     ["manifold", "extract", "a", "b", "c", "-m", "m/x"],
     ["manifold", "generate", "solo", "--concepts", "one", "-m", "m/x"],
+    ["manifold", "fit", "anything", "-m", "m/x", "--layers", "sample"],
+    ["manifold", "fit", "anything", "-m", "m/x", "--layers", "1,x"],
 ])
 def test_authoring_rejections_happen_before_the_model_loads(
     argv: list[str], monkeypatch: pytest.MonkeyPatch,
@@ -907,7 +909,7 @@ def test_compare_matrix(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureF
 
 
 def test_why_histogram_and_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    from drowse.cli.histogram import HIST_BUCKETS
+    from drowse.cli.verbs.manifold import HIST_BUCKETS
 
     mags = {i: float(i + 1) * 0.01 for i in range(62)}
     _stub_folds(monkeypatch, {"angry.calm:sae-rel": _mock_profile(lambda o: 0, lambda o: mags)})

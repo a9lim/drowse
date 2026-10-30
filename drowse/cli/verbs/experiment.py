@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from drowse.cli.context import (
-    CliError, effective_config, emit_json, existing_folder, note, open_session,
-    progress,
+    CliError, check_steering, effective_config, emit_json, existing_folder,
+    note, open_session, progress,
 )
 from drowse.cli.spec import (
     CONFIG, INJECTION, JSON, MODEL, MODEL_LOAD, PROBES, STEER, TOP_K_ALTS, Verb,
@@ -46,8 +46,9 @@ def parse_grid(raw_terms: list[str]) -> dict[str, list[float]]:
 
 
 def run_fan(args: argparse.Namespace) -> None:
-    grid = parse_grid(args.grid)  # a typo fails before the model load
+    grid = parse_grid(args.grid)  # typos fail before the model load
     effective_config(args, default_max_tokens=256)
+    check_steering(args.steer)
     total = math.prod(len(alphas) for alphas in grid.values())
 
     def report(idx: int, result: Any, alphas: dict[str, float]) -> None:

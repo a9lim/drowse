@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from drowse.cli.context import (
     CliError, emit_json, existing_folder, note, open_session,
-    progress, resolve_manifold, split_new, user_errors,
+    parse_layers, progress, resolve_manifold, split_new, user_errors,
 )
 from drowse.cli.spec import (
     DESCRIPTION, FORCE, JSON, MODEL_LOAD, MODEL_OPT, MODEL_REQ, NO_DLS, VERBOSE,
@@ -55,6 +55,7 @@ def _require_custom_system(args: argparse.Namespace) -> None:
 
 def _fit_noop(
     args: argparse.Namespace, folder: Path, *,
+    layers: "list[int] | str | None" = None,
     sae: str | None = None,
     fit_mode: str | None = None,
     hyperparams: dict[str, object] | None = None,
@@ -65,7 +66,7 @@ def _fit_noop(
     if args.force or not (folder / "manifold.json").exists():
         return None
     return preflight_manifold_fit_noop(
-        folder, model_id=args.model, layer_indices=getattr(args, "layers", None),
+        folder, model_id=args.model, layer_indices=layers,
         sae=sae, fit_mode=fit_mode, hyperparams=hyperparams,
         quantize=args.quantize, device=args.device,
     )
@@ -236,6 +237,9 @@ def run_fit(args: argparse.Namespace) -> None:
     """
     from drowse.store.manifolds import ManifoldFolder, domain_label
 
+    layers = parse_layers(args.layers)
+    if layers == "sample":
+        raise CliError("--layers takes explicit indices, workspace, or all")
     target = Path(args.target)
     folder = target if (target / "manifold.json").exists() else existing_folder(args.target)
     mf = ManifoldFolder.load(folder, verify_manifest=False)
@@ -253,7 +257,9 @@ def run_fit(args: argparse.Namespace) -> None:
     # An override patch is deliberately not proven: it rewrites manifold.json
     # inside the fit lock, so the on-disk hash the preflight sees is not the
     # one the fit compares against.
-    proof = _fit_noop(args, folder, sae=args.sae, fit_mode=fit_mode, hyperparams=params)
+    proof = _fit_noop(
+        args, folder, layers=layers, sae=args.sae, fit_mode=fit_mode, hyperparams=params,
+    )
     if proof is not None:
         note("Already fitted for this corpus and exact model source — nothing to do.")
         print(
@@ -265,7 +271,7 @@ def run_fit(args: argparse.Namespace) -> None:
 
     with open_session(args) as session, user_errors(ValueError):
         manifold = session.fit(
-            folder, sae=args.sae, layers=args.layers, fit_mode=fit_mode,
+            folder, sae=args.sae, layers=layers, fit_mode=fit_mode,
             hyperparams=params, force=args.force, on_progress=progress,
         )
     fitted_mode = getattr(manifold, "metadata", {}).get("fit_mode", mf.fit_mode)
@@ -635,11 +641,28 @@ def _rank_all(
                 print(f"      layer {layer:>3}: {value:+.4f}")
 
 
+#: Rows in the ``manifold why`` histogram: any model's full layer profile
+#: collapses into a fixed-height block.
+HIST_BUCKETS = 16
+
+
+def bucketize(norms: list[tuple[int, float]], buckets: int) -> list[tuple[int, int, float]]:
+    """Collapse layer-sorted ``(layer, norm)`` pairs into ``buckets`` evenly
+    sized ``(lo_layer, hi_layer, mean_norm)`` groups (one per layer when
+    there are fewer layers than buckets)."""
+    n = len(norms)
+    if n <= buckets:
+        return [(layer, layer, value) for layer, value in norms]
+    out: list[tuple[int, int, float]] = []
+    for i in range(buckets):
+        chunk = norms[(i * n) // buckets:((i + 1) * n) // buckets]
+        out.append((chunk[0][0], chunk[-1][0], sum(v for _, v in chunk) / len(chunk)))
+    return out
+
+
 def run_why(args: argparse.Namespace) -> None:
     """Per-layer ``‖baked‖`` of a steering vector, as a 16-bucket histogram."""
     import shutil
-
-    from drowse.cli.histogram import HIST_BUCKETS, bucketize
 
     folded = _fold(args.concept, args.model)
     name = folded.display

@@ -271,6 +271,14 @@ def split_new(ref: str) -> tuple[str, str]:
     return "local", ref
 
 
+def check_steering(expression: str | None) -> None:
+    """Parse ``expression`` once so a typo fails before any model load."""
+    if expression:
+        from drowse.steering.grammar import parse_expr
+
+        parse_expr(expression)
+
+
 def parse_layers(raw: str | None) -> "list[int] | str | None":
     """A ``--layers`` spec: explicit indices, or ``workspace`` / ``sample`` / ``all``."""
     if raw is None:

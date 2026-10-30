@@ -13,7 +13,9 @@ import argparse
 import os
 from typing import Any, Sequence
 
-from drowse.cli.context import CliError, effective_config, note, open_session
+from drowse.cli.context import (
+    CliError, check_steering, effective_config, note, open_session,
+)
 from drowse.cli.spec import (
     CONFIG, INJECTION, MODEL, MODEL_LOAD, PROBES, STEER, TOP_K_ALTS, Verb, arg,
     bounded_int,
@@ -196,21 +198,21 @@ def run(args: argparse.Namespace) -> None:
         ) from None
     from drowse.server.app import is_loopback_host
 
-    effective_config(args)
     api_key = args.api_key or os.environ.get("DROWSE_API_KEY")
     if not is_loopback_host(args.host) and not api_key:
         raise CliError("non-loopback binding requires --api-key or DROWSE_API_KEY")
+    effective_config(args)
     if not args.model:
         raise CliError(
             "model required: pass a HuggingFace repo id (e.g. `drowse serve "
             "google/gemma-2-2b-it`) or a -c setup.yaml with a `model:` field"
         )
-    if args.steer:
-        from drowse.steering.grammar import parse_expr
-
-        parse_expr(args.steer)  # a typo fails before the model load
+    check_steering(args.steer)
 
     with open_session(args, roster=True) as session:
+        # The lens source first: ``jlens/<word>`` atoms in the default
+        # steering resolve against it.
+        enable_live_lens(session)
         steering = (
             preflight_steering(session, args.steer, args.model)
             if args.steer else None
@@ -225,7 +227,6 @@ def run(args: argparse.Namespace) -> None:
         )
         if args.compile:
             warm_up(session)
-        enable_live_lens(session)
         # API-only serves neither acquire the optional SAE dependency nor
         # download provider weights implicitly.
         if web:
