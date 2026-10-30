@@ -139,17 +139,9 @@ def test_messages_for_active_path():
     ]
 
 
-def test_messages_for_skips_synthetic_root_by_default():
+def test_messages_for_skips_synthetic_root():
     t = LoomTree()
-    msgs = t.messages_for()
-    # Root has empty text and role=system; default include_system=False.
-    assert msgs == []
-
-
-def test_messages_for_include_system_true():
-    t = LoomTree()
-    msgs = t.messages_for(include_system=True)
-    assert msgs == [{"role": "system", "content": ""}]
+    assert t.messages_for() == []
 
 
 def test_messages_for_explicit_leaf():
@@ -204,14 +196,35 @@ def test_flat_text_assistant_chain():
     assert t.active_node_id == a2
 
 
-def test_descendants_dfs():
+def test_steering_expr_prefers_applied_steering_then_recipe():
     t = LoomTree()
-    u1 = t.add_user_turn("x")
-    a1 = t.begin_assistant(u1)
-    t.finalize_assistant(a1, text="A")
-    a2 = t.branch(a1, "B")
-    ids = {n.id for n in t.descendants(t.root_id)}
-    assert ids == {u1, a1, a2}
+    u = t.add_user_turn("hi")
+    a = t.begin_assistant(u, recipe=Recipe(steering="0.3 calm"))
+    assert t.get(u).steering_expr is None
+    assert t.get(a).steering_expr == "0.3 calm"
+    t.finalize_assistant(a, text="yo", applied_steering="0.3 local/calm")
+    assert t.get(a).steering_expr == "0.3 local/calm"
+
+
+def test_graft_validates_before_writing_and_noops_when_empty():
+    from drowse.loom.errors import InvalidNodeOperationError
+    from drowse.loom.recipe import CastMember
+    from drowse.loom.tree import LoomNode
+
+    bus = EventBus()
+    seen: list[Any] = []
+    bus.subscribe(seen.append)
+    t = LoomTree(events=bus)
+    assert t.graft(t.root_id, []) == t.root_id
+    for bad in (
+        LoomNode(id="", parent_id=None, role="system", text="x"),
+        LoomNode(id="", parent_id=None, role="user", text="x", role_label="Bad Label"),
+    ):
+        with pytest.raises(InvalidNodeOperationError):
+            t.graft(t.root_id, [LoomNode(id="", parent_id=None, role="user", text="ok"), bad])
+    assert t.rev == 0 and len(t.nodes) == 1 and seen == []
+    with pytest.raises(InvalidNodeOperationError):
+        t.graft(t.root_id, [], cast={"Bad Label": CastMember()})
 
 
 def test_ancestors_iter():
@@ -265,12 +278,12 @@ def test_edit_root_refused():
 
 
 def test_edit_emits_event():
-    t = _seed_tree()
     bus = EventBus()
     seen: list[Any] = []
     bus.subscribe(seen.append)
-    t.attach_events(bus)
-    t.edit(t.active_node_id, "edited")
+    t = LoomTree(events=bus)
+    u1 = t.add_user_turn("hi")
+    t.edit(u1, "edited")
     ops = [e.op for e in seen if isinstance(e, LoomMutated)]
     assert "edit" in ops
 

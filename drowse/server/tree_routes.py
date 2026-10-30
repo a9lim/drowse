@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
@@ -49,6 +50,15 @@ from drowse.server.tree_models import (
 _JOINT_LOGPROB_CACHE_MAX = 8
 
 
+@asynccontextmanager
+async def _session_lock_or_503(session: Any) -> AsyncIterator[None]:
+    """Hold the session lock for the block, or raise 503 when it times out."""
+    async with acquire_session_lock(session) as acquired:
+        if not acquired:
+            raise HTTPException(503, "session locked")
+        yield
+
+
 def _cached_joint_logprobs(cache: dict[Any, Any], key: Any) -> Any | None:
     hit = cache.pop(key, None)
     if hit is not None:
@@ -69,11 +79,12 @@ def register_tree_routes(app: FastAPI) -> None:
 
     @app.get("/drowse/v1/sessions/{session_id}/tree")
     def get_tree(session_id: str) -> LoomTreeJSON:
-        """Full tree as JSON.
+        """Full tree as JSON, token rows included.
 
-        Same shape :meth:`LoomTree.to_dict` produces. Surfaces hydrate
-        their state from this on bootstrap and reconcile via the WS
-        ``tree_mutated`` delta stream after.
+        :meth:`LoomTree.to_dict` with the configured ``cast`` replaced by the
+        effective roster (each member annotated with its ``origin``).
+        Surfaces hydrate their state from this on bootstrap and reconcile
+        via the WS ``tree_mutated`` delta stream after.
         """
         resolve_session_id(session_id)
         return tree_to_json(session)
@@ -90,9 +101,7 @@ def register_tree_routes(app: FastAPI) -> None:
         token ids and stamped generation recipes are model-specific.
         """
         resolve_session_id(session_id)
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+        async with _session_lock_or_503(session):
             session.restore_tree(req.tree)
         return {
             "rev": session.tree.rev,
@@ -118,9 +127,9 @@ def register_tree_routes(app: FastAPI) -> None:
     ) -> ActivePathJSON:
         """Re-point the active node.
 
-        Free relative to in-flight generation (per the concurrency
-        invariant in the plan): the gen continues attached to its
-        original target, the user simply sees a different active path.
+        Free relative to in-flight generation: the gen continues attached
+        to its original target, the user simply sees a different active
+        path.
         """
         resolve_session_id(session_id)
         session.tree.navigate(req.node_id)
@@ -205,11 +214,11 @@ def register_tree_routes(app: FastAPI) -> None:
 
     @app.get("/drowse/v1/sessions/{session_id}/tree/cast")
     def tree_cast(session_id: str) -> CastRosterResponse:
-        """The tree's cast roster: label → member (recipe + notes).
+        """The tree's effective cast roster: label → member (recipe + notes
+        + origin).
 
-        Also rides the full-tree GET (``cast`` key when non-empty) and
-        the ``op="cast"`` ``tree_mutated`` frame — this endpoint is the
-        cheap standalone read.
+        Also rides the full-tree GET (``cast`` key) and every
+        ``tree_mutated`` frame — this endpoint is the cheap standalone read.
         """
         resolve_session_id(session_id)
         return {"cast": cast_json(session)}
@@ -253,9 +262,7 @@ def register_tree_routes(app: FastAPI) -> None:
         in the tree itself).
         """
         resolve_session_id(session_id)
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+        async with _session_lock_or_503(session):
             session.clear_history()
         return Response(status_code=204)
 
@@ -265,9 +272,9 @@ def register_tree_routes(app: FastAPI) -> None:
     ) -> TranscriptResponse:
         """Render the path ending at ``node_id`` (or active) as transcript YAML.
 
-        Phase 5 producer: uses :meth:`Transcript.from_path` so probe
-        sha256 hashes are real and the YAML round-trips through
-        :meth:`Transcript.from_yaml` cleanly.  Returns
+        Uses :meth:`Transcript.from_path` so probe sha256 hashes are real
+        and the YAML round-trips through :meth:`Transcript.from_yaml`
+        cleanly.  Returns
         ``{"yaml": "<text>", "node_id": "<leaf-of-rendered-path>"}``.
         """
         from drowse.loom.transcript import Transcript
@@ -284,9 +291,10 @@ def register_tree_routes(app: FastAPI) -> None:
     async def tree_transcript_load(
         session_id: str, req: TreeTranscriptLoadRequest,
     ) -> TranscriptLoadResponseJSON:
-        """Import a transcript YAML into the live session tree (phase 5).
+        """Import a transcript YAML into the live session tree.
 
-        Wraps :meth:`Transcript.from_yaml` + :meth:`Transcript.import_into`.
+        Wraps :meth:`Transcript.from_yaml` + :meth:`Transcript.import_into`
+        (one atomic graft: one revision and one ``import`` delta).
         Modes are ``"default"`` / ``"here"`` / ``"merge"``; ``strict``
         refuses on probe-hash drift.  Returns
         ``{"leaf_id": "<id>", "rev": <int>, "guards": [...]}``.
@@ -322,9 +330,7 @@ def register_tree_routes(app: FastAPI) -> None:
         ) -> None:
             captured.append(str(message))
 
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+        async with _session_lock_or_503(session):
             with warnings.catch_warnings():
                 warnings.showwarning = _on_warning
                 try:
@@ -346,26 +352,19 @@ def register_tree_routes(app: FastAPI) -> None:
     def tree_edge_label(
         session_id: str, parent_id: str, child_id: str,
     ) -> EdgeLabelResponse:
-        """Steering-delta label for the parent → child edge (phase 5).
+        """Steering-delta label for the parent → child edge.
 
         Returns ``{"label": "<text>"}`` — empty string when the two
-        recipes are identical.  Both nodes must exist; the label is
-        computed from the canonical ``applied_steering`` strings on the
-        parent's and child's recipes (parent's may be ``None`` when it's
-        a user turn, in which case the delta is "from-nothing").
+        expressions are identical.  Both nodes must exist; the label is
+        computed from each node's :attr:`LoomNode.steering_expr` (``None``
+        for an authored turn, so the delta reads "from-nothing").
         """
         from drowse.loom.diff import steering_delta
 
         resolve_session_id(session_id)
         parent = session.tree.get(parent_id)
         child = session.tree.get(child_id)
-        parent_expr = parent.applied_steering
-        if parent_expr is None and parent.recipe is not None:
-            parent_expr = parent.recipe.steering
-        child_expr = child.applied_steering
-        if child_expr is None and child.recipe is not None:
-            child_expr = child.recipe.steering
-        return {"label": steering_delta(parent_expr, child_expr)}
+        return {"label": steering_delta(parent.steering_expr, child.steering_expr)}
 
     @app.get("/drowse/v1/sessions/{session_id}/tree/filter")
     def tree_filter(session_id: str, expr: str = "") -> FilterMatchesJSON:
@@ -392,14 +391,12 @@ def register_tree_routes(app: FastAPI) -> None:
 
     @app.post("/drowse/v1/sessions/{session_id}/tree/diff")
     def tree_diff(session_id: str, req: TreeDiffRequest) -> NodeDiffJSON:
-        """Cross-branch diff between two generated nodes (phase 5).
+        """Cross-branch diff between two generated nodes.
 
         Returns a JSON view of :class:`NodeDiff` (text spans + readings
-        deltas) augmented with the parent-recipe steering delta and any
-        per-token deltas available from the session's
-        ``last_per_token_scores`` — the per-token table is only present
-        for the most-recently-generated turn so callers shouldn't
-        rely on it.
+        deltas) augmented with the steering deltas against the shared
+        parent and a byte-aligned per-token span table (present when both
+        nodes carry token rows; ``reading_deltas`` stays empty).
         """
         from drowse.loom.diff import per_token_diff, steering_delta
 
@@ -414,16 +411,10 @@ def register_tree_routes(app: FastAPI) -> None:
         if diff.parent_id is not None:
             parent = session.tree.nodes.get(diff.parent_id)
             if parent is not None:
-                parent_expr = parent.applied_steering
-                if parent_expr is None and parent.recipe is not None:
-                    parent_expr = parent.recipe.steering
+                parent_expr = parent.steering_expr
 
-        a_expr = a_node.applied_steering or (
-            a_node.recipe.steering if a_node.recipe else None
-        )
-        b_expr = b_node.applied_steering or (
-            b_node.recipe.steering if b_node.recipe else None
-        )
+        a_expr = a_node.steering_expr
+        b_expr = b_node.steering_expr
 
         # Per-token diff: only when both nodes carry token sequences.
         # Tokens may be absent on serialized-only nodes (loaded transcripts).
@@ -512,9 +503,10 @@ def register_tree_routes(app: FastAPI) -> None:
         * Invalidated by tree edits/deletes/finalize events in
           ``DrowseSession``; navigate/star/note leave it intact.
 
-        Held under ``acquire_session_lock`` because the forward passes
-        compete for the same model with any concurrent generation;
-        request queues FIFO at the lock rather than 409ing.
+        Held under the session lock because the forward passes compete
+        for the same model with any concurrent generation; the request
+        queues FIFO at the lock rather than 409ing, and a lock timeout is
+        a 503 — the forwards never run unlocked.
         """
         from drowse.generation.joint_logprobs import (
             compute_joint_logprobs,
@@ -535,7 +527,7 @@ def register_tree_routes(app: FastAPI) -> None:
         key = _cache_key(req.a_id, req.b_id)
         hit = _cached_joint_logprobs(cache, key)
         if hit is None:
-            async with acquire_session_lock(session):
+            async with _session_lock_or_503(session):
                 # Double-check under lock — another request may have
                 # populated the cache while we waited.
                 hit = _cached_joint_logprobs(cache, key)

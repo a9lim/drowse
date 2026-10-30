@@ -115,8 +115,8 @@ class LoomNode:
     """A single node in the loom tree.
 
     Token lists (``tokens``, ``thinking_tokens``) are owned here for live
-    streaming but are persisted in side files by the session store; the
-    tree's ``to_dict()`` omits them so the main tree file stays small.
+    streaming; ``to_dict()`` includes them only on request, and
+    :meth:`LoomTree.save` writes them to its gzip token sidecar.
 
     ``edit_count`` and ``edited_at`` flag assistant nodes whose text has
     been mutated in place since the model emitted it — downstream
@@ -157,8 +157,8 @@ class LoomNode:
     edit_count: int = 0
     # Mean chosen-token logprob over the non-thinking response span,
     # computed in :meth:`DrowseSession._generate_core` and stamped at
-    # :meth:`LoomTree.finalize_assistant` time. ``None`` for legacy
-    # nodes replayed from pre-logit-pass transcripts. ``mean_surprise``
+    # :meth:`LoomTree.finalize_assistant` time. ``None`` for authored and
+    # transcript-imported nodes. ``mean_surprise``
     # caches ``-mean_logprob`` so the sidebar's "sort by surprise" mode
     # is a keyboard sort, not a recompute. Both fields surface through
     # ``to_dict`` / ``from_dict`` for tree persistence + WS bridge.
@@ -176,6 +176,17 @@ class LoomNode:
     # ``None`` remains a legitimate current value for transcript-imported
     # turns, and is persisted explicitly rather than inferred from absence.
     raw_token_ids: list[int] | None = None
+
+    @property
+    def steering_expr(self) -> str | None:
+        """The steering expression this node was generated under.
+
+        ``applied_steering`` when finalize stamped it, else the recipe's
+        ``steering``; ``None`` for an authored node.
+        """
+        if self.applied_steering is not None:
+            return self.applied_steering
+        return self.recipe.steering if self.recipe is not None else None
 
     def to_dict(self, *, include_tokens: bool = False) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -347,7 +358,7 @@ class LoomTree:
         self.nodes: dict[str, LoomNode] = {}
         self.children_of: dict[str, list[str]] = {}
         self.rev: int = 0
-        # Cast roster (phase 3): label → CastMember.  Tree-scoped, rides
+        # Cast roster: label → CastMember.  Tree-scoped, rides
         # ``to_dict``/``save`` so a saved conversation carries its cast.
         self.cast: dict[str, CastMember] = {}
 
@@ -373,10 +384,6 @@ class LoomTree:
         """
         self._conflict_check = fn or _noop_conflict_check
 
-    def attach_events(self, events: EventBus | None) -> None:
-        """Wire (or unwire) the EventBus that mutations emit on."""
-        self._events = events
-
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
@@ -401,21 +408,6 @@ class LoomTree:
     def children(self, node_id: str) -> list[LoomNode]:
         with self._lock:
             return [self.nodes[c] for c in self.children_of.get(node_id, [])]
-
-    def descendants(self, node_id: str) -> Iterator[LoomNode]:
-        """Depth-first iteration over the descendants of ``node_id``."""
-        with self._lock:
-            stack = list(self.children_of.get(node_id, []))
-        # We snapshot the child list under lock, then walk it lock-free.
-        # Concurrent mutations of the subtree mid-iteration aren't supported
-        # — callers wanting that need to snapshot first.
-        while stack:
-            cur = stack.pop()
-            node = self.nodes.get(cur)
-            if node is None:
-                continue
-            yield node
-            stack.extend(self.children_of.get(cur, []))
 
     def path_to(self, node_id: str) -> list[LoomNode]:
         """Return the path from the root to ``node_id``, inclusive."""
@@ -461,15 +453,14 @@ class LoomTree:
         self,
         leaf_id: str | None = None,
         *,
-        include_system: bool = False,
         with_labels: bool = False,
     ) -> list[dict[str, str]]:
         """Return the active-path (or path to ``leaf_id``) as chat messages.
 
-        Returns the v2 ``[{"role": ..., "content": ...}, ...]`` shape that
-        the rest of the engine + servers consume.  Skips the synthetic
-        root by default (its empty text isn't a real system prompt) —
-        callers wanting an explicit system prompt prepend it themselves.
+        Returns the ``[{"role": ..., "content": ...}, ...]`` shape that the
+        rest of the engine + servers consume.  Skips the synthetic root (its
+        empty text isn't a real system prompt) — callers wanting an explicit
+        system prompt prepend it themselves.
 
         ``with_labels`` adds each node's per-turn ``role_label`` under a
         ``"label"`` key (the roleplay scaffold) so the chat-render path can
@@ -484,7 +475,7 @@ class LoomTree:
         path = self.path_to(target)
         out: list[dict[str, str]] = []
         for node in path:
-            if node.id == self.root_id and not include_system:
+            if node.id == self.root_id:
                 continue
             msg: dict[str, str] = {"role": node.role, "content": node.text}
             if with_labels:
@@ -795,8 +786,7 @@ class LoomTree:
         computed in :meth:`DrowseSession._generate_core` from the engine's
         chosen-token logprob stream (response span only — thinking tokens
         are excluded by construction).  ``None`` when logprob capture
-        wasn't live (no on_token consumer + no logprobs request), which
-        also covers replay-from-legacy-transcripts.
+        wasn't live (no on_token consumer + no logprobs request).
 
         ``raw_token_ids`` is the engine's exact ``generated_ids`` decode
         sequence (delimiters included) — the forceable prefix a logit
@@ -983,6 +973,12 @@ class LoomTree:
         with self._lock:
             if parent_id not in self.nodes:
                 raise UnknownNodeError(parent_id)
+            new_cast = {
+                label: member for label, member in (cast or {}).items()
+                if label not in self.cast
+            }
+            if not chain and not new_cast and not note:
+                return parent_id
             added: list[str] = []
             current = parent_id
             for template in chain:
@@ -990,8 +986,7 @@ class LoomTree:
                 self._add_child(current, node)
                 added.append(node.id)
                 current = node.id
-            for label, member in (cast or {}).items():
-                self.cast.setdefault(label, member)
+            self.cast.update(new_cast)
             updated: tuple[str, ...] = ()
             if note:
                 target = added[0] if added else parent_id
@@ -1110,7 +1105,7 @@ class LoomTree:
             ))
 
     # ------------------------------------------------------------------
-    # Cast roster (phase 3)
+    # Cast roster
     # ------------------------------------------------------------------
 
     def set_cast_member(self, label: str, member: CastMember) -> None:

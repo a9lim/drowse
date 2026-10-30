@@ -1697,3 +1697,39 @@ class TestCast:
             assert frame is not None, "op=cast tree_mutated frame should arrive"
             assert frame["cast"]["deer"]["recipe"]["steering"] == "0.5 formal.casual"
             assert frame["added"] == [] and frame["updated"] == []
+
+
+class TestJointLogprobsLock:
+    def test_lock_timeout_is_503_and_never_runs_unlocked(
+        self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression: the route ignored the lock helper's timeout flag and
+        ran the model forwards without the session lock."""
+        import drowse.generation.joint_logprobs as joint_logprobs
+        import drowse.server.app as server_app
+
+        session, client = session_and_client
+        user = session.tree.add_user_turn("hi")
+        a = session.tree.begin_assistant(user, recipe=Recipe())
+        b = session.tree.begin_assistant(user, recipe=Recipe())
+
+        class _HeldLock:
+            async def acquire(self) -> None:
+                await asyncio.Event().wait()
+
+            def release(self) -> None:  # pragma: no cover - never acquired
+                raise AssertionError("released a lock that was never acquired")
+
+        def _forward(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("joint logprobs ran without the session lock")
+
+        session.lock = _HeldLock()
+        session.joint_logprob_cache = {}
+        monkeypatch.setattr(server_app, "SESSION_LOCK_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(joint_logprobs, "compute_joint_logprobs", _forward)
+        resp = client.post(
+            "/drowse/v1/sessions/default/tree/joint-logprobs",
+            json={"a_id": a, "b_id": b},
+        )
+        assert resp.status_code == 503
+        assert session.joint_logprob_cache == {}
