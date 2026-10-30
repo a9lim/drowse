@@ -5,7 +5,6 @@ local/external source lifecycle, and the two readouts (``top``,
 from __future__ import annotations
 
 import argparse
-import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,14 +21,10 @@ if TYPE_CHECKING:
     from drowse.lens.corpus import LensCorpus
 
 
-#: ``--kind`` → the fit's backward rules, one entry per fittable
-#: :class:`~drowse.lens.key.LensKey` kind.  The lower-case letter is also the
-#: local artifact name (``local:r`` / ``local:j``); upper-cased, it is the
-#: kind the estimator policy is recorded under.
-LENS_KINDS: dict[str, str] = {
-    kind.lower(): "relp" if LensKey(kind).relp else "standard"
-    for kind in FITTABLE_KINDS
-}
+#: ``--kind`` choices: the lower-case letter of each fittable
+#: :class:`~drowse.lens.key.LensKey` kind, which is also the local artifact
+#: name (``local:r`` / ``local:j``).
+LENS_KINDS: tuple[str, ...] = tuple(kind.lower() for kind in FITTABLE_KINDS)
 
 _SOURCES_HELP = (
     "local:r, local:j (or local:<kind>-<tag>), or a fetched binding "
@@ -71,27 +66,6 @@ def _pinned_hub_corpus(args: argparse.Namespace) -> "LensCorpus | None":
 # fit
 # ---------------------------------------------------------------------------
 
-def fit_covers_layers(sidecar: dict[str, Any], requested: "list[int] | str | None") -> bool:
-    """Whether a fitted sidecar's source layers cover the requested set."""
-    from drowse.lens.store import lens_layers
-
-    fitted = set(lens_layers(sidecar))
-    if not fitted:
-        return False
-    if isinstance(requested, list):
-        return fitted >= set(requested)
-    n_layers = sidecar.get("model_layer_count")
-    if not isinstance(n_layers, int) or n_layers < 2:
-        return False
-    if requested is None or requested == "all":
-        return fitted >= set(range(n_layers - 1))
-    if requested == "workspace":
-        from drowse.model.arch import workspace_layer_indices
-
-        return fitted >= set(workspace_layer_indices(range(n_layers - 1), n_layers))
-    return False
-
-
 def lens_fit_is_noop(
     args: argparse.Namespace,
     requested: "list[int] | str | None",
@@ -99,65 +73,40 @@ def lens_fit_is_noop(
     docs: list[str] | None = None,
     hf_corpus: "LensCorpus | None" = None,
 ) -> bool:
-    """Prove the requested fit already exists, without loading weights.
+    """Prove the requested fit already exists, without loading weights
+    (:func:`~drowse.lens.lifecycle.prove_lens_fit_noop`), and report it.
 
-    Runs under the fit's own lock, so the proof, the checkpoint reap, and the
-    report are one transaction.  The corpus identity is ``docs`` for a file
-    corpus, or the pinned ``hf_corpus`` spec plus prompt count before
-    streaming.
+    The corpus identity is ``docs`` for a file corpus, or the pinned
+    ``hf_corpus`` spec plus prompt count before streaming.
     """
-    from drowse.lens.jlens import DEFAULT_SEQ_LEN
-    from drowse.lens.store import (
-        lens_artifact_size, lens_estimator_policy, lens_fit_lock, lens_layers,
-        lens_manifest_path, lens_payloads_match, load_local_lens_sidecar,
-        remove_subsumed_lens_checkpoint,
-    )
+    from drowse.lens.lifecycle import prove_lens_fit_noop
+    from drowse.lens.store import lens_artifact_size, lens_layers, lens_manifest_path
     from drowse.model.fingerprint import model_source_fingerprint
 
-    if args.force:
+    if args.force or (docs is None and hf_corpus is None):
         return False
     name = args.kind
-    with lens_fit_lock(args.model, name):
-        sidecar = load_local_lens_sidecar(args.model, name)
-        if sidecar is None or sidecar.get("estimator_policy") != lens_estimator_policy(
-            name.upper(),
-        ):
-            return False
-        source_fp = model_source_fingerprint(args.model, quantize=args.quantize, device=args.device)
-        if (
-            source_fp is None
-            or sidecar.get("model_source_fingerprint") != source_fp
-            or sidecar.get("seq_len") != (args.seq_len or DEFAULT_SEQ_LEN)
-            or not fit_covers_layers(sidecar, requested)
-        ):
-            return False
-        if docs is not None:
-            # The same identity ``DrowseSession.fit_jlens`` records.
-            raw_sha = hashlib.sha256(repr(docs).encode("utf-8")).hexdigest()
-            if (
-                sidecar.get("raw_corpus_sha256") != raw_sha
-                or sidecar.get("raw_prompt_count") != len(docs)
-            ):
-                return False
-        elif hf_corpus is None or (
-            sidecar.get("corpus_spec") != hf_corpus.spec
-            or sidecar.get("raw_prompt_count") != int(args.prompts)
-        ):
-            return False
-        usable = int(sidecar.get("usable_prompt_count", -1))
-        if usable < 0 or int(sidecar.get("n_prompts", -1)) < usable:
-            return False
-        if not lens_payloads_match(args.model, sidecar, name=name):
-            return False
-        remove_subsumed_lens_checkpoint(args.model, name=name, verified_final_sidecar=sidecar)
-        size_mb = lens_artifact_size(args.model, name=name) / 1024**2
-        note("Already fitted for this corpus and exact model source — nothing to do.")
-        print(
-            f"Fitted Jacobian lens: {len(lens_layers(sidecar))} layers, "
-            f"{sidecar.get('n_prompts', usable)} prompts, d_model={sidecar.get('d_model', '?')}"
-        )
-        print(f"Artifact: {lens_manifest_path(args.model, name)} ({size_mb:.0f} MB across layer shards)")
-        return True
+    sidecar = prove_lens_fit_noop(
+        args.model, name,
+        requested=requested,
+        seq_len=args.seq_len,
+        source_fingerprint=lambda: model_source_fingerprint(
+            args.model, quantize=args.quantize, device=args.device,
+        ),
+        docs=docs,
+        corpus_spec=None if hf_corpus is None else hf_corpus.spec,
+        prompt_count=int(args.prompts),
+    )
+    if sidecar is None:
+        return False
+    size_mb = lens_artifact_size(args.model, name=name) / 1024**2
+    note("Already fitted for this corpus and exact model source — nothing to do.")
+    print(
+        f"Fitted Jacobian lens: {len(lens_layers(sidecar))} layers, "
+        f"{sidecar.get('n_prompts', '?')} prompts, d_model={sidecar.get('d_model', '?')}"
+    )
+    print(f"Artifact: {lens_manifest_path(args.model, name)} ({size_mb:.0f} MB across layer shards)")
+    return True
 
 
 def run_fit(args: argparse.Namespace) -> None:
@@ -170,7 +119,7 @@ def run_fit(args: argparse.Namespace) -> None:
             "--layers sample is not a wall-time optimization; use --layers "
             "workspace or an explicit comma-separated band"
         )
-    rules = LENS_KINDS[args.kind]
+    kind = args.kind.upper()
     hf_corpus = _pinned_hub_corpus(args)
     if hf_corpus is None:
         path = Path(args.corpus)
@@ -185,14 +134,13 @@ def run_fit(args: argparse.Namespace) -> None:
         docs, spec = stream_lens_corpus(args.prompts, hf_corpus)
 
     with open_session(args) as session:
-        note(f"Fitting the {'R-lens (RelP backward rules)' if rules == 'relp' else 'standard J-lens'}"
+        note(f"Fitting the {'R-lens (RelP backward rules)' if LensKey(kind).relp else 'standard J-lens'}"
              f"{' from zero (-f)' if args.force else ''}.")
-        lens = session.fit_jlens(
-            docs, corpus_spec=spec, source_layers=requested,
+        lens = session.lens.fit(
+            docs, kind=kind, corpus_spec=spec, source_layers=requested,
             dim_batch=args.dim_batch, prompt_batch=args.prompt_batch,
             seq_len=args.seq_len, force=args.force,
-            checkpoint_every=args.checkpoint_every, backward_rules=rules,
-            on_progress=progress,
+            checkpoint_every=args.checkpoint_every, on_progress=progress,
         )
     size_mb = lens_artifact_size(args.model, name=args.kind) / 1024**2
     print(
@@ -330,14 +278,14 @@ def run_top(args: argparse.Namespace) -> None:
     layers = parse_layers(args.layers)
     positions = args.position or [-1]
     with open_session(args) as session:
-        lens = session.jlens
+        lens = session.lens.resident()
         if lens is None:
             raise CliError(
                 f"no lens for {args.model} — run `drowse lens fetch {args.model}` "
                 f"or `drowse lens fit {args.model}`",
                 exit_code=1,
             )
-        per_layer, aggregate = session.jlens_readout(
+        per_layer, aggregate = session.lens.readout(
             args.prompt, layers=layers if layers is not None else list(lens.source_layers),
             positions=args.position, top_k=args.top_k, aggregate=True,
         )
@@ -377,7 +325,7 @@ def run_top(args: argparse.Namespace) -> None:
 def run_decompose(args: argparse.Namespace) -> None:
     layers = parse_layers(args.layers)
     with open_session(args) as session:
-        out = session.jspace_decompose(args.selector, k=args.top_k, layers=layers)
+        out = session.lens.decompose(args.selector, k=args.top_k, layers=layers)
     mean_share = sum(share for share, _ in out.values()) / len(out)
     if args.json_output:
         emit_json({

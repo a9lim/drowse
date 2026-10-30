@@ -26,11 +26,18 @@ import torch
 class LensDictionary(Protocol):
     """Atoms ``D[i] ∈ R^d`` addressed by index, never materialized."""
 
-    #: The dictionary's name on the wire (``tokens-out``, …).
-    kind: str
-    #: Whether coefficients are constrained nonnegative (tokens) or signed.
-    nonneg: bool
-    device: torch.device
+    @property
+    def kind(self) -> str:
+        """The dictionary's name on the wire (``tokens-out``, …)."""
+        ...
+
+    @property
+    def nonneg(self) -> bool:
+        """Whether coefficients are constrained nonnegative (tokens) or signed."""
+        ...
+
+    @property
+    def device(self) -> torch.device: ...
 
     def scores(self, residual: torch.Tensor) -> torch.Tensor:
         """``D @ residual`` over every atom (fp32 ``[V]``)."""

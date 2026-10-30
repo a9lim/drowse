@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 import torch
 import yaml
@@ -197,7 +197,7 @@ _BINDING_FIELDS = {
 }
 
 
-def _int_at_least(value: Any, minimum: int) -> bool:
+def _int_at_least(value: Any, minimum: int) -> TypeGuard[int]:
     return not isinstance(value, bool) and isinstance(value, int) and value >= minimum
 
 

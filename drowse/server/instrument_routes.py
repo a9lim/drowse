@@ -30,7 +30,8 @@ from typing import Any, cast
 from fastapi import FastAPI, HTTPException
 from pydantic import Field
 
-from drowse.lens.jlens import JacobianLensCancelled, LensNotFittedError, resolve_word_token
+from drowse.lens.jlens import JacobianLensCancelled, LensNotFittedError, resolve_token_atom
+from drowse.lens.layers import parse_layer_selector
 from drowse.readout.measurements import MeasurementsEnvelope
 from drowse.sae.training import SaeTrainingCancelled
 from drowse.server.operations import Preparation, PreparationGroup
@@ -147,18 +148,12 @@ def _refuse(error: "tuple[int, str] | None", fallback: str) -> None:
 
 
 def _parse_layers(layers: str | None) -> list[int] | str | None:
-    """``"3,7,11"`` → ``[3, 7, 11]``; ``workspace`` / ``sample`` / ``all`` pass through."""
-    if layers is None or not layers.strip():
-        return None
-    lowered = layers.strip().lower()
-    if lowered in {"workspace", "sample", "all"}:
-        return lowered
+    """``"3,7,11"`` → ``[3, 7, 11]``; ``workspace`` / ``sample`` / ``all`` pass
+    through (:func:`~drowse.lens.layers.parse_layer_selector`)."""
     try:
-        return [int(part) for part in layers.split(",") if part.strip()]
+        return parse_layer_selector(layers)
     except ValueError as e:
-        raise HTTPException(
-            400, f"malformed layers list: {layers!r} (want csv, workspace, sample, or all)",
-        ) from e
+        raise HTTPException(400, str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +285,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         async with session_lock(app):
             session.lens.set_live(False)
             try:
-                await run_in_thread(session.select_jlens_source, source)
+                await run_in_thread(session.lens.select_source, source)
             except FileNotFoundError as exc:
                 if exc.filename is not None:
                     raise  # an OS-level miss names a path: scrubbed by the policy
@@ -389,10 +384,10 @@ def register_instrument_routes(app: FastAPI) -> None:
         )
         lens_fit.report("fitting…")
         await run_in_thread(
-            session.fit_jlens, docs,
+            session.lens.fit, docs,
+            kind="R" if body.relp else "J",
             corpus_spec=spec, source_layers=source_layers, seq_len=body.seq_len,
             prompt_batch=body.prompt_batch, force=body.force,
-            backward_rules="relp" if body.relp else "standard",
             on_progress=lens_fit.report, cancel_event=lens_fit.cancel_event,
         )
         async def enable() -> None:
@@ -538,11 +533,16 @@ def register_instrument_routes(app: FastAPI) -> None:
 
     @router.post("/instruments/lens/token/validate")
     def validate_lens_token(body: LensTokenValidationRequest) -> LensTokenValidationJSON:
-        """Read-only single-token check for the J-lens steer/probe forms."""
+        """Read-only single-token check for the J-lens steer/probe forms
+        (``word`` or ``#<id>``, the same contract as the atoms)."""
         word = body.word.strip()
         if not word:
             raise HTTPException(400, "word must not be empty")
-        return {"word": word, "token_id": resolve_word_token(session.tokenizer, word)}
+        vocab_size = int(session.lens.runtime.readout_modules()[0].shape[0])
+        return {
+            "word": word,
+            "token_id": resolve_token_atom(session.tokenizer, word, vocab_size=vocab_size),
+        }
 
     @router.post("/instruments/sae/features/validate")
     def sae_feature_validate(body: SaeFeatureRequest) -> SaeFeatureValidationJSON:

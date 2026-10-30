@@ -1,31 +1,34 @@
-"""The J-lens instrument: readout-channel probes, gates, live workspace.
+"""The J-lens instrument: the lens family's residency, lifecycle and reads.
 
-Owns everything lens-probe-shaped: the probe registry, the live-readout
-runtime state, the per-forward stash, the per-generation disk-identity pin,
-and the six read surfaces (attach / per-step scoring / gate scalars /
-finalize aggregate / live display step / authored-prefill computation).
-The instrument IS the addressing scheme for that state: ``_begin_capture``,
-the steering composer, the token tap, and the wire layers read
-``session._lens_instrument.<field>`` (or the public ``session.lens``); the
-transitional delegating properties that re-exposed it under historical
-private session names are gone.
+:class:`LensInstrument` is the one public face of the lens family
+(``session.lens``).  It owns:
 
-Division of labor (see ``protocol.py``): shared J-lens *primitives* —
-``_jlens_logits_rows`` / depth caches / decode memo / transport stack /
-the ``jlens`` disk-identity property — stay on the session (they also
-serve steering registration and the offline readouts); this instrument
-reaches them through the session back-ref at per-step frequency, exactly
-the pattern ``SteeringComposer`` established.  Capture planning and
-authored-prefill *orchestration* (token matching, ``j-1`` producer
-semantics, loom persistence) stay session-side; ``authored_capture`` here
-is only the per-row computation.
+- the resident lens (:class:`~drowse.lens.runtime.LensRuntime`) and the
+  residency transactions over it (refresh from disk, adopt, evict, source
+  switch), serialized by :attr:`LensInstrument.state_lock`;
+- the fit lifecycle (:class:`~drowse.lens.lifecycle.LensFitter`);
+- the offline reads (:meth:`LensInstrument.readout`,
+  :meth:`LensInstrument.decompose`, :meth:`LensInstrument.register_direction`,
+  :meth:`LensInstrument.token_readout`);
+- the readout-channel probe registry, the live workspace readout, and the
+  per-generation run (:class:`LensRun`).
+
+Dependencies are explicit constructor arguments: the model, tokenizer and
+device handles, the capture buffer the per-step reads consume, the
+model-exclusive guard, and a few session callbacks (registry writes, cache
+invalidation, profile resolution, the capture forward).  ``replay_host`` is
+the session, used only by the token replay's prompt rebuild until the shared
+replay lands.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
-from typing import Any, Mapping, Sequence, TYPE_CHECKING, cast
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
+from typing import Any, Literal, cast, overload
 
 import torch
 
@@ -59,10 +62,14 @@ from drowse.lens.jlens import (
     token_readout_stats_from_probabilities,
     transport_rows,
 )
-from drowse.model.readout import get_unembedding
+from drowse.lens.layers import LayerSelector
+from drowse.lens.lifecycle import LensFitRequest, LensFitter, LiveConfig
+from drowse.lens.runtime import CaptureHidden, LensRuntime, select_rows
 
-if TYPE_CHECKING:
-    from drowse.session.session import DrowseSession
+_log = logging.getLogger(__name__)
+
+#: ``exclusive(message, phase_msg=...)``: the session's model-exclusive guard.
+ExclusiveGuard = Callable[..., AbstractContextManager[Any]]
 
 
 class LensRun:
@@ -71,7 +78,7 @@ class LensRun:
     Owns everything generation-scoped (``protocol.py``): the immutable
     :class:`InstrumentBinding` (probe specs frozen at bind), the resident-
     lens disk-identity pin, the live-active flag, the per-forward stash the
-    gate callback and the display step share, and the ``observe`` memo.
+    gate callback and the display step share.
     An **idle** run (``bound=False``) backs out-of-generation reads —
     defensive captures, offline readouts — with live-registry passthrough
     semantics, so every read path has a run to consult.
@@ -105,36 +112,17 @@ class LensRun:
         self.bound = bound
         self.step_stash: dict[str, Any] | None = None
         self.last_step_readings: dict[str, ScalarReading] | None = None
-        self._memo_step: int | None = None
-        self._memo_readings: dict[str, ScalarReading] | None = None
 
     # ------------------------------------------------------------ protocol
 
     def observe(
         self, step_id: int, hidden: dict[int, torch.Tensor],
     ) -> dict[str, ScalarReading]:
-        """Readings for every attached probe at this step, memoized by
-        ``step_id`` while bound.  The workers' full-roster reads prime
-        this memo (``prime_observation``); the matrix-granular
-        gate→display reuse stays the step-keyed worker stash.  An idle
-        run never memoizes — it persists indefinitely, so a repeated
-        ``step_id`` with different hidden states would return stale
-        readings."""
-        if not self.bound:
-            return self._instrument.score_probes(hidden)
-        if (
-            step_id >= 0
-            and self._memo_step == step_id
-            and self._memo_readings is not None
-        ):
-            return self._memo_readings
-        readings = self._instrument.score_probes(hidden)
-        if step_id >= 0:
-            # Negative steps are the no-identity sentinel — never cacheable
-            # (a -1 memo would serve stale reads to every later -1 call).
-            self._memo_step = step_id
-            self._memo_readings = readings
-        return readings
+        """Readings for every attached probe from ``hidden``.  The per-step
+        reuse between the gate callback and the display step is the
+        step-keyed worker stash, not a memo here."""
+        del step_id
+        return self._instrument.score_probes(hidden)
 
     def gate_scalars(
         self,
@@ -154,18 +142,6 @@ class LensRun:
             step_id=step_id,
         )
 
-    def prime_observation(
-        self, step_id: int, readings: dict[str, ScalarReading],
-    ) -> None:
-        """Prime the step memo with FULL-roster readings a hot-path worker
-        already computed this forward — a later ``observe(step_id, …)``
-        returns them without recomputing.  Bound runs only; callers must
-        never prime an ``only=``-subset read (the completeness trap)."""
-        if not self.bound or step_id < 0:
-            return
-        self._memo_step = step_id
-        self._memo_readings = readings
-
     def observe_aggregate(
         self, pooled: dict[int, Any],
     ) -> dict[str, ScalarReading]:
@@ -173,11 +149,9 @@ class LensRun:
         return self._instrument.score_probes(pooled)
 
     def close(self) -> None:
-        """Release generation-scoped state (stash, memo, pin)."""
+        """Release generation-scoped state (stash, pin)."""
         self.step_stash = None
         self.last_step_readings = None
-        self._memo_step = None
-        self._memo_readings = None
         self.lens = None
         self.pinned = False
         self.active = True
@@ -192,8 +166,46 @@ class LensInstrument:
     #: Gate channels a lens probe can produce: the one strength axis.
     _GATE_CHANNELS: tuple[type, ...] = (Axis,)
 
-    def __init__(self, session: "DrowseSession") -> None:
-        self._session = session
+    def __init__(
+        self,
+        *,
+        model: Any,
+        tokenizer: Any,
+        model_id: str,
+        device: torch.device,
+        n_layers: int,
+        capture: Any,
+        exclusive: ExclusiveGuard,
+        capture_hidden: CaptureHidden,
+        pooled_slice: Callable[[list[int]], dict[int, torch.Tensor]],
+        profiles: MutableMapping[str, Any],
+        on_change: Callable[[Iterable[str]], None],
+        resolve_profile: Callable[[str], Mapping[int, torch.Tensor]],
+        assert_unsteered: Callable[[], None],
+        replay_host: Any = None,
+    ) -> None:
+        self.model_id = model_id
+        self.runtime = LensRuntime(
+            model=model, tokenizer=tokenizer, model_id=model_id,
+            device=device, n_layers=n_layers,
+        )
+        #: The capture buffer the per-step reads consume (latest slices).
+        self._capture = capture
+        self._exclusive = exclusive
+        self._capture_hidden = capture_hidden
+        self._pooled_slice = pooled_slice
+        #: The session's profile registry: ``jlens/<word>`` directions land
+        #: here and are evicted on every lens change.
+        self._profiles = profiles
+        #: Called with the lens probe names whenever registered directions or
+        #: the resident lens change (prefix/analytics/probe-hash caches).
+        self._on_change = on_change
+        self._resolve_profile = resolve_profile
+        self._assert_unsteered = assert_unsteered
+        self._replay_host = replay_host
+        self._fitter = LensFitter(
+            model=model, tokenizer=tokenizer, model_id=model_id, residency=self,
+        )
         # Pinned J-lens token probes: name -> {word, token_id, layers}.  NOT
         # monitor probes — they read the lens readout channel (per-layer
         # softmax probability), not a whitened subspace coordinate.
@@ -201,16 +213,16 @@ class LensInstrument:
         # Live workspace readout (enable_live): device-resident J_l subset +
         # settings, or None when off.  Runtime residency, not user intent —
         # disabling drops this dict but transported stacks stay in the
-        # session's device cache.
+        # runtime's device cache.
         self.live: dict[str, Any] | None = None
         # THE lens-state boundary: one reentrant lock covering source
         # refresh/adoption/eviction, registry and live-state mutation,
         # and ``prepare``'s complete snapshot, so the snapshot cannot
         # tear mid-``prepare`` under a concurrent un-locked getter
-        # read.  A leaf lock: nothing acquires
-        # ``_gen_lock``/``_model_exclusive`` while holding it (callers
-        # hold those first).  Reentrant because adoption runs inside the
-        # getter and ``prepare`` reads the getter inside its own hold.
+        # read.  A leaf lock: nothing acquires the model-exclusive guard
+        # while holding it (callers hold that first).  Reentrant because
+        # adoption runs inside the refresh and ``prepare`` refreshes inside
+        # its own hold.
         self.state_lock = threading.RLock()
         # The current per-generation run (idle passthrough until bind()).
         # All generation-scoped state — stash, display readings, active
@@ -220,8 +232,7 @@ class LensInstrument:
         )
 
     # ------------------------------------------------------------- run state
-    # Historical state names, delegating to the current run so the session's
-    # own delegating properties (and every internal read path) are unchanged.
+    # Generation-scoped state lives on the current run; these name it.
 
     @property
     def step_stash(self) -> dict[str, Any] | None:
@@ -270,7 +281,7 @@ class LensInstrument:
     def prepare(self, request: ReadRequest) -> LensPrep:
         """The refresh/pin protocol step.
 
-        Reads the disk-refreshing ``session.jlens`` getter under pin
+        Refreshes the resident lens from disk (:meth:`resident`) under pin
         demand BEFORE any plan is taken: the adoption path rewrites the
         live probe layer lists when an external replacement lens landed,
         so the capture plan AND the bind-time spec freeze must both see
@@ -281,15 +292,15 @@ class LensInstrument:
         spec ``layers`` are derived from the prepared lens identity
         itself — never left to a later registry reread — and the live
         runtime dict is captured by reference, because an interleaved
-        unpinned getter read (``has_compatible_jlens`` runs un-locked on
-        the session-info route) can adopt a *newer* disk lens inside the
+        unpinned refresh (:meth:`has_compatible` runs un-locked on the
+        session-info route) can adopt a *newer* disk lens inside the
         prepare→bind window and rewrite both.  ``plan``/``bind`` consume
         only this snapshot, so the run's lens, plan layers, and frozen
         specs agree by construction.
 
         Pin demand is the registry boolean, not plan emptiness — probes
         whose lens vanished still pin the validated-missing state so
-        per-token paths never reopen the sidecar.  The getter
+        per-token paths never reopen the sidecar.  The refresh
         short-circuits on a bound run's pin flag, which is why prepare
         requires the prior run closed (a stale pin would suppress the
         very refresh this step exists for).
@@ -304,9 +315,9 @@ class LensInstrument:
         # items, gate demand, pin demand, the getter refresh, spec
         # derivation, the live-state reference, and the sidecar
         # fingerprint are all read under ``state_lock`` — the same lock
-        # the getter's refresh/adoption/eviction, the registry
-        # mutations, and the live toggles hold.  A concurrent
-        # ``has_compatible_jlens`` adoption landing between the refresh
+        # the refresh/adoption/eviction, the registry mutations, and the
+        # live toggles hold.  A concurrent
+        # ``has_compatible`` adoption landing between the refresh
         # and the live-state read would pair lens A's specs with lens
         # B's live device stack; a concurrent detach would split gate
         # demand from the captured roster.
@@ -321,7 +332,7 @@ class LensInstrument:
                 (request.live and self.live is not None)
                 or (items and (request.final_aggregate or gate_hit))
             )
-            lens = self._session.jlens if pin_demand else None
+            lens = self.resident() if pin_demand else None
             # Spec layers under a pin come from the prepared identity
             # itself — the atomically consistent source for every probe
             # (the production invariant keeps registry lists identical to
@@ -351,7 +362,7 @@ class LensInstrument:
                     name: {**spec, "layers": list(spec["layers"])}
                     for name, spec in items
                 }
-            identity = getattr(self._session, "_jlens_identity", None)
+            identity = self.runtime.identity
             return LensPrep(
                 family=self.family,
                 request=request,
@@ -360,7 +371,7 @@ class LensInstrument:
                 pinned=pin_demand,
                 specs=specs,
                 live_state=self.live,
-                fingerprint=str(identity) if identity is not None else None,
+                fingerprint=identity,
             )
 
     def bind(self, plan: InstrumentPlan, prep: InstrumentPrep) -> LensRun:
@@ -427,9 +438,9 @@ class LensInstrument:
 
     def _measurement_specs(self) -> "dict[str, Any] | Any":
         """The spec source for measurement: a bound run's frozen binding
-        (immune to concurrent spec mutation — e.g. the ``jlens`` getter's
-        eviction path zeroing probe layers from another thread), else the
-        live registry."""
+        (immune to concurrent spec mutation — e.g. the refresh's eviction
+        path zeroing probe layers from another thread), else the live
+        registry."""
         run = self.current_run
         return run.binding.specs if run.bound else self.probes
 
@@ -446,7 +457,7 @@ class LensInstrument:
         """The coherent ``(lens, specs)`` pair for measurement.
 
         Bound: the run's pin + frozen binding — lock-free, immutable by
-        construction (an unpinned bound run falls back to the getter,
+        construction (an unpinned bound run falls back to the refresh,
         which locks internally; nothing measures on such a run anyway).
         Idle: ONE state-lock hold refreshes the resident lens and copies
         the registry, so an idle-passthrough read (``observe`` on the
@@ -458,15 +469,351 @@ class LensInstrument:
         """
         run = self.current_run
         if run.bound:
-            lens = run.lens if run.pinned else self._session.jlens
+            lens = run.lens if run.pinned else self.resident()
             return lens, run.binding.specs
         with self.state_lock:
-            lens = self._session.jlens
+            lens = self.resident()
             specs = {
                 name: {**spec, "layers": list(spec["layers"])}
                 for name, spec in self.probes.items()
             }
             return lens, specs
+
+    # ------------------------------------------------------------- residency
+
+    @property
+    def resident_lens(self) -> Any:
+        """The resident lens as last refreshed (no disk read)."""
+        return self.runtime.lens
+
+    @property
+    def resident_identity(self) -> str | None:
+        """The resident lens's artifact identity (no disk read)."""
+        return self.runtime.identity
+
+    def resident(self) -> Any:
+        """The model's lens from the active source, or ``None`` when absent.
+
+        Refreshes against disk: a removed, replaced or mismatched artifact
+        is evicted along with every derived view, and a new one is loaded
+        and adopted.  A generation-bound run's pinned lens short-circuits the
+        refresh, so a generation reads one lens throughout.  Fit or fetch a
+        lens with ``drowse lens fit|fetch``.
+        """
+        with self.state_lock:
+            run = self.current_run
+            if run.pinned:
+                return run.lens
+            self._refresh(load=True)
+            return self.runtime.lens
+
+    def has_compatible(self) -> bool:
+        """Whether the active source matches the loaded weights.
+
+        Runs un-locked on the session-info route; a lens that is not
+        resident yet is only checked, never paged in.
+        """
+        with self.state_lock:
+            run = self.current_run
+            if run.pinned:
+                return run.lens is not None
+            return self._refresh(load=False)
+
+    def _refresh(self, *, load: bool) -> bool:
+        """Reconcile the resident lens with the active source's artifact.
+
+        Returns whether the active source is compatible.  ``load`` pages in
+        a compatible lens that is not resident yet.
+        """
+        from drowse.lens.store import lens_identity, load_lens, load_lens_sidecar
+
+        runtime = self.runtime
+        sidecar = load_lens_sidecar(self.model_id)
+        if not runtime.matches(sidecar):
+            if runtime.lens is not None:
+                self.evict()
+            if load and sidecar is not None:
+                _log.warning(
+                    "ignoring stale Jacobian lens for %s: loaded-model "
+                    "identity is missing or changed; fetch or re-fit the lens",
+                    self.model_id,
+                )
+            return False
+        if runtime.lens is not None and runtime.identity == lens_identity(sidecar):
+            return True
+        if not load and runtime.lens is None:
+            return True
+        loaded = load_lens(self.model_id)
+        if loaded is None:
+            self.evict()
+            return False
+        if not runtime.matches(loaded[1]):
+            self.evict()
+            if load:
+                _log.warning(
+                    "ignoring concurrently replaced Jacobian lens for %s: "
+                    "loaded payload does not match the live model",
+                    self.model_id,
+                )
+            return False
+        self.adopt(loaded[0], loaded[1])
+        return True
+
+    def _require(self) -> Any:
+        from drowse.lens.jlens import LensNotFittedError
+
+        lens = self.resident()
+        if lens is None:
+            raise LensNotFittedError(
+                f"no Jacobian lens available for {self.model_id} — run "
+                f"`drowse lens fetch {self.model_id}` for a supported official "
+                f"lens, or `drowse lens fit {self.model_id}`"
+            )
+        return lens
+
+    def live_config(self) -> LiveConfig | None:
+        """The live readout's ``(layers, uses_all_layers)``, or ``None``."""
+        with self.state_lock:
+            live = self.live
+            if live is None:
+                return None
+            return list(live["layers"]), bool(live.get("uses_all_layers", False))
+
+    def _drop_directions(self) -> None:
+        for key in [key for key in self._profiles if key.startswith("jlens/")]:
+            self._profiles.pop(key, None)
+
+    def evict(self) -> None:
+        """Drop the resident lens and every derived view: registered
+        ``jlens/`` directions, probe layer lists, live state, the stash."""
+        with self.state_lock:
+            self.runtime.clear()
+            self.step_stash = None
+            self.last_step_readings = None
+            self._drop_directions()
+            for spec in self.probes.values():
+                spec["layers"] = []
+            self.live = None
+            self._on_change(list(self.probes))
+
+    def adopt(
+        self,
+        lens: Any,
+        sidecar: Mapping[str, Any] | None,
+        *,
+        live: LiveConfig | None = None,
+        restore_live: bool = False,
+    ) -> Any:
+        """Make ``lens`` resident and rebuild every derived consumer.
+
+        One lens-state transaction, so a concurrent ``prepare`` snapshot
+        sees the old world or the new one, never a mix.  The live readout is
+        rebuilt from its current configuration, or from ``live`` when
+        ``restore_live`` (a fit restores the configuration it evicted).
+        """
+        with self.state_lock:
+            previous = live if restore_live else self.live_config()
+            self.runtime.install(lens, sidecar)
+            self.step_stash = None
+            self.last_step_readings = None
+            self._drop_directions()
+            readout_layers = [int(layer) for layer in lens.source_layers]
+            for spec in self.probes.values():
+                spec["layers"] = list(readout_layers)
+            if self.probes and readout_layers:
+                self.runtime.transport_stack(lens, sorted(readout_layers))
+            if previous is not None:
+                layers, uses_all_layers = previous
+                valid = [layer for layer in layers if layer in lens.jacobians]
+                self.enable_live(
+                    layers=None if uses_all_layers else (valid or None),
+                )
+            else:
+                self.live = None
+            self._on_change(list(self.probes))
+            return lens
+
+    def select_source(self, source: str) -> None:
+        """Select a prepared local/external lens source and evict the
+        resident lens.  Prepare the source first (fit or fetch)."""
+        from drowse.lens.sources import use_lens_source
+
+        use_lens_source(self.model_id, source)
+        self.evict()
+
+    def close(self) -> None:
+        """Session teardown: close the run and drop every resident view."""
+        self.close_run()
+        with self.state_lock:
+            self.probes.clear()
+            self.live = None
+        self.runtime.close()
+
+    # ------------------------------------------------------------- lifecycle
+
+    def fit(
+        self,
+        prompts: Sequence[str],
+        *,
+        kind: str = "J",
+        corpus_spec: str = "custom",
+        source_layers: LayerSelector = None,
+        dim_batch: int | None = None,
+        prompt_batch: int | None = None,
+        seq_len: int | None = None,
+        force: bool = False,
+        checkpoint_every: int | None = None,
+        on_progress: Callable[[str], None] | None = None,
+        cancel_event: Any | None = None,
+    ) -> Any:
+        """Fit (or resume) this model's ``kind`` lens and make it resident.
+
+        ``kind="J"`` is the standard J-lens at ``local:j``; ``kind="R"`` the
+        RelP R-lens at ``local:r`` (the same estimator through the
+        LRP-modified backward graph).  Resume is the default: a matching
+        durable artifact or checkpoint over a prefix of this corpus is
+        extended; ``force`` restarts from zero.  ``source_layers`` is
+        ``None``/``"all"`` (every layer below the final one),
+        ``"workspace"``, or an index list.  Runs the only backward passes in
+        drowse, under the fit lock and the model-exclusive guard.  Returns
+        the fitted lens restricted to the requested layers.
+        """
+        from drowse.lens.jlens import (
+            DEFAULT_CHECKPOINT_EVERY,
+            DEFAULT_DIM_BATCH,
+            DEFAULT_SEQ_LEN,
+            JacobianLensCancelled,
+        )
+        from drowse.lens.store import cleanup_lens_artifacts, lens_fit_lock
+
+        request = LensFitRequest(
+            kind=kind,
+            corpus_spec=corpus_spec,
+            source_layers=source_layers,
+            dim_batch=dim_batch or DEFAULT_DIM_BATCH,
+            prompt_batch=prompt_batch,
+            seq_len=seq_len or DEFAULT_SEQ_LEN,
+            force=force,
+            checkpoint_every=checkpoint_every or DEFAULT_CHECKPOINT_EVERY,
+        )
+        name = request.kind.lower()
+        with lens_fit_lock(self.model_id, name):
+            cleanup_lens_artifacts(self.model_id, name)
+            if cancel_event is not None and cancel_event.is_set():
+                raise JacobianLensCancelled("Jacobian-lens fit cancelled before start")
+            with self._exclusive(
+                "session.lens.fit called while another model use is in flight",
+                phase_msg="session.lens.fit called while a generation is in flight",
+            ):
+                self._assert_unsteered()
+                return self._fitter.run(
+                    prompts, request,
+                    on_progress=on_progress, cancel_event=cancel_event,
+                )
+
+    # ---------------------------------------------------------- offline reads
+
+    @overload
+    def readout(
+        self,
+        prompt: str,
+        *,
+        layers: LayerSelector = None,
+        positions: Sequence[int] | None = None,
+        top_k: int = 10,
+        aggregate: Literal[False] = False,
+    ) -> dict[int, list[list[tuple[str, float]]]]: ...
+
+    @overload
+    def readout(
+        self,
+        prompt: str,
+        *,
+        layers: LayerSelector = None,
+        positions: Sequence[int] | None = None,
+        top_k: int = 10,
+        aggregate: Literal[True],
+    ) -> tuple[
+        dict[int, list[list[tuple[str, float]]]],
+        list[list[tuple[str, float, float, float]]],
+    ]: ...
+
+    def readout(
+        self,
+        prompt: str,
+        *,
+        layers: LayerSelector = None,
+        positions: Sequence[int] | None = None,
+        top_k: int = 10,
+        aggregate: bool = False,
+    ) -> (
+        dict[int, list[list[tuple[str, float]]]]
+        | tuple[
+            dict[int, list[list[tuple[str, float]]]],
+            list[list[tuple[str, float, float, float]]],
+        ]
+    ):
+        """Lens readout on a raw prompt: the top-``top_k`` tokens per
+        (layer, position) with their per-layer probabilities ``p_l``.
+
+        ``layers`` defaults to every fitted layer; ``positions`` to the
+        final position (explicit indices, negative from the end, read
+        more).  Returns ``{layer: [per-position [(token, p_l), ...]]}``.
+        ``aggregate=True`` also returns one layer-aggregated chip list
+        ``[(token, strength, com, spread), ...]`` per position, from the
+        same logits (:func:`drowse.lens.jlens.aggregate_readout`).
+        """
+        lens = self._require()
+        self.runtime.resolve_layers(lens, layers)
+        with self._exclusive(
+            "session.lens.readout called while another model use is in flight",
+            phase_msg="session.lens.readout called while a generation is in flight",
+        ):
+            return self.runtime.readout(
+                lens, prompt,
+                capture_hidden=self._capture_hidden,
+                layers=layers, positions=positions, top_k=top_k,
+                aggregate=aggregate,
+            )
+
+    def decompose(
+        self,
+        selector: str,
+        *,
+        k: int = 16,
+        layers: LayerSelector = None,
+    ) -> dict[int, tuple[float, list[tuple[str, float]]]]:
+        """Split a steerable direction into its J-space component, per layer.
+
+        ``selector`` resolves through the ordinary steering resolver, so any
+        steerable vector decomposes.  Returns ``{layer: (share, [(token,
+        coeff), ...])}``: ``share`` is the fraction of the direction's
+        variance carried by its best sparse nonnegative combination of ``k``
+        lens vectors (how *verbalizable* it is; ~6-15% is typical for
+        concept vectors).
+        """
+        lens = self._require()
+        directions = self._resolve_profile(selector)
+        return self.runtime.decompose(
+            lens, directions, label=selector, k=k, layers=layers,
+        )
+
+    def register_direction(self, word: str) -> str:
+        """Register ``W_U[v] @ J_l`` for a single-token word (or ``#<id>``)
+        as the profile ``jlens/<word>`` and return its name.
+
+        The direction steers and ablates exactly like an extracted vector;
+        this is the resolver behind the lazy ``jlens/`` steering atom.  A
+        ``jlens/<word>`` *probe* reads the readout channel instead.
+        Idempotent; every fitted layer.
+        """
+        name = f"jlens/{word}"
+        if name in self._profiles:
+            return name
+        lens = self._require()
+        self._profiles[name] = self.runtime.token_directions(lens, word)
+        self._on_change(())
+        return name
 
     # -------------------------------------------------------------- registry
 
@@ -482,12 +829,12 @@ class LensInstrument:
         probe-hash cache, analytics) is the session's job at its
         ``add_probe`` boundary.
         """
-        session = self._session
         word = selector.split("/", 1)[1]
         if not word:
             raise ValueError("empty jlens probe word")
         name = as_name if as_name is not None else selector
-        with session._model_exclusive(
+        runtime = self.runtime
+        with self._exclusive(
             "add_probe called while another model operation is in "
             "flight; retry shortly"
         ):
@@ -495,15 +842,13 @@ class LensInstrument:
             # outer→leaf lock order): the lens read and the registry write
             # land in one lens-state transaction.
             with self.state_lock:
-                lens = session._require_jlens()
+                lens = self._require()
                 token_id = resolve_token_atom(
-                    session._tokenizer, word,
-                    vocab_size=int(get_unembedding(session._model).shape[0]),
+                    runtime.tokenizer, word,
+                    vocab_size=int(runtime.readout_modules()[0].shape[0]),
                 )
                 readout_layers = [int(l) for l in lens.source_layers]
-                session._jlens_transport_stack(
-                    lens, sorted(readout_layers), session._device,
-                )
+                runtime.transport_stack(lens, sorted(readout_layers))
                 self.probes[name] = {
                     "word": word,
                     "token_id": int(token_id),
@@ -634,10 +979,10 @@ class LensInstrument:
             return hashlib.sha256(
                 repr(
                     (
-                        "jlens-readout-v5", self._session.model_id,
+                        "jlens-readout-v5", self.model_id,
                         spec["word"], spec["token_id"],
                         tuple(spec["layers"]),
-                        getattr(self._session, "_jlens_identity", None),
+                        self.runtime.identity,
                     )
                 ).encode("utf-8")
             ).hexdigest()
@@ -657,7 +1002,6 @@ class LensInstrument:
         hold a calibrated row matrix use :meth:`score_probes_from_rows`.
         Empty when no probe layer is available.
         """
-        session = self._session
         lens, probes = self._measurement_state()
         if not probes or lens is None:
             return {}
@@ -667,7 +1011,7 @@ class LensInstrument:
         layers = sorted(l for l in readout_layers if l in hidden)
         if not layers:
             return {}
-        logits = session._jlens_logits_rows(
+        logits = self.runtime.logits_rows(
             lens, [(l, hidden[l]) for l in layers],
         )
         return self._readings_from_rows(
@@ -736,7 +1080,7 @@ class LensInstrument:
         nearest, residual, assignment or membership to report, and shipping
         those as constants is measurement-shaped noise.
         """
-        session = self._session
+        runtime = self.runtime
         names = [
             name for name in probes
             if only is None or name in only
@@ -746,9 +1090,9 @@ class LensInstrument:
         token_ids = [probes[n]["token_id"] for n in names]
         rows = probabilities if probabilities is not None else logits
         row_device = cast(torch.Tensor, rows).device
-        token_ids_tensor = session._readout_long_tensor(token_ids, row_device)
-        depth_tensor = session._jlens_depth_tensor(layers, row_device)
-        depths = session._jlens_depths(layers)
+        token_ids_tensor = runtime.long_tensor(token_ids, row_device)
+        depth_tensor = runtime.depth_tensor(layers, row_device)
+        depths = runtime.depths(layers)
         if probabilities is not None:
             stats = token_readout_stats_from_probabilities(
                 probabilities, depths, token_ids,
@@ -791,15 +1135,13 @@ class LensInstrument:
         the synthesized readings through :meth:`Monitor.flat_scalars` so the
         gate key space is uniform. Gate-only calls score exact
         selected-token softmax columns; live display calls still calibrate
-        the full matrix once for downstream card/aggregate reuse — and
-        full-roster readings prime the run's ``observe`` memo.  Empty
+        the full matrix once for downstream card/aggregate reuse.  Empty
         when nothing is capturable yet.
         """
-        session = self._session
         lens, probes = self._measurement_state()
         if not probes or lens is None:
             return {}
-        latest = session._capture.latest_per_layer()
+        latest = self._capture.latest_per_layer()
         if not latest:
             return {}
         only = None
@@ -831,7 +1173,7 @@ class LensInstrument:
         if not layers:
             return {}
 
-        logits = session._jlens_logits_rows(
+        logits = self.runtime.logits_rows(
             lens, [(l, latest[l]) for l in layers],
         )
         probabilities = None
@@ -861,17 +1203,10 @@ class LensInstrument:
             live_stash["readings_layers"] = tuple(layers)
             live_stash["readings_step"] = step_id
             self.last_step_readings = readings
-            if probe_read_only is None:
-                # Full-roster readings (never an ``only=`` subset — the
-                # completeness trap) prime the run's observe memo, so an
-                # ``observe(step_id, …)`` for this same forward is a hit.
-                self.current_run.prime_observation(step_id, readings)
         else:
             readings = self.score_probes_from_rows(
                 layers=layers, logits=logits, only=probe_read_only,
             )
-            if probe_read_only is None:
-                self.current_run.prime_observation(step_id, readings)
         return scalar_gate_keys({
             name: reading.value
             for name, reading in readings.items()
@@ -886,18 +1221,17 @@ class LensInstrument:
     ) -> dict[str, ScalarReading]:
         """End-of-gen aggregate pooled at the last content token.
 
-        Shares the session's ``_pooled_aggregate_slice`` with the monitor
-        roster and the SAE family, so all three aggregates read the same
-        position under every retention mode.
+        Shares the session's pooled slice with the monitor roster and the
+        SAE family, so all three aggregates read the same position under
+        every retention mode.
         """
-        session = self._session
         # Binding-authoritative guard: a probe detached mid-generation
         # stays in this generation's aggregate roster (mutations apply
         # next generation).
         if not self._measurement_specs() or not generated_ids:
             return {}
         if pooled is None:
-            pooled = session._pooled_aggregate_slice(generated_ids)
+            pooled = self._pooled_slice(generated_ids)
         if not pooled:
             return {}
         return self.current_run.observe_aggregate(pooled)
@@ -917,15 +1251,13 @@ class LensInstrument:
         latest-slice buffers post-forward), so steering fast-path /
         compile eligibility is untouched.  Returns the resolved layer list.
         """
-        from drowse.model.readout import LogitReadout
-
-        session = self._session
+        runtime = self.runtime
 
         # One lens-state transaction: the lens read and the live-state
         # rebuild must be consistent (adoption calls this while holding
         # the same reentrant lock).
         with self.state_lock:
-            lens = session._require_jlens()
+            lens = self._require()
             uses_all_layers = layers is None
             if layers is None:
                 layers = sorted(int(layer) for layer in lens.source_layers)
@@ -938,12 +1270,10 @@ class LensInstrument:
                         f"(fitted: {lens.source_layers[0]}.."
                         f"{lens.source_layers[-1]})"
                     )
-            device = session._device
+            device = runtime.device
             layer_list = list(layers)
             if layer_list:
-                j_stack = session._jlens_transport_stack(
-                    lens, layer_list, device,
-                )
+                j_stack = runtime.transport_stack(lens, layer_list, device)
             else:
                 sample = next(iter(lens.jacobians.values()))
                 j_stack = torch.empty(
@@ -954,7 +1284,7 @@ class LensInstrument:
                 "uses_all_layers": uses_all_layers,
                 "J_stack": j_stack,
                 "layer_rows": {l: i for i, l in enumerate(layer_list)},
-                "readout": LogitReadout(session._model),
+                "readout": runtime.readout_modules()[1],
                 "source": self.active_source,
             }
             return list(layers)
@@ -984,7 +1314,7 @@ class LensInstrument:
         """
         from drowse.lens.sources import LENS_SOURCES
 
-        active = LENS_SOURCES.active(self._session.model_id, "output")
+        active = LENS_SOURCES.active(self.model_id, "output")
         return None if active is None else LENS_SOURCES.format(active)
 
     @property
@@ -1030,10 +1360,10 @@ class LensInstrument:
         """The loom-anchored J-lens replay, as the finished
         ``scope="replay"`` measurement envelope.
 
-        The session owns the replay itself (prompt rebuild, one capture
-        forward under the node's recipe steering); this method owns the
-        envelope, so the route never reshapes a family-native dict.  The
-        session hands back per-layer *probabilities*, which is exactly what
+        :meth:`_replay_readout` runs the replay itself (prompt rebuild, one
+        capture forward under the node's recipe steering); this method owns
+        the envelope, so the route never reshapes a family-native dict.  The
+        replay hands back per-layer *probabilities*, which is exactly what
         ``build_measurements`` takes — there is no exp/log round-trip on
         this hop.
         """
@@ -1042,7 +1372,7 @@ class LensInstrument:
         width = 8 if top_k is None else int(top_k)
         if not 1 <= width <= 256:
             raise ValueError("top_k must be in [1, 256]")
-        out = self._session.jlens_token_readout(
+        out = self._replay_readout(
             node_id,
             raw_index,
             layers=layers if layers is not None else "all",
@@ -1071,6 +1401,135 @@ class LensInstrument:
         )
         return {"measurements": measurements}
 
+    def _replay_readout(
+        self,
+        node_id: str,
+        raw_index: int,
+        *,
+        layers: LayerSelector = None,
+        top_k: int = 8,
+        apply_steering: bool = True,
+        raw: bool = False,
+    ) -> dict[str, Any]:
+        """Lens readout at one decode step of a loom node.
+
+        Rebuilds the exact token stream that *produced* the token (the
+        node's rendered prompt, as :meth:`DrowseSession.fork_from_token`
+        replays it, plus ``raw_token_ids[:raw_index]``), runs one capture
+        forward under the node's recipe steering when ``apply_steering``,
+        and reads ``softmax(W_U · norm(J_l h))`` at the final position per
+        layer.  An always-active affine term reproduces the decode
+        injections exactly; phase-split and probe-gated terms fire as the
+        trigger context's rest state decides.  ``raw`` selects the flat
+        render.
+
+        Returns ``{node_id, raw_index, token_id, token_text, steering,
+        readout: {layer: [(token, p_l, id), ...]}, aggregate: [(token,
+        strength, com, spread), ...]}``.  Raises
+        :class:`~drowse.lens.jlens.LensNotFittedError` with no lens,
+        :class:`UnknownNodeError` / :class:`InvalidNodeOperationError` on a
+        bad target, ``ValueError`` on an unfitted layer.
+        """
+        from drowse.loom.errors import InvalidNodeOperationError
+        from drowse.loom.recipe import INHERIT_SYSTEM_PROMPT
+
+        host = self._replay_host
+        if host is None:
+            raise RuntimeError("the lens token replay needs a session replay host")
+        runtime = self.runtime
+        lens = self._require()
+        req = runtime.resolve_layers(lens, layers)
+        node = host.tree.get(node_id)
+        if node.role not in ("assistant", "user"):
+            raise InvalidNodeOperationError(
+                f"jlens_token_readout: {node_id!r} is a {node.role} node — "
+                f"only a turn with a decode record can be read out"
+            )
+        raw_ids = node.raw_token_ids
+        if not raw_ids:
+            raise InvalidNodeOperationError(
+                f"jlens_token_readout: {node_id!r} has no raw token record "
+                f"(transcript-loaded node)"
+            )
+        if not 0 <= raw_index < len(raw_ids):
+            raise InvalidNodeOperationError(
+                f"jlens_token_readout: raw_index {raw_index} out of range "
+                f"[0, {len(raw_ids)}) for {node_id!r}"
+            )
+
+        recipe = node.recipe
+        steering_expr = (
+            recipe.steering if (apply_steering and recipe is not None) else None
+        )
+        # The steering scope opens OUTSIDE the exclusive guard: the
+        # composer's push/pop take the generation lock blocking, so nesting
+        # the scope inside the guard would self-deadlock.
+        scope = host.steering(steering_expr) if steering_expr else nullcontext()
+        with scope:
+            thinking_req = recipe.thinking if recipe is not None else None
+            supports_thinking = host.chat_traits.supports_thinking
+            use_thinking = (
+                supports_thinking
+                if thinking_req is None
+                else bool(thinking_req) and supports_thinking
+            )
+            if raw:
+                prompt_ids = host._prepare_input(
+                    "", raw=True, parent_node_id=node.parent_id,
+                )
+            else:
+                # Continue-mode rebuild: the history walk to the parent
+                # carries every prior turn with its stamped label, so the
+                # render is byte-identical to the one that produced the node.
+                prompt_ids = host._prepare_input(
+                    None,
+                    thinking=use_thinking,
+                    parent_node_id=node.parent_id,
+                    system_prompt=(
+                        recipe.system_prompt if recipe is not None
+                        else INHERIT_SYSTEM_PROMPT
+                    ),
+                    user_role=node.role_label if node.role == "user" else None,
+                    assistant_role=(
+                        node.role_label if node.role == "assistant" else None
+                    ),
+                    gen_seat=node.role,
+                )
+            if raw_index > 0:
+                prefix = torch.tensor(
+                    [[int(t) for t in raw_ids[:raw_index]]],
+                    dtype=prompt_ids.dtype, device=prompt_ids.device,
+                )
+                ids = torch.cat([prompt_ids, prefix], dim=1)
+            else:
+                ids = prompt_ids
+            with self._exclusive(
+                "session.lens.token_readout called while another model use "
+                "is in flight",
+                phase_msg="session.lens.token_readout called while a "
+                "generation is in flight",
+            ):
+                hidden = self._capture_hidden(
+                    ids, layer_indices=req, pool_index=ids.shape[1] - 1,
+                )
+                pair_rows = [(layer, hidden[layer]) for layer in req]
+                logits = runtime.logits_rows(lens, pair_rows)
+                decoded = runtime.topk_rows(
+                    lens, pair_rows, top_k=top_k, logits=logits,
+                )
+                readout = dict(zip(req, decoded))
+                agg = runtime.aggregate_rows(logits, req, top_k=top_k)
+        token_id = int(raw_ids[raw_index])
+        return {
+            "node_id": node_id,
+            "raw_index": int(raw_index),
+            "token_id": token_id,
+            "token_text": str(runtime.tokenizer.decode([token_id])),
+            "steering": steering_expr,
+            "readout": readout,
+            "aggregate": agg,
+        }
+
     def live_readout_step(
         self, *, top_k: int = 8, step_id: int = -1,
     ) -> (
@@ -1093,11 +1552,11 @@ class LensInstrument:
         idempotent, and ``step_id < 0`` never matches) and the layer sets
         overlap.
         """
-        session = self._session
+        runtime = self.runtime
         state = self._measurement_live()
         if state is None or not self.active_for_generation:
             return None
-        buckets = session._capture.per_layer_buckets()
+        buckets = self._capture.per_layer_buckets()
         layers_present: list[int] = []
         hidden_rows: list[torch.Tensor] = []
         stack_rows: list[int] = []
@@ -1155,9 +1614,7 @@ class LensInstrument:
             ]
             if missing:
                 J_stack: torch.Tensor = state["J_stack"]
-                # Instance-attribute lookup (not a class-qualified call) so a
-                # duck-typed test stub that borrows the session helper works.
-                J = session._select_tensor_rows(
+                J = select_rows(
                     J_stack,
                     [row for _layer, _hidden, row in missing],
                 )
@@ -1236,11 +1693,6 @@ class LensInstrument:
                 self.last_step_readings = self.score_probes_from_rows(
                     layers=list(layers_present), probabilities=probabilities,
                 )
-                # The display's readings cover the full roster (no ``only=``),
-                # so prime the run's observe memo for this forward.
-                self.current_run.prime_observation(
-                    step_id, self.last_step_readings,
-                )
         else:
             self.last_step_readings = None
         # Display scores are per-layer softmax probabilities — the one
@@ -1248,12 +1700,10 @@ class LensInstrument:
         # the top-k selection is unchanged from the raw-logit ranking).
         k = min(max(int(top_k), 0), int(probabilities.shape[-1]))
         vals, idxs = probabilities.topk(k, dim=-1)
-        depth_tensor = session._jlens_depth_tensor(
-            layers_present, probabilities.device,
-        )
+        depth_tensor = runtime.depth_tensor(layers_present, probabilities.device)
         agg_idxs, agg_stats = aggregate_readout_tensors_from_probabilities(
             probabilities,
-            session._jlens_depths(layers_present),
+            runtime.depths(layers_present),
             top_k=k,
             depth_tensor=depth_tensor,
         )
@@ -1274,12 +1724,12 @@ class LensInstrument:
         for row, layer in enumerate(layers_present):
             pairs: list[tuple[str, float]] = []
             for v, i in zip(all_vals[row], all_idxs[row]):
-                pairs.append((session._jlens_decode_id(int(i)), float(v)))
+                pairs.append((runtime.decode_id(int(i)), float(v)))
             out[layer] = pairs
             token_ids[layer] = [int(i) for i in all_idxs[row]]
         agg = [
             (
-                session._jlens_decode_id(int(agg_host[3][j])),
+                runtime.decode_id(int(agg_host[3][j])),
                 float(agg_host[0][j]),
                 float(agg_host[1][j]),
                 float(agg_host[2][j]),
@@ -1307,7 +1757,7 @@ class LensInstrument:
         row ordering, and loom persistence stay in the session's
         authored-prefill orchestration.
         """
-        session = self._session
+        runtime = self.runtime
         state = self._measurement_live()
         if state is None or not self.active_for_generation:
             return None
@@ -1317,7 +1767,7 @@ class LensInstrument:
         lens, specs = self._measurement_state()
         if lens is None:
             return None
-        logits = session._jlens_logits_rows(
+        logits = runtime.logits_rows(
             lens, [(layer, hidden[layer]) for layer in layers],
         )
         probabilities = readout_probabilities(logits)
@@ -1332,11 +1782,11 @@ class LensInstrument:
         token_ids: dict[int, list[int]] = {}
         for row, layer in enumerate(layers):
             per_layer[layer] = [
-                (session._jlens_decode_id(int(tid)), float(value))
+                (runtime.decode_id(int(tid)), float(value))
                 for value, tid in zip(value_rows[row], id_rows[row], strict=True)
             ]
             token_ids[layer] = [int(tid) for tid in id_rows[row]]
-        aggregate = session._jlens_aggregate_rows(
+        aggregate = runtime.aggregate_rows(
             None, layers, top_k=k, probabilities=probabilities,
         )
         return per_layer, aggregate, token_ids, readings

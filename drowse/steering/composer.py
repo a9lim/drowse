@@ -392,7 +392,7 @@ class SteeringComposer:
         ns, atom, variant = _split_key(name)
         if ns in RESERVED_NAMESPACES and variant == "raw":
             if ns == "jlens":
-                return profiles[self._session.register_jlens_direction(atom)]
+                return profiles[self._session.lens.register_direction(atom)]
             if ns == "sae":
                 return profiles[self._session.register_sae_direction(atom)]
             raise ProfileNotRegisteredError(
@@ -811,8 +811,8 @@ class SteeringComposer:
                 # Once per forward: band lens logits → strength
                 # scalars (also stashed step-keyed for the display step to
                 # reuse — step identity replaced the freshness handshake).
-                lens_scalars = session._score_lens_gate_scalars(
-                    lens_gate_keys, step_id=step_id,
+                lens_scalars = session.lens.current_run.gate_scalars(
+                    step_id, None, lens_gate_keys,
                 )
                 if lens_scalars:
                     out = {**out, **lens_scalars}

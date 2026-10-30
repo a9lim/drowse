@@ -100,7 +100,7 @@ def session_info(
     default_expr = str(default_steering) if default_steering is not None else None
     assistant_role_ok, user_role_ok = role_support(session)
     default_assistant_role, default_user_role = default_role_labels(session)
-    jlens_fitted = session.has_compatible_jlens()
+    jlens_fitted = session.lens.has_compatible()
     scene_mode, thinking_input, strips_history_thinking = _scene_capabilities(session)
     return {
         "id": "default",
