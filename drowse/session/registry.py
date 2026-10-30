@@ -10,11 +10,12 @@ a method here, so the dependent caches move with it:
   ``evict_prefix`` / ``adopt_fitted`` / ``evict_artifact`` / ``clear``) drops
   the analytics CPU snapshots.  The prefix cache survives it: the cached
   prefix is unsteered, and ``steering_active_in_prefill`` gates its reuse;
-- a manifold *swap* (``adopt_fitted`` / ``evict_artifact``) also fires the
-  ``on_swap`` listeners with a map from each replaced object's identity to its
-  replacement (``None`` when evicted), so the session can refresh or drop the
-  monitor probes that read them.  That covers the loaded manifolds and the
-  probe folds handed out by :meth:`ArtifactRegistry.fold_probe`;
+- a manifold *swap* (``adopt_fitted`` / ``evict_artifact``, and a
+  ``put_profile`` that replaces a profile a probe was folded from) also fires
+  the ``on_swap`` listeners with a map from each replaced object's identity
+  to its replacement (``None`` when evicted), so the session can refresh or
+  drop the monitor probes that read them.  That covers the loaded manifolds
+  and the probe folds handed out by :meth:`ArtifactRegistry.fold_probe`;
 - lazy loads (``ensure_manifold_loaded`` / ``ensure_profile_registered``)
   memoize what is already on disk and fire nothing.
 
@@ -202,9 +203,25 @@ class ArtifactRegistry:
         return {int(idx): vec.to(b.device, b.dtype) for idx, vec in tensors.items()}
 
     def put_profile(self, name: str, tensors: "Mapping[int, torch.Tensor] | Profile") -> None:
-        """Register (or replace) the steering profile ``name``."""
+        """Register (or replace) the steering profile ``name``.
+
+        Probe folds tracked under ``name`` were folded from the profile this
+        replaces, so they are re-folded from ``tensors`` and swapped, the way
+        :meth:`adopt_fitted` moves them.  The refold is built before the
+        first mutation, so a failed fold leaves the registry as it was.
+        """
         source = tensors.as_dict() if isinstance(tensors, Profile) else tensors
+        stale = list(self._probe_folds.get(name, {}).values())
+        refold: Manifold | None = None
+        if stale:
+            if self._probe_folder is None:
+                raise RuntimeError("ArtifactRegistry.put_profile: no probe folder installed")
+            refold = self._probe_folder(name, source)
         self._profiles[name] = dict(source)
+        if refold is not None:
+            del self._probe_folds[name]
+            self._track_fold(name, refold)
+            self._swapped({id(old): refold for old in stale})
         self._changed()
 
     def put_manifold(self, key: str, manifold: Manifold) -> None:

@@ -172,3 +172,33 @@ def test_a_session_remove_probe_drops_the_digest_but_keeps_the_prefix(
     assert "mood" not in session.probe_hashes()
     session.add_probe("mood")
     assert session.probe_hashes()["mood"] == first
+
+
+def test_a_session_put_profile_refolds_an_attached_probe(make_tiny_session: Any) -> None:
+    """Replacing an in-memory profile moves the probe folded from it onto a
+    fold of the new direction (and drops its stale digest)."""
+    import torch
+
+    from drowse.geometry.profile import Profile
+    from tests.support.sessions import register_vectors
+
+    session, _script = make_tiny_session.scripted("ok")
+    register_vectors(session, "mood")
+    session.add_probe("mood")
+    before = session._monitor.attached_probes()["mood"].manifold
+    first = session.probe_hashes()["mood"]
+
+    hidden = int(session.model_info["hidden_dim"])
+    direction = torch.zeros(hidden)
+    direction[0] = 1.0
+    session.registry.put_profile(
+        "mood", Profile({layer: direction for layer in range(len(session.layers))}),
+    )
+
+    after = session._monitor.attached_probes()["mood"].manifold
+    assert after is not before
+    layer = next(iter(after.layers))
+    basis = after.layers[layer].basis.reshape(-1).float()
+    expected = session._fold_profile_probe("mood", {layer: direction}).layers[layer]
+    assert torch.allclose(basis, expected.basis.reshape(-1).float(), atol=1e-6)
+    assert session.probe_hashes()["mood"] != first
