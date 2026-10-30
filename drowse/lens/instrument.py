@@ -26,7 +26,6 @@ import hashlib
 import logging
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import AbstractContextManager
 from typing import Any, Literal, Protocol, cast, overload
 
 import torch
@@ -62,16 +61,13 @@ from drowse.lens.jlens import (
     token_readout_stats_from_probabilities,
     transport_rows,
 )
+from drowse.base.exclusive import ExclusiveGuard
 from drowse.model.layers import LayerSelector
 from drowse.lens.lifecycle import LensFitRequest, LensFitter, LiveConfig
 from drowse.lens.runtime import CaptureHidden, LensRuntime, select_rows
 from drowse.readout.protocol import LatestSlices
 
 _log = logging.getLogger(__name__)
-
-#: ``exclusive(message, phase_msg=...)``: the session's model-exclusive guard.
-ExclusiveGuard = Callable[..., AbstractContextManager[Any]]
-
 
 class ProfileStore(Protocol):
     """The profile-registry surface the lens writes ``jlens/`` directions

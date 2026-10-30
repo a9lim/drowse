@@ -14,11 +14,11 @@ move every in-memory consumer onto a fresh fit.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from drowse.base.exclusive import ExclusiveGuard
 from drowse.base.paths import manifold_dir, tensor_filename
 from drowse.events import EventBus, ManifoldExtracted
 from drowse.fit.corpus import CorpusGenerator, split_composite_source
@@ -126,7 +126,7 @@ class Extraction:
         events: EventBus,
         corpus: CorpusGenerator,
         *,
-        exclusive: Callable[..., AbstractContextManager[Any]],
+        exclusive: ExclusiveGuard,
         assert_unsteered: Callable[[], None],
         adopt: Callable[[Any, "Manifold"], None],
         evict: Callable[..., None],

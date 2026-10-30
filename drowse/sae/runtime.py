@@ -30,12 +30,12 @@ import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence, Sized
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import torch
 
+from drowse.base.exclusive import ExclusiveGuard
 from drowse.errors import SaeFeatureError, SaeNotLoadedError
 from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.sae import neuronpedia
@@ -73,8 +73,6 @@ class SaeModelHandle(Protocol):
     def model_info(self) -> Mapping[str, Any]: ...
 
 
-#: ``exclusive(busy_msg, *, phase_msg=None)`` — the exclusive-GPU section.
-ExclusiveSection = Callable[..., AbstractContextManager[Any]]
 #: Called under the state lock with the residency already swapped.
 SwapCallback = Callable[[], None]
 #: Called under the state lock with newly cached ``{str(id): entry}`` rows.
@@ -121,7 +119,7 @@ class SaeRuntime:
         self,
         handle: SaeModelHandle,
         *,
-        exclusive: ExclusiveSection,
+        exclusive: ExclusiveGuard,
         assert_unsteered: Callable[[], None],
     ) -> None:
         self._handle = handle
