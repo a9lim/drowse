@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -36,6 +37,8 @@ __all__ = [
     "TinySessionFactory",
     "baseline_corpus",
     "drowse_home",
+    "forward_logits",
+    "register_vectors",
 ]
 
 
@@ -62,6 +65,42 @@ def baseline_corpus(response: str) -> list[str]:
     from drowse.fit.capture import _load_baseline_prompts
 
     return [response] * len(_load_baseline_prompts())
+
+
+def register_vectors(session: Any, *names: str) -> dict[str, Any]:
+    """Register a fixed random unit direction per layer under each name.
+
+    Directions are seeded by the name, so the same name gives the same vector
+    in every session.  Returns ``{name: Profile}``.
+    """
+    import torch
+
+    from drowse.geometry.profile import Profile
+
+    hidden = int(session.model_info["hidden_dim"])
+    profiles: dict[str, Any] = {}
+    for name in names:
+        generator = torch.Generator().manual_seed(zlib.crc32(name.encode("utf-8")))
+        tensors = {}
+        for layer in range(len(session.layers)):
+            direction = torch.randn(hidden, generator=generator)
+            tensors[layer] = direction / direction.norm()
+        profiles[name] = Profile(tensors)
+        session.steer(name, profiles[name])
+    return profiles
+
+
+def forward_logits(session: Any, text: str = "probe text") -> Any:
+    """Last-position logits of one raw forward through the session's model.
+
+    The forward runs whatever steering hooks are currently attached, so it
+    shows whether an open ``session.steering(...)`` scope is acting.
+    """
+    import torch
+
+    ids = session.tokenizer(text, return_tensors="pt")["input_ids"]
+    with torch.inference_mode():
+        return session.model(input_ids=ids).logits[0, -1].clone()
 
 
 @dataclass(frozen=True)
