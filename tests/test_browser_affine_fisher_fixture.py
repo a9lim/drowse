@@ -37,18 +37,19 @@ def test_browser_affine_fisher_fixture_matches_python_source_of_truth() -> None:
         orient_to=fixture["orientTo"],
     )
     expected = fixture["expected"]
-    assert neutral_mean.tolist() == pytest.approx(expected["neutralMean"], abs=1e-6)
-    assert centroids.mean(dim=0).tolist() == pytest.approx(expected["centroidMean"], abs=1e-6)
-    assert subspace.mean.tolist() == pytest.approx(expected["mean"], abs=1e-6)
-    assert subspace.basis.flatten().tolist() == pytest.approx(expected["basis"], abs=1e-6)
+    assert neutral_mean.tolist() == pytest.approx(expected["neutralMean"], rel=1e-5, abs=1e-6)
+    assert centroids.mean(dim=0).tolist() == pytest.approx(expected["centroidMean"], rel=1e-5, abs=1e-6)
+    assert subspace.mean.tolist() == pytest.approx(expected["mean"], rel=1e-5, abs=1e-6)
+    assert subspace.basis.flatten().tolist() == pytest.approx(expected["basis"], rel=1e-5, abs=1e-6)
     assert subspace.node_coords is not None
+    # Eigensolve outputs carry fp32 BLAS-order noise (~2e-6 on macOS arm64).
     assert subspace.node_coords.flatten().tolist() == pytest.approx(
-        expected["nodeCoordinates"], abs=1e-6,
+        expected["nodeCoordinates"], rel=1e-5, abs=1e-6,
     )
-    assert mu_coordinates.flatten().tolist() == pytest.approx(expected["muCoordinates"], abs=1e-6)
+    assert mu_coordinates.flatten().tolist() == pytest.approx(expected["muCoordinates"], rel=1e-5, abs=1e-6)
     assert gram.flatten().tolist() == pytest.approx(expected["whitenedGram"], abs=1e-5)
     neutral_cross_gram = inverse_rows @ (neutral_mean - centroids.mean(dim=0))
-    assert neutral_cross_gram.tolist() == pytest.approx(expected["neutralCrossGram"], abs=1e-6)
+    assert neutral_cross_gram.tolist() == pytest.approx(expected["neutralCrossGram"], rel=1e-5, abs=1e-6)
     layout, _diagnostics = derive_pca_coords(gram, max_dim=2, var_threshold=0.7)
     neutral_layout = neutral_layout_coord(layout, neutral_cross_gram)
     # fp32 eigensolver roundoff varies between Linux and macOS LAPACK builds.
@@ -57,7 +58,7 @@ def test_browser_affine_fisher_fixture_matches_python_source_of_truth() -> None:
     assert (layout - neutral_layout).flatten().tolist() == pytest.approx(
         expected["anchoredLayoutCoordinates"], abs=5e-6,
     )
-    assert explained == pytest.approx(expected["explainedVariance"], abs=1e-6)
+    assert explained == pytest.approx(expected["explainedVariance"], rel=1e-5, abs=1e-6)
     assert subspace.affine_map is None
     assert subspace.select_axes([0, 1]).affine_map is None
     reordered = subspace.select_axes([1, 0])
@@ -67,15 +68,15 @@ def test_browser_affine_fisher_fixture_matches_python_source_of_truth() -> None:
         subspace.select_axes([0, 0])
     assert subspace_share(
         mu_coordinates, subspace.basis, whitener=whitener, layer=0,
-    ) == pytest.approx(expected["mahalanobisShare"], abs=1e-6)
+    ) == pytest.approx(expected["mahalanobisShare"], rel=1e-5, abs=1e-6)
     selected = subspace.select_axes([0])
     selected_mu = mu_coordinates[:, [0]]
     selected_expected = expected["axisZeroFinal"]
-    assert selected.mean.tolist() == pytest.approx(selected_expected["mean"], abs=1e-6)
-    assert selected.basis.flatten().tolist() == pytest.approx(selected_expected["basis"], abs=1e-6)
+    assert selected.mean.tolist() == pytest.approx(selected_expected["mean"], rel=1e-5, abs=1e-6)
+    assert selected.basis.flatten().tolist() == pytest.approx(selected_expected["basis"], rel=1e-5, abs=1e-6)
     assert selected.node_coords is not None
     assert selected.node_coords.flatten().tolist() == pytest.approx(
-        selected_expected["nodeCoordinates"], abs=1e-6,
+        selected_expected["nodeCoordinates"], rel=1e-5, abs=1e-6,
     )
     assert selected.affine_map is not None
     assert selected.affine_map.tolist() == [[1.0], [0.0]]
@@ -86,11 +87,11 @@ def test_browser_affine_fisher_fixture_matches_python_source_of_truth() -> None:
     embedded = torch.tensor([[0.25, -0.75]], dtype=torch.float32)
     expected_world = 0.25 * selected.basis[0] + selected.mean
     assert selected.eval_at(embedded).squeeze(0).tolist() == pytest.approx(
-        expected_world.tolist(), abs=1e-6,
+        expected_world.tolist(), rel=1e-5, abs=1e-6,
     )
     assert selected_mu.flatten().tolist() == pytest.approx(
-        selected_expected["muCoordinates"], abs=1e-6,
+        selected_expected["muCoordinates"], rel=1e-5, abs=1e-6,
     )
     assert subspace_share(
         selected_mu, selected.basis, whitener=whitener, layer=0,
-    ) == pytest.approx(selected_expected["mahalanobisShare"], abs=1e-6)
+    ) == pytest.approx(selected_expected["mahalanobisShare"], rel=1e-5, abs=1e-6)

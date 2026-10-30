@@ -470,20 +470,6 @@ def validate_manifold_sidecar_payload(
     data: Any, *, location: str = "manifold sidecar",
 ) -> dict[str, Any]:
     """Validate every field of the exact current fitted-sidecar contract."""
-    from drowse.io.brand_migration import LEGACY_NAMES, migrate_legacy_record
-
-    legacy_brand = isinstance(data, dict) and any(
-        f"{name}_version" in data for name in LEGACY_NAMES
-    )
-    data = migrate_legacy_record(data)
-    if (
-        legacy_brand
-        and set(data) == MANIFOLD_SIDECAR_FIELDS - {"context_binding_sha256"}
-        and data["fit_mode"] == "baked"
-    ):
-        # Original baked artifacts cannot be refitted. An absent context-binding
-        # proof means unknown, never a verified context binding.
-        data["context_binding_sha256"] = None
     if not isinstance(data, dict) or set(data) != MANIFOLD_SIDECAR_FIELDS:
         raise ManifoldFormatError(f"{location} does not match the current exact schema")
     validate_manifold_format_version(data["format_version"], location=location)
@@ -1020,13 +1006,7 @@ def fitted_sidecar_is_current(path: Path) -> bool:
         return True
     if isinstance(value, bool) or not isinstance(value, int):
         return True
-    if value != MANIFOLD_FORMAT_VERSION:
-        return False
-    from drowse.io.brand_migration import migrate_legacy_record
-
-    payload = migrate_legacy_record(payload)
-    legacy_v10_fields = MANIFOLD_SIDECAR_FIELDS - {"context_binding_sha256"}
-    return set(payload) != legacy_v10_fields
+    return value == MANIFOLD_FORMAT_VERSION
 
 
 def load_manifold_sidecar_data(path: Path) -> dict[str, Any]:

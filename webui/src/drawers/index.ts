@@ -41,7 +41,6 @@ import FeedbackDrawer from "./FeedbackDrawer.svelte";
 import LoadConversationDrawer from "./LoadConversationDrawer.svelte";
 import LocalRuntimeDrawer from "@runtime-local-drawer";
 import ManifoldBuilderDrawer from "./ManifoldBuilderDrawer.svelte";
-import SurfaceGeometryDrawer from "./SurfaceGeometryDrawer.svelte";
 import ManifoldMergeDrawer from "./ManifoldMergeDrawer.svelte";
 import ManifoldPacksDrawer from "./ManifoldPacksDrawer.svelte";
 import NodeCompareDrawer from "./NodeCompareDrawer.svelte";
@@ -106,11 +105,6 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     component: AppearanceDrawer,
     narrow: true,
     launcher: { group: "session", label: "Appearance…", keywords: "theme background wallpaper image pixel dither" },
-  },
-  surface_geometry: {
-    component: SurfaceGeometryDrawer,
-    narrow: true,
-    launcher: { group: "analysis", label: "Inspect surface geometry…", keywords: "topology manifold Klein bottle projective plane sphere torus" },
   },
   // ----------------------------------------------- palette-launched ----
   manifold_builder: {

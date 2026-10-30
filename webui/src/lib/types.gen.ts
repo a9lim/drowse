@@ -797,16 +797,6 @@ export interface SteeringValidationResponse {
   error: string | null;
 }
 
-export interface SurfaceEvidence {
-  candidate: string | null;
-  reason: string;
-  betti_mod2?: [number, number, number] | null;
-  betti_mod3?: [number, number, number] | null;
-  scale_interval?: [number, number] | null;
-  relative_persistence?: number;
-  sample_count?: number;
-}
-
 export interface TemplateContextJSON {
   turns: TemplateTurnJSON[];
   assistant: string;

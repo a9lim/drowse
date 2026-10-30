@@ -14,15 +14,13 @@ artifact lazily on scope entry.
 from __future__ import annotations
 
 import logging
-import threading
 from pathlib import Path
-from typing import Annotated, Any, Callable, Literal, cast
+from typing import Any, Callable, Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import ConfigDict, Field, FiniteFloat
+from pydantic import ConfigDict, Field
 
 from drowse.core.manifold import domain_from_spec
-from drowse.core.surface_topology import SurfaceEvidence
 from drowse.core.session import DrowseSession
 from drowse.io.hf_manifolds import (
     HFError as ManifoldHFError,
@@ -85,12 +83,6 @@ class DomainSpec(NativeRequest):
     type: Literal["box", "sphere", "klein", "projective"]
     axes: list[BoxAxisSpec] | None = None
     dim: int | None = None
-
-
-class SurfaceInspectionRequest(NativeRequest):
-    points: list[Annotated[list[FiniteFloat], Field(min_length=2, max_length=1024)]] = Field(
-        min_length=32, max_length=384,
-    )
 
 
 class NodeSpec(NativeRequest):
@@ -545,22 +537,6 @@ def register_manifold_routes(app: FastAPI) -> None:
     """Mount the ``/drowse/v1/manifolds/*`` tree onto ``app``."""
 
     session: DrowseSession = app.state.session
-    surface_lock = threading.Lock()
-
-    @app.post("/drowse/v1/manifolds/surface-evidence")
-    def inspect_surface(req: SurfaceInspectionRequest) -> SurfaceEvidence:
-        from drowse.core.surface_topology import detect_surface
-
-        if not surface_lock.acquire(blocking=False):
-            raise HTTPException(409, "Surface inspection is already running. Try again when it finishes.")
-        try:
-            return detect_surface(req.points)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except ImportError as exc:
-            raise HTTPException(503, "Install drowse[topology] in your local Python environment to inspect surfaces.") from exc
-        finally:
-            surface_lock.release()
 
     @app.get("/drowse/v1/manifolds")
     def list_manifolds() -> ManifoldListResponse:

@@ -248,9 +248,6 @@ def load_profile(path: str | pathlib.Path) -> tuple[dict[int, torch.Tensor], dic
         tensor_bytes = path.read_bytes()
         with open(meta_path) as f:
             metadata = json.load(f)
-    from drowse.io.brand_migration import migrate_legacy_record
-
-    metadata = migrate_legacy_record(metadata)
     tensor_digest = hashlib.sha256(tensor_bytes).hexdigest()
     tensors = load_safetensors(tensor_bytes)
 

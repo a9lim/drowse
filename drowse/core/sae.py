@@ -389,7 +389,7 @@ def list_sae_releases(model_id: str) -> list[dict[str, Any]]:
         if rows:
             return rows
         raise SaeBackendImportError(
-            "SAE release discovery requires `sae_lens`; reinstall drowse"
+            "SAE release discovery requires `sae_lens`: pip install 'drowse.ai[sae]'"
         ) from exc
     loader = getattr(sae_lens, "get_pretrained_saes_directory", None)
     if loader is None:
@@ -555,13 +555,13 @@ def load_sae_backend(
     except ImportError as e:
         raise SaeBackendImportError(
             f"requested SAE release '{release}' but `sae_lens` is not "
-            f"installed. Reinstall drowse to restore its core dependencies."
+            f"installed: pip install 'drowse.ai[sae]'."
         ) from e
     if sae_lens is None:
         # Tests (and some environments) may None-shadow the module.
         raise SaeBackendImportError(
             f"requested SAE release '{release}' but `sae_lens` is not "
-            f"installed. Reinstall drowse to restore its core dependencies."
+            f"installed: pip install 'drowse.ai[sae]'."
         )
 
     registry_loader = getattr(sae_lens, "get_pretrained_saes_directory", None)

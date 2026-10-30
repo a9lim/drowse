@@ -76,12 +76,10 @@ VARIANT_SUFFIX_RE = re.compile(
 
 def drowse_home() -> Path:
     """Return the root ~/.drowse/ directory. Honors $DROWSE_HOME override."""
-    override = os.environ.get("DROWSE_HOME") or os.environ.get("POLYTHETIC_HOME") or os.environ.get("SAKLAS_HOME")
+    override = os.environ.get("DROWSE_HOME")
     if override:
         return Path(override)
-    from drowse.io.brand_migration import migrate_legacy_home
-
-    return migrate_legacy_home(Path.home())
+    return Path.home() / ".drowse"
 
 
 def models_dir() -> Path:

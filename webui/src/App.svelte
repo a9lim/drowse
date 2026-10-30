@@ -313,7 +313,6 @@
       load_conversation: "Saved chats",
       local_runtime: "Model settings",
       manifold_builder: "Create a concept or scale",
-      surface_geometry: "Surface geometry",
       manifold_merge: "Combine response controls",
       manifold_pack: "Downloaded response controls",
       manifolds: "Add manifold",

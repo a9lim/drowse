@@ -15,7 +15,6 @@ export const INTERFACE_CATALOGUE = {
   subspace: exposed("drowse_list_manifolds", "drowse_get_manifold", "drowse_edit_steer_rack", "drowse_attach_probe"),
   manifolds: exposed("drowse_list_manifolds", "drowse_get_manifold", "drowse_edit_steer_rack", "drowse_attach_probe"),
   manifold_builder: exposed("drowse_extract_profile", "drowse_create_manifold", "drowse_discover_manifold", "drowse_generate_manifold", "drowse_fit_manifold", "drowse_read_form", "drowse_edit_form"),
-  surface_geometry: exposed("drowse_inspect_surface"),
   manifold_merge: exposed("drowse_merge_manifolds"),
   manifold_pack: exposed("drowse_list_manifolds", "drowse_search_manifolds", "drowse_install_manifold", "drowse_list_manifold_packs", "drowse_delete_manifold_pack", "drowse_import_manifold_pack", "drowse_export_manifold_pack"),
   save_conversation: exposed("drowse_save_chat", "drowse_update_chat", "drowse_read_form", "drowse_edit_form"),
@@ -94,7 +93,7 @@ export const RUNTIME_SERVICE_CATALOGUE = {
     list: exposed("drowse_read_workspace"), attach: exposed("drowse_attach_probe"), detach: exposed("drowse_detach_probe"), geometry: exposed("drowse_probe_geometry"),
   },
   manifolds: {
-    inspectSurface: exposed("drowse_inspect_surface"), list: exposed("drowse_list_manifolds"), get: exposed("drowse_get_manifold"),
+    list: exposed("drowse_list_manifolds"), get: exposed("drowse_get_manifold"),
     create: exposed("drowse_create_manifold"), createDiscover: exposed("drowse_discover_manifold"), createFromTemplate: exposed("drowse_template_manifold"),
     delete: exposed("drowse_delete_manifold"), search: exposed("drowse_search_manifolds"), install: exposed("drowse_install_manifold"),
     merge: exposed("drowse_merge_manifolds"), fit: exposed("drowse_fit_manifold"), generate: exposed("drowse_generate_manifold"),

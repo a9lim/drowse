@@ -266,9 +266,6 @@ class Transcript:
             raise TranscriptFormatError(
                 f"transcript root must be a mapping, got {type(data).__name__}"
             )
-        from drowse.io.brand_migration import migrate_legacy_record
-
-        data = migrate_legacy_record(data)
         version = data.get("drowse_transcript")
         if version != DROWSE_TRANSCRIPT_VERSION:
             raise TranscriptFormatError(

@@ -1673,9 +1673,6 @@ class LoomTree:
         events: EventBus | None = None,
         conflict_check: ConflictChecker | None = None,
     ) -> "LoomTree":
-        from drowse.io.brand_migration import migrate_legacy_record
-
-        data = migrate_legacy_record(data)
         _require_fields(
             data, _TREE_FIELDS, "loom tree", optional=frozenset({"token_sidecar"})
         )
@@ -1852,7 +1849,6 @@ class LoomTree:
         sidecar. ``max_bytes`` overrides both limits for trusted large exports.
         """
         from pathlib import Path
-        from drowse.io.brand_migration import migrate_legacy_record
 
         if max_bytes is not None and (
             type(max_bytes) is not int or max_bytes <= 0
@@ -1865,7 +1861,6 @@ class LoomTree:
             )
         if not isinstance(data, dict):
             raise LoomTreeError("loom tree file must contain an object")
-        data = migrate_legacy_record(data)
         _require_fields(
             data, _TREE_FIELDS, "loom tree", optional=frozenset({"token_sidecar"})
         )

@@ -795,8 +795,11 @@ class TestPrefixCacheEligibility:
             def __init__(self) -> None:
                 self.crops: list[int] = []
 
-            def crop(self, length: int) -> None:
-                self.crops.append(length)
+            def get_seq_length(self) -> int:
+                return 4
+
+            def crop(self, tokens_to_remove: int) -> None:
+                self.crops.append(tokens_to_remove)
 
         s = self._session()
         cache = _Cache()
@@ -866,7 +869,7 @@ class TestPrefixCacheEligibility:
         assert seen["past_key_values"] is cache
         assert seen["cache_position_offset"] == 2
         assert seen["use_static_cache"] is True
-        assert cache.crops == [2]
+        assert cache.crops == [-2]
 
     def test_cache_prefix_can_build_static_cache_entry(
         self, monkeypatch: pytest.MonkeyPatch,

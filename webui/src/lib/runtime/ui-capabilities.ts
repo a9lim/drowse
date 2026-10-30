@@ -13,7 +13,6 @@ const DRAWER_REQUIREMENTS: Record<
   subspace: [],
   manifolds: [],
   manifold_builder: ["fitting", "manifold_artifacts"],
-  surface_geometry: [],
   manifold_merge: ["manifold_artifacts"],
   manifold_pack: ["manifold_artifacts"],
   save_conversation: [],

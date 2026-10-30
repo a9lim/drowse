@@ -206,9 +206,6 @@ def _validate_zip_infos(infos: list[zipfile.ZipInfo]) -> dict[str, zipfile.ZipIn
 def _validate_pack_manifest(
     data: dict[str, Any], infos: dict[str, zipfile.ZipInfo],
 ) -> tuple[str, tuple[str, str], str | None, tuple[str, str] | None, dict[str, Any]]:
-    from drowse.io.brand_migration import migrate_legacy_record
-
-    data = migrate_legacy_record(data)
     expected = {
         "format_version", "kind", "producer", "primary", "template",
         "source", "files",
@@ -1669,7 +1666,7 @@ def install_drowse_archive(
     source_archive = Path(archive_path).expanduser()
     if not source_archive.is_file():
         raise FileNotFoundError(f"Drowse archive not found: {source_archive}")
-    if source_archive.suffix.lower() not in {".drowse", ".polythetic", ".saklaspack"}:
+    if source_archive.suffix.lower() not in {".drowse"}:
         raise DrowseArchiveError("archive path must end in .drowse")
     _report(on_progress, f"Validating {source_archive.name}...")
     root = drowse_home()

@@ -56,7 +56,7 @@ def test_loom_import_rejects_invalid_size_overrides(tmp_path: Path, limit: objec
         loom.LoomTree.load(tmp_path / "not-opened.json", max_bytes=cast(int, limit))
 
 
-@pytest.mark.parametrize("compressed", [b"invalid gzip", gzip.compress(b"{}")[:-5]])
+@pytest.mark.parametrize("compressed", [b"invalid gzip", gzip.compress(b"{}", mtime=0)[:-5]])
 def test_loom_import_reports_corrupt_token_sidecars(tmp_path: Path, compressed: bytes) -> None:
     path = tmp_path / "tree.json"
     payload = loom.LoomTree().to_dict()

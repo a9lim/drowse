@@ -243,40 +243,6 @@ def test_search_manifolds_empty_query_omits_search(monkeypatch: pytest.MonkeyPat
     assert api.list_models_calls[0]["filter"] == ["drowse-manifold"]
 
 
-def test_search_manifolds_falls_back_to_tags_kwarg(monkeypatch: pytest.MonkeyPatch):
-    """Older huggingface_hub: ``filter=`` raises TypeError → retry with ``tags=``."""
-    api = _FakeApi(
-        models=[_FakeModel("a/m", tags=["drowse-manifold"], desc="d")],
-        list_models_raises_on_filter=True,
-    )
-    monkeypatch.setattr(hfm, "_hf_api", lambda: api)
-    rows = hfm.search_manifolds("q")
-    assert len(rows) == 1
-    # Two calls: the filter= attempt (raised) and the tags= retry.
-    assert len(api.list_models_calls) == 6
-    assert "filter" not in api.list_models_calls[1]
-    assert api.list_models_calls[1]["tags"] == ["drowse-manifold"]
-
-
-def test_search_preserves_legacy_repositories_without_duplicates(monkeypatch: pytest.MonkeyPatch) -> None:
-    models = [
-        _FakeModel("a/current", tags=["drowse-manifold"], desc="current"),
-        _FakeModel("a/shared", tags=["drowse-manifold", "saklas-manifold"], desc="shared"),
-        _FakeModel("a/original", tags=["saklas-manifold"], desc="original"),
-        _FakeModel("a/intermediate", tags=["polythetic-manifold"], desc="intermediate"),
-    ]
-
-    class TaggedApi:
-        def list_models(self, **kwargs: Any) -> list[_FakeModel]:
-            assert kwargs["search"] == "a/"
-            return [model for model in models if kwargs["filter"][0] in model.tags]
-
-    monkeypatch.setattr(hfm, "_hf_api", TaggedApi)
-    rows = hfm.search_manifolds("a/")
-    assert {row["name"] for row in rows} == {"current", "shared", "original", "intermediate"}
-    assert len(rows) == 4
-
-
 def test_search_manifolds_enriches_row_when_fields_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):

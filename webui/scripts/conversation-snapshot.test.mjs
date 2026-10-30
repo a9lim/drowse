@@ -124,10 +124,8 @@ try {
 
   const pythonSnapshot = structuredClone(snapshot);
   pythonSnapshot.tree = JSON.parse(readFileSync(new URL(
-    "../../tests/fixtures/saklas_v5_3/legacy_tree.json", import.meta.url,
+    "../../tests/fixtures/loom_tree_v2.json", import.meta.url,
   ), "utf8"));
-  pythonSnapshot.tree.drowse_version = pythonSnapshot.tree.saklas_version;
-  delete pythonSnapshot.tree.saklas_version;
   pythonSnapshot.tree.model_id = pythonSnapshot.model_id;
   assert.equal(pythonSnapshot.tree.session_id, null);
   assert.equal(isConversationSnapshot(pythonSnapshot, Object.keys(samplingState)), true);

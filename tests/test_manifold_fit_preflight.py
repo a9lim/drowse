@@ -331,22 +331,6 @@ def test_old_format_sidecar_reads_as_a_cache_miss_not_an_error(
     assert mf.tensor_models() == []
 
 
-@pytest.mark.parametrize("brand", ["drowse", "saklas", "polythetic"])
-def test_pre_context_binding_v10_sidecar_reads_as_a_cache_miss(
-    fitted: Any, brand: str,
-) -> None:
-    """The exact pre-proof v10 schema is stale even though its version matches."""
-    sidecar_path = fitted.tensor.with_suffix(".json")
-    payload = json.loads(sidecar_path.read_text())
-    payload.pop("context_binding_sha256")
-    payload[f"{brand}_version"] = payload.pop("drowse_version")
-    sidecar_path.write_text(json.dumps(payload))
-
-    mf = ManifoldFolder.load(fitted.folder, verify_manifest=False)
-    assert mf.node_labels == list(_CORPORA)
-    assert mf.tensor_models() == []
-
-
 def test_stale_fit_is_overwritten_by_the_next_fit(
     fitted: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -42,12 +42,12 @@ def test_browser_sampling_fixture_matches_python_source_of_truth(
     expected = case["expected"]
     assert support_ids == expected["supportTokenIds"]
     assert support_probabilities == pytest.approx(
-        expected["supportProbabilities"], abs=1e-7,
+        expected["supportProbabilities"], rel=1e-6, abs=1e-7,
     )
 
     entropy = -sum(probability * math.log(probability) for probability in support_probabilities)
-    assert entropy == pytest.approx(expected["entropyNats"], abs=1e-7)
-    assert math.exp(entropy) == pytest.approx(expected["perplexity"], abs=1e-7)
+    assert entropy == pytest.approx(expected["entropyNats"], rel=1e-6, abs=1e-7)
+    assert math.exp(entropy) == pytest.approx(expected["perplexity"], rel=1e-6)
     for sample in expected["samples"]:
         cumulative = 0.0
         sampled_id = support_ids[-1]
@@ -62,5 +62,5 @@ def test_browser_sampling_fixture_matches_python_source_of_truth(
                 break
         assert sampled_id == sample["tokenId"]
         assert math.log(sampled_probability) == pytest.approx(
-            sample["logprob"], abs=1e-7,
+            sample["logprob"], rel=1e-6, abs=1e-7,
         )

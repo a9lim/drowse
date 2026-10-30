@@ -549,37 +549,16 @@ def push_manifold(
 
 
 def search_manifolds(query: Optional[str]) -> list[dict[str, Any]]:
-    """Search HF for current and legacy manifold-tagged model repos.
+    """Search HF for drowse-manifold-tagged model repos.
 
     Returns row dicts ready for display by the CLI and the webui picker.
     At most ``_HF_SEARCH_CAP`` rows.  ``query`` is a free-text substring; an
     empty / ``None`` query lists tagged repos by recency.
     """
-    from drowse.io.brand_migration import LEGACY_NAMES
-
-    api = _hf_api()
-    results: list[Any] = []
-    seen: set[str] = set()
-    for brand in ("drowse", *LEGACY_NAMES):
-        required_tags = [f"{brand}-manifold"]
-        kwargs: dict[str, Any] = {"filter": required_tags, "limit": _HF_SEARCH_CAP}
-        if query:
-            kwargs["search"] = query
-        try:
-            matches = list(api.list_models(**kwargs))
-        except TypeError:
-            # Older huggingface_hub uses ``tags`` instead of ``filter``.
-            kwargs.pop("filter", None)
-            kwargs["tags"] = required_tags
-            matches = list(api.list_models(**kwargs))
-        for match in matches:
-            if match.id not in seen:
-                seen.add(match.id)
-                results.append(match)
-            if len(results) == _HF_SEARCH_CAP:
-                break
-        if len(results) == _HF_SEARCH_CAP:
-            break
+    kwargs: dict[str, Any] = {"filter": ["drowse-manifold"], "limit": _HF_SEARCH_CAP}
+    if query:
+        kwargs["search"] = query
+    results: list[Any] = list(_hf_api().list_models(**kwargs))[:_HF_SEARCH_CAP]
 
     rows: list[dict[str, Any]] = []
     for r in results[:_HF_SEARCH_CAP]:
@@ -774,7 +753,7 @@ def install_manifold(
 
     _report(on_progress, f"Resolving {target}...")
     p = Path(target)
-    if p.suffix.lower() in {".drowse", ".polythetic", ".saklaspack"}:
+    if p.suffix.lower() in {".drowse"}:
         if not p.is_file():
             raise FileNotFoundError(f"Drowse archive not found: {p}")
         from drowse.io.drowse_archive import install_drowse_archive

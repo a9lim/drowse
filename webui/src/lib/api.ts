@@ -294,9 +294,6 @@ export const apiProbes = {
 /** Steering-manifold endpoints — top-level (not session-scoped), like
  *  packs.  These routes are required by the current dashboard. */
 export const apiManifolds = {
-  inspectSurface(points: number[][]): Promise<import("./types.gen").SurfaceEvidence> {
-    return request(`${MANIFOLDS_BASE}/surface-evidence`, jsonBody({ points }));
-  },
   list(): Promise<ManifoldListResponse> {
     return request(MANIFOLDS_BASE);
   },

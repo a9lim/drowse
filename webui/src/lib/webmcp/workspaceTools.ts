@@ -221,7 +221,6 @@ export function createWorkspaceTools(): AppTool[] {
       if (typeof input.drawer === "string") {
         const availability = drawerAvailability(input.drawer as DrawerName);
         if (!availability.available) throw new ToolError("UNAVAILABLE", availability.reason ?? "This tool is unavailable.");
-        if (input.drawer === "surface_geometry" && context.runtime?.mode !== "http") throw new ToolError("UNAVAILABLE", "Surface geometry inspection is available on the Python server.");
         if (input.drawer === "system_prompt" && effectiveRawMode()) throw new ToolError("UNAVAILABLE", "Raw completion does not use system messages.");
         drawerParams = validateDrawerContext(input.drawer as DrawerName, input.params);
       }

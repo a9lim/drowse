@@ -1080,7 +1080,6 @@ export type DrawerName =
   /** Manifold authoring form — domain step + node editor.  Reached
    *  from the "+ build manifold" button inside ``manifolds``. */
   | "manifold_builder"
-  | "surface_geometry"
   /** Discover-mode node-union merge.  Unions the node corpora of two or
    *  more discover-mode manifolds into a fresh discover folder; restricted
    *  to discover sources by design. Reached from the command palette. */

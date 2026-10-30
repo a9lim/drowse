@@ -23,10 +23,28 @@ Those have materially different shapes and stay local.
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
+import pytest
 import torch
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_drowse_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Point every test (and every module/session fixture) at a scratch home.
+
+    Tests that need their own home still ``monkeypatch.setenv("DROWSE_HOME", ...)``;
+    this only guarantees nothing ever falls through to the user's real home.
+    """
+    previous = os.environ.get("DROWSE_HOME")
+    os.environ["DROWSE_HOME"] = str(tmp_path_factory.mktemp("drowse-home"))
+    yield
+    if previous is None:
+        os.environ.pop("DROWSE_HOME", None)
+    else:
+        os.environ["DROWSE_HOME"] = previous
+
 
 __all__ = [
     "FakeLogitsModel",

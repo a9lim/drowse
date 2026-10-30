@@ -438,7 +438,7 @@ scores = session.score_choices(
 ```
 
 Notebook helpers are available from `drowse.notebook` after installing
-`drowse[notebook]`: `plot_alpha_sweep`, `plot_probe_correlation`,
+`drowse.ai[notebook]`: `plot_alpha_sweep`, `plot_probe_correlation`,
 `plot_layer_norms`, `plot_trait_history`, and `to_dataframe`.
 
 ## Model support

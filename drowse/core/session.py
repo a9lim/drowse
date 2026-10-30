@@ -160,8 +160,6 @@ def _install_la_cache_patch() -> bool:
     if getattr(LinearAttentionLayer, "_drowse_crop_patched", False):
         return False
 
-    _orig_la_crop = LinearAttentionLayer.crop  # documented no-op upstream
-
     def _save_la_snapshot(layer: Any) -> None:
         snap: dict[str, Any] = {}
         if getattr(layer, "is_conv_states_initialized", False):
@@ -170,8 +168,9 @@ def _install_la_cache_patch() -> bool:
             snap["recurrent"] = layer.recurrent_states.detach().clone()
         layer._drowse_la_snapshot = snap or None
 
-    def _la_crop_with_restore(self: Any, max_length: int) -> None:
-        _orig_la_crop(self, max_length)
+    def _la_crop_with_restore(self: Any, tokens_to_remove: int) -> None:
+        # Upstream crop only rolls conv states back when past recording is on
+        # and never restores recurrent state; the prefill snapshot restores both.
         snap = getattr(self, "_drowse_la_snapshot", None)
         if not snap:
             return
@@ -188,9 +187,9 @@ def _install_la_cache_patch() -> bool:
             if "recurrent" in snap and getattr(self, "is_recurrent_states_initialized", False):
                 self.recurrent_states.copy_(snap["recurrent"])
 
-    def _hybrid_crop(self: Any, max_length: int) -> None:
-        DynamicLayer.crop(self, max_length)
-        _la_crop_with_restore(self, max_length)
+    def _hybrid_crop(self: Any, tokens_to_remove: int) -> None:
+        DynamicLayer.crop(self, tokens_to_remove)
+        _la_crop_with_restore(self, tokens_to_remove)
 
     linear_attention_layer: Any = LinearAttentionLayer
     hybrid_attention_layer: Any = LinearAttentionAndFullAttentionLayer
@@ -8965,8 +8964,10 @@ class DrowseSession:
 
         if cached_pkv is not None and self._prefix_cache is not None:
             try:
-                cached_pkv.crop(cache_position_offset)  # pyright: ignore[reportAttributeAccessIssue]  # HF cache object; crop() is present at runtime
-            except (AttributeError, TypeError):
+                extra = cached_pkv.get_seq_length() - cache_position_offset  # pyright: ignore[reportAttributeAccessIssue]
+                if extra > 0:
+                    cached_pkv.crop(-extra)  # pyright: ignore[reportAttributeAccessIssue]  # HF cache: crop(-n) drops the last n tokens
+            except (AttributeError, TypeError, ValueError, RuntimeError):
                 self._invalidate_prefix_cache()
         return generated_ids, elapsed
 

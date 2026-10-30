@@ -462,7 +462,6 @@ export interface RuntimeProbesService {
 }
 
 export interface RuntimeManifoldsService {
-  inspectSurface?(points: number[][]): Promise<import("../types.gen").SurfaceEvidence>;
   list(): Promise<ManifoldListResponse>;
   get(namespace: string, name: string): Promise<ManifoldInfo>;
   create(request: CreateManifoldRequest): Promise<ManifoldInfo & { advisories: string[] }>;
@@ -643,7 +642,6 @@ export const RUNTIME_SERVICE_METHODS = Object.freeze({
     geometry: true,
   }),
   manifolds: Object.freeze({
-    inspectSurface: true,
     list: true,
     get: true,
     create: true,

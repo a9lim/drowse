@@ -868,7 +868,6 @@
       <span class="build-hint">{launcherHint}</span>
     </button>
     {/if}
-    <button type="button" class="build-btn" onclick={() => openDrawer("surface_geometry")}>Inspect surface geometry</button>
 
     {#if familyTotal > 0}
       <div class="search-row">

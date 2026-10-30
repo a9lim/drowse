@@ -462,6 +462,6 @@ class ResultCollector:
         except ImportError as e:
             raise ImportError(
                 "pandas is required for to_dataframe(). "
-                "Install with: pip install 'drowse.ai[research]'"
+                "Install with: pip install pandas"
             ) from e
         return pd.DataFrame(self._rows)
