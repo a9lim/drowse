@@ -24,6 +24,9 @@ from drowse.steering.grammar import SteeringExprError
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
 from tests.support.sessions import TinySessionFactory, forward_logits, register_vectors
+from drowse.steering.composer import SteeringComposer
+from tests.support.composer import SteeringRig
+from drowse.steering.grammar import parse_expr
 
 pytestmark = pytest.mark.usefixtures("isolated_home")
 
@@ -246,7 +249,7 @@ def test_steering_applied_event_carries_entries(session: Any) -> None:
 def test_pole_alias_resolves_to_manifold_term_with_trigger() -> None:
     """A bare pole (``wolf``) resolves through the manifold tier to a
     label-form ``ManifoldTerm`` at that node, keeping its trigger."""
-    from drowse.steering.grammar import ManifoldTerm, parse_expr
+    from drowse.steering.grammar import ManifoldTerm
     from drowse.store import selectors
     from drowse.store.manifold_authoring import create_discover_manifold_folder
 
@@ -405,3 +408,70 @@ class TestScopeExitHygiene:
             # The generation opened its own (role) scope before failing.
             assert len(opened) == 2
             assert TestRoleUnanimity._assistant_label(session, script) == "pirate"
+
+
+# ---------------------------------------------------------------------------
+# Composer probe-gate detection
+# ---------------------------------------------------------------------------
+
+
+def _new_composer() -> SteeringComposer:
+    """A steering composer over an empty registry (no model)."""
+    return SteeringRig().composer
+
+class TestSessionProbeGateDetection:
+    def test_empty_stack_returns_false(self):
+        composer = _new_composer()
+        assert composer.steering_needs_probe_gating() is False
+
+    def test_no_gates_returns_false(self):
+        composer = _new_composer()
+        composer._stack.append({
+            "angry.calm": (0.5, Trigger.BOTH),
+        })
+        assert composer.steering_needs_probe_gating() is False
+
+    def test_after_thinking_no_gate_returns_false(self):
+        # Preset triggers without a gate stay false — ``AFTER_THINKING``
+        # has gate=None.
+        composer = _new_composer()
+        composer._stack.append({
+            "angry.calm": (0.5, Trigger.AFTER_THINKING),
+        })
+        assert composer.steering_needs_probe_gating() is False
+
+    def test_gate_in_first_scope_returns_true(self):
+        composer = _new_composer()
+        gate_trig = Trigger.when("angry.calm", ">", 0.4)
+        composer._stack.append({
+            "calm": (0.5, gate_trig),
+        })
+        assert composer.steering_needs_probe_gating() is True
+
+    def test_gate_in_outer_scope_under_inner(self):
+        composer = _new_composer()
+        # Outer has gate, inner doesn't — flatten = inner-wins, but the
+        # outer scope's "calm" key is still in the head if not shadowed.
+        gate_trig = Trigger.when("angry.calm", ">", 0.4)
+        composer._stack.append({
+            "calm": (0.5, gate_trig),
+        })
+        composer._stack.append({
+            "happy.sad": (0.3, Trigger.BOTH),
+        })
+        assert composer.steering_needs_probe_gating() is True
+
+    def test_inner_overrides_outer_gate(self):
+        # Inner shadows the outer's gated entry under the same key, so
+        # the active stack head has no gate and detection should be
+        # False — important for the "remove gate by re-pushing without
+        # one" pattern.
+        composer = _new_composer()
+        gate_trig = Trigger.when("angry.calm", ">", 0.4)
+        composer._stack.append({
+            "calm": (0.5, gate_trig),
+        })
+        composer._stack.append({
+            "calm": (0.5, Trigger.BOTH),
+        })
+        assert composer.steering_needs_probe_gating() is False

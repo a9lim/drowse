@@ -964,133 +964,94 @@ def test_direct_ablation_construction_round_trips():
     assert term.coeff == 1.0
 
 
-# ------------------------------------------------- manifold-probe gates ---
+# ------------------------------------------------------------- probe gates ---
 #
-# Phase 2 of the manifold-probes feature adds two new ``@when:`` shapes:
-# ``<manifold>:fraction`` for the subspace-fraction channel and
-# ``<manifold>@<label>`` for the label-similarity channel.  The parser
-# stores the full namespaced string verbatim as ``ProbeGate.probe`` so
-# the gate looks up ``TriggerContext.probe_scores`` against the matching
-# key that ``Monitor.flat_scalars`` already emits — no runtime
-# gate changes, only parsing and format round-trip.
+# ``@when:<probe><op><num>``: the full namespaced probe string is stored
+# verbatim as ``ProbeGate.probe``, matching the keys ``Monitor.flat_scalars``
+# (and the lens/SAE instruments) emit.
 
 
 def _gate_of(steering: Steering, key: str):
-    """Extract the (probe, op, threshold) gate triple for ``key``."""
+    """The gate on ``key``'s trigger."""
     val = steering.alphas[key]
-    if isinstance(val, tuple):
-        _, trig = val
-    else:
-        trig = steering.trigger
+    trig = val[1] if isinstance(val, tuple) else steering.trigger
     assert trig.gate is not None
     return trig.gate
 
 
-def test_manifold_fraction_gate_parses():
-    s = parse_expr("0.3 happy.sad @when:circumplex:fraction > 0.5")
-    gate = _gate_of(s, "happy.sad")
-    assert gate.probe == "circumplex:fraction"
-    assert gate.op == ">"
-    assert gate.threshold == 0.5
+# Every probe-gate shape the grammar accepts: (input, probe, op, threshold,
+# canonical form).  Inputs may carry spaces around the operator; the
+# canonical form has none and round-trips byte-for-byte.
+_GATES = [
+    # vector probes: bipolar, monopolar, coordinate axis
+    ("0.3 angry.calm@when:angry.calm>0.4", "angry.calm", ">", 0.4, None),
+    ("0.3 happy.sad @when:angry.calm > 0.4", "angry.calm", ">", 0.4,
+     "0.3 happy.sad@when:angry.calm>0.4"),
+    ("0.5 angry.calm@when:manipulative>0.3", "manipulative", ">", 0.3, None),
+    ("0.5 angry.calm@when:angry.calm<-0.5", "angry.calm", "<", -0.5, None),
+    ("0.5 angry.calm@when:angry.calm<=-0.25", "angry.calm", "<=", -0.25, None),
+    # manifold subspace fraction, every operator
+    ("0.3 happy.sad @when:circumplex:fraction > 0.5", "circumplex:fraction", ">", 0.5,
+     "0.3 happy.sad@when:circumplex:fraction>0.5"),
+    ("0.3 happy.sad@when:circumplex:fraction>=0.25", "circumplex:fraction", ">=", 0.25, None),
+    ("0.3 happy.sad@when:circumplex:fraction<0.25", "circumplex:fraction", "<", 0.25, None),
+    ("0.3 happy.sad@when:circumplex:fraction<=0.25", "circumplex:fraction", "<=", 0.25, None),
+    # label similarity (negated distance: thresholds are naturally negative)
+    ("0.3 happy.sad @when:circumplex@elated > 0.7", "circumplex@elated", ">", 0.7,
+     "0.3 happy.sad@when:circumplex@elated>0.7"),
+    ("0.3 happy.sad@when:circumplex@elated>-0.1", "circumplex@elated", ">", -0.1, None),
+    ("0.3 happy.sad@when:circumplex@elated>=-0.1", "circumplex@elated", ">=", -0.1, None),
+    ("0.3 happy.sad@when:circumplex@elated<-0.5", "circumplex@elated", "<", -0.5, None),
+    ("0.3 happy.sad@when:circumplex@elated<=-0.1", "circumplex@elated", "<=", -0.1, None),
+    # fuzzy channels: tube membership, soft assignment
+    ("0.3 happy.sad@when:circumplex:membership>0.6", "circumplex:membership", ">", 0.6, None),
+    ("0.3 happy.sad@when:circumplex~elated>0.5", "circumplex~elated", ">", 0.5, None),
+]
 
 
-def test_manifold_label_gate_parses():
-    s = parse_expr("0.3 happy.sad @when:circumplex@elated > 0.7")
-    gate = _gate_of(s, "happy.sad")
-    assert gate.probe == "circumplex@elated"
-    assert gate.op == ">"
-    assert gate.threshold == 0.7
+@pytest.mark.parametrize(("text", "probe", "op", "threshold", "canonical"), _GATES)
+def test_probe_gate_shapes_parse_and_round_trip(
+    text: str, probe: str, op: str, threshold: float, canonical: str | None,
+) -> None:
+    from drowse.steering.triggers import ProbeGate
 
-
-@pytest.mark.parametrize("op", [">", ">=", "<", "<="])
-def test_manifold_fraction_gate_all_ops(op: str) -> None:
-    s = parse_expr(f"0.3 happy.sad @when:circumplex:fraction {op} 0.3")
-    gate = _gate_of(s, "happy.sad")
-    assert gate.probe == "circumplex:fraction"
-    assert gate.op == op
-    assert gate.threshold == 0.3
-
-
-@pytest.mark.parametrize("op", [">", ">=", "<", "<="])
-def test_manifold_label_gate_all_ops(op: str) -> None:
-    s = parse_expr(f"0.3 happy.sad @when:circumplex@elated {op} -0.1")
-    gate = _gate_of(s, "happy.sad")
-    assert gate.probe == "circumplex@elated"
-    assert gate.op == op
-    assert gate.threshold == -0.1
-
-
-def test_manifold_label_gate_negative_threshold():
-    # Label-similarity gates use ``-distance`` as the score, so the
-    # natural threshold range is negative — the grammar must accept a
-    # leading ``-`` on the NUM the same way it does for vector gates.
-    s = parse_expr("0.3 happy.sad @when:circumplex@elated < -0.5")
-    gate = _gate_of(s, "happy.sad")
-    assert gate.probe == "circumplex@elated"
-    assert gate.op == "<"
-    assert gate.threshold == -0.5
-
-
-def test_manifold_fraction_gate_round_trips():
-    # Canonical format (no spaces around the op) is what ``format_expr``
-    # emits, and the parser tolerates the spaced form on the way in.
-    canonical = "0.3 happy.sad@when:circumplex:fraction>0.5"
-    s = parse_expr(canonical)
-    assert format_expr(s) == canonical
-    # Round-trip a second time through parse to lock in idempotence.
-    assert format_expr(parse_expr(format_expr(s))) == canonical
-
-
-def test_manifold_label_gate_round_trips():
-    canonical = "0.3 happy.sad@when:circumplex@elated>-0.1"
-    s = parse_expr(canonical)
-    assert format_expr(s) == canonical
-    assert format_expr(parse_expr(format_expr(s))) == canonical
-
-
-@pytest.mark.parametrize("op", [">", ">=", "<", "<="])
-def test_manifold_fraction_gate_round_trips_all_ops(op: str) -> None:
-    canonical = f"0.3 happy.sad@when:circumplex:fraction{op}0.25"
-    s = parse_expr(canonical)
-    assert format_expr(s) == canonical
-
-
-def test_vector_probe_gate_still_parses_unchanged():
-    # Regression: a vector probe gate (no ``:`` or ``@`` after the
-    # probe name) must still parse to the bare canonical concept,
-    # not get accidentally claimed by the manifold-form branch.
-    s = parse_expr("0.3 happy.sad @when:angry.calm > 0.4")
-    gate = _gate_of(s, "happy.sad")
-    assert gate.probe == "angry.calm"
-    assert gate.op == ">"
-    assert gate.threshold == 0.4
-    # And the canonical form still round-trips.
-    canonical = "0.3 happy.sad@when:angry.calm>0.4"
+    steering = parse_expr(text)
+    (key,) = steering.alphas
+    assert _gate_of(steering, key) == ProbeGate(probe=probe, op=op, threshold=threshold)
+    entry = steering.alphas[key]
+    assert isinstance(entry, tuple)
+    assert entry[1].prompt is False  # a gate never fires during prefill
+    canonical = canonical or text
+    assert format_expr(steering) == canonical
     assert format_expr(parse_expr(canonical)) == canonical
+    assert dict(parse_expr(canonical).alphas) == dict(steering.alphas)
 
 
-def test_manifold_fraction_gate_unknown_channel_rejected():
-    # ``:fraction`` is the only fraction-channel slug today; a typo
-    # like ``:frac`` would silently never match a probe score, so the
-    # parser surfaces it as a SteeringExprError instead.
-    with pytest.raises(SteeringExprError) as ei:
-        parse_expr("0.3 happy.sad @when:circumplex:frac > 0.5")
-    msg = str(ei.value).lower()
-    assert "channel" in msg or "fraction" in msg
+@pytest.mark.parametrize(("text", "match"), [
+    ("0.5 angry.calm@when", "when"),
+    ("0.5 angry.calm@when:angry.calm 0.4", None),
+    ("0.5 angry.calm@when:angry.calm>", None),
+    ("0.5 angry.calm@bogus", "when"),
+    ("0.3 happy.sad @when:circumplex:frac > 0.5", "fraction"),
+    ("0.3 happy.sad @when:circumplex:bogus > 0.5", "membership"),
+])
+def test_malformed_probe_gates_are_rejected(text: str, match: str | None) -> None:
+    with pytest.raises(SteeringExprError, match=match):
+        parse_expr(text)
 
 
-def test_manifold_gate_does_not_break_other_trigger_parses():
-    # Multi-term expression with one vector gate, one manifold-fraction
-    # gate, and one manifold-label gate composes without interaction.
+def test_gated_and_ungated_terms_compose_without_interaction():
     text = (
         "0.3 happy.sad@when:angry.calm>0.4 "
         "+ 0.2 calm@when:circumplex:fraction>=0.5 "
-        "+ 0.1 honest@when:circumplex@elated<-0.2"
+        "+ 0.1 honest@when:circumplex@elated<-0.2 + 0.2 warm.clinical"
     )
     s = parse_expr(text)
     assert _gate_of(s, "happy.sad").probe == "angry.calm"
     assert _gate_of(s, "calm").probe == "circumplex:fraction"
     assert _gate_of(s, "honest").probe == "circumplex@elated"
+    # A bare-float entry inherits the steering default (BOTH, no gate).
+    assert isinstance(s.alphas["warm.clinical"], float)
 
 
 # ---------------------------------------------------------------------------

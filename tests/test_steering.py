@@ -2,6 +2,7 @@
 
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
+from drowse.steering.grammar import parse_expr
 
 
 def test_construct():
@@ -14,28 +15,6 @@ def test_construct():
 def test_thinking_field():
     s = Steering(alphas={"foo": 0.1}, thinking=True)
     assert s.thinking is True
-
-
-def test_from_value_string_parses_expr():
-    s = Steering.from_value("0.5 foo")
-    assert isinstance(s, Steering)
-    assert s.alphas == {"foo": 0.5}
-
-
-def test_from_value_none_returns_none():
-    assert Steering.from_value(None) is None
-
-
-def test_from_value_passthrough():
-    s = Steering(alphas={"x": 1.0})
-    assert Steering.from_value(s) is s
-
-
-def test_from_value_rejects_dict_input():
-    import pytest
-    with pytest.raises(TypeError) as ei:
-        Steering.from_value({"foo": 0.5})  # pyright: ignore[reportArgumentType]  # intentional wrong-type test
-    assert "str | Steering | None" in str(ei.value)
 
 
 def test_default_trigger_applies_to_bare_floats():
@@ -157,3 +136,32 @@ def test_entry_readers_are_shape_blind():
     # A manifold term's scalar strength is its ``along`` half — what the flat
     # ``{name: alpha}`` views report.
     assert entry_coeff(manifold) == 0.6
+
+
+# ---------------------------------------------------------------------------
+# Gated terms in Steering
+# ---------------------------------------------------------------------------
+
+
+class TestSteeringIntegration:
+    def test_entries_propagate_gate(self):
+        # ``myprobe.other`` is a synthetic, non-bundled name so the steering
+        # term stays a plain vector (a bundled name like ``angry.calm`` now
+        # routes to a 2-node pca ManifoldTerm).  The gate probe stays
+        # ``angry.calm`` — gate probes are stored verbatim, never resolved,
+        # so the gate-parsing intent is unaffected.
+        s = parse_expr("0.5 myprobe.other@when:angry.calm>0.3")
+        out = s.entries()
+        assert "myprobe.other" in out
+        _alpha, trig = out["myprobe.other"]
+        assert trig.gate is not None
+
+    def test_steering_str_round_trips_gate(self):
+        s = parse_expr("0.3 myprobe.other@when:angry.calm>=0.5")
+        # ``Steering.__str__`` delegates to ``format_expr``.
+        assert str(s) == "0.3 myprobe.other@when:angry.calm>=0.5"
+
+    def test_steering_from_value_accepts_gate_string(self):
+        s = Steering.from_value("0.5 myprobe.other@when:angry.calm>0.4")
+        assert s is not None
+        assert "myprobe.other" in s.alphas
