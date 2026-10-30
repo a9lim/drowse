@@ -74,7 +74,7 @@ class GeometryRun:
     ) -> dict[str, Any]:
         """Full whitened readings for the roster at this forward."""
         del step_id
-        monitor = self._instrument.monitor
+        monitor = self._instrument._monitor
         if not self.bound:
             with self._instrument.state_lock:
                 return monitor.score_single_token(hidden)
@@ -87,7 +87,7 @@ class GeometryRun:
         full scorer a live read uses, so it is bit-identical to a live read at
         that token.  The bound finalize read runs under ``_gen_lock``, which
         every roster mutation also takes (the exclusive section)."""
-        monitor = self._instrument.monitor
+        monitor = self._instrument._monitor
         if not self.bound:
             with self._instrument.state_lock:
                 return monitor.score_aggregate(pooled)
@@ -130,9 +130,9 @@ class GeometryInstrument:
         - ``replay``: the loom-anchored token replay (the producing forward's
           capture; this family supplies the whitened read).
         """
-        #: The unified Monitor (roster + whitened scorers).  Roster
-        #: mutations go through this instrument, under :attr:`state_lock`.
-        self.monitor = monitor
+        # The unified Monitor (roster + whitened scorers).  Roster mutations
+        # go through this instrument, under ``state_lock``.
+        self._monitor = monitor
         self._exclusive = exclusive
         self._resolve_manifold = resolve_manifold
         self._ensure_whitener = ensure_whitener
@@ -207,7 +207,7 @@ class GeometryInstrument:
         with self.state_lock:
             specs = {
                 str(name): {}
-                for name in self.monitor.probe_names
+                for name in self._monitor.probe_names
             }
         run = GeometryRun(
             self,
@@ -257,7 +257,7 @@ class GeometryInstrument:
             # eviction/promotion comes from the exclusive section, which
             # those walks' callers hold).
             with self.state_lock:
-                self.monitor.add_probe(name, manifold, top_n=top_n)
+                self._monitor.add_probe(name, manifold, top_n=top_n)
         return name
 
     def detach(self, name: str) -> None:
@@ -278,7 +278,7 @@ class GeometryInstrument:
             "flight; retry shortly"
         ):
             with self.state_lock:
-                self.monitor.remove_probe(name)
+                self._monitor.remove_probe(name)
 
     def refresh_swapped(self, swaps: Mapping[int, Any]) -> list[str]:
         """Move attached probes off replaced manifold objects.
@@ -290,7 +290,7 @@ class GeometryInstrument:
         evicted).  One state-lock hold, so the un-locked roster readers see
         each remove+add pair atomically.  Returns the touched probe names.
         """
-        monitor = self.monitor
+        monitor = self._monitor
         touched: list[str] = []
         with self.state_lock:
             for name, attached in list(monitor.attached_probes().items()):
@@ -309,14 +309,14 @@ class GeometryInstrument:
         neutral whitener, or ``None`` at close) — a roster-wide mutation,
         so under the geometry-state boundary."""
         with self.state_lock:
-            self.monitor.set_whitener(whitener)
+            self._monitor.set_whitener(whitener)
 
     def clear(self) -> None:
         """Detach every probe and drop the whitener (session close)."""
         with self.state_lock:
-            for name in list(self.monitor.probe_names):
-                self.monitor.remove_probe(name)
-            self.monitor.set_whitener(None)
+            for name in list(self._monitor.probe_names):
+                self._monitor.remove_probe(name)
+            self._monitor.set_whitener(None)
 
     def try_detach(self, name: str) -> bool:
         """Detach ``name`` if this family owns it; ``False`` when it doesn't.
@@ -329,7 +329,7 @@ class GeometryInstrument:
         and cheaply.
         """
         with self.state_lock:
-            if name not in self.monitor.probe_names:
+            if name not in self._monitor.probe_names:
                 return False
         self.detach(name)
         return True
@@ -384,7 +384,7 @@ class GeometryInstrument:
     @property
     def names(self) -> list[str]:
         with self.state_lock:
-            return list(self.monitor.probe_names)
+            return list(self._monitor.probe_names)
 
     def specs(self) -> dict[str, dict[str, Any]]:
         """Attached probe spec snapshots — the geometry analogue of the
@@ -393,7 +393,7 @@ class GeometryInstrument:
         state-lock read — a concurrent detach cannot tear the iteration."""
         with self.state_lock:
             out: dict[str, dict[str, Any]] = {}
-            for name, probe in self.monitor.attached_probes().items():
+            for name, probe in self._monitor.attached_probes().items():
                 out[name] = {
                     "manifold": probe.manifold.name,
                     "top_n": int(probe.top_n),
@@ -408,7 +408,7 @@ class GeometryInstrument:
         and the analytics roster; a raw ``Monitor.manifolds`` comprehension
         tears under a concurrent detach."""
         with self.state_lock:
-            return self.monitor.manifolds
+            return self._monitor.manifolds
 
     # ---------------------------------------------------------------- planning
 
@@ -433,7 +433,7 @@ class GeometryInstrument:
                 f"prepare() returned, got family={prep.family!r}"
             )
         request = prep.request
-        monitor = self.monitor
+        monitor = self._monitor
         # One state-lock hold for the roster reads: the name set and the
         # layer union must come from the same roster (an un-locked
         # ``probe_layers`` iterates a live generator over ``_probes`` and
@@ -528,7 +528,7 @@ class GeometryInstrument:
                 "geometry token-readout takes no layers (the attached "
                 "roster's own fitted layers drive the capture)"
             )
-        monitor = self.monitor
+        monitor = self._monitor
         no_probes = (
             "session.geometry.token_readout: no geometry probes attached — "
             "attach one with session.add_probe(selector) first"
@@ -578,7 +578,7 @@ class GeometryInstrument:
         # immutable after attach (promotion swaps in a NEW object), so a
         # reference fetched here stays valid for the tensor walk below.
         with self.state_lock:
-            manifold = self.monitor.manifolds.get(name)
+            manifold = self._monitor.manifolds.get(name)
         if manifold is None:
             return None
         from drowse.geometry.fold import folded_directions
