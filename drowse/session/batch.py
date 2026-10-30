@@ -18,8 +18,9 @@ from __future__ import annotations
 import itertools
 import time
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, ContextManager, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from transformers import StoppingCriteria, StoppingCriteriaList
@@ -54,7 +55,7 @@ if TYPE_CHECKING:
     from drowse.readout.geometry import GeometryInstrument
     from drowse.readout.types import InstrumentPlan
     from drowse.sae.instrument import SaeInstrument
-    from drowse.session.session import GenState, PreparedCall
+    from drowse.session.session import PreparedCall
     from drowse.steering.hooks import SteeringManager
 
 # Floor on the shared token prefix a serial batch will KV-cache.  Below this
@@ -284,10 +285,11 @@ class FastBatchPath:
         compose_call: Callable[..., ComposedCall],
         prepare_call: Callable[..., "PreparedCall"],
         render: Callable[..., torch.Tensor],
-        transaction: Callable[[], ContextManager[Any]],
-        open_scope: Callable[[Steering], ContextManager[Any]],
+        transaction: Callable[[], AbstractContextManager[Any]],
+        open_scope: Callable[[Steering], AbstractContextManager[Any]],
         snapshot_alphas: Callable[[], dict[str, float]],
-        set_phase: Callable[["GenState"], None],
+        phase_running: Callable[[], None],
+        phase_finalizing: Callable[[], None],
         bind_runs: Callable[
             [ReadRequest, ReadRequest, ReadRequest],
             "tuple[InstrumentPlan, InstrumentPlan, InstrumentPlan]",
@@ -314,7 +316,8 @@ class FastBatchPath:
         self._transaction = transaction
         self._open_scope = open_scope
         self._snapshot_alphas = snapshot_alphas
-        self._set_phase = set_phase
+        self._phase_running = phase_running
+        self._phase_finalizing = phase_finalizing
         self._bind_runs = bind_runs
         self._score_geometry = score_geometry
         self._finalize = finalize
@@ -463,8 +466,6 @@ class FastBatchPath:
         want_readings: bool,
         on_result: Callable[[int, GenerationResult], None] | None,
     ) -> RunSet:
-        from drowse.session.session import GenState
-
         steering_obj = prepared.steering_obj
         gen_config = prepared.gen_config
         with self._transaction() as txn:
@@ -485,7 +486,7 @@ class FastBatchPath:
             self._gen_state.reset()
             self._steering.ctx.reset()
             self._steering.reset_manifold_feet()
-            self._set_phase(GenState.RUNNING)
+            self._phase_running()
             for prompt in prompts:
                 self._events.emit(GenerationStarted(input=prompt, stateless=True))
 
@@ -525,7 +526,7 @@ class FastBatchPath:
                 )
 
             prompt_width = int(input_ids.shape[1])
-            self._set_phase(GenState.FINALIZING)
+            self._phase_finalizing()
             applied_steering = str(steering_obj) if steering_obj is not None else None
             no_aggregates = FamilyAggregates({}, {}, {})
             results: list[GenerationResult] = []

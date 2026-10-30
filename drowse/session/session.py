@@ -1317,7 +1317,10 @@ class DrowseSession:
                 transaction=self._generation_transaction,
                 open_scope=self.steering,
                 snapshot_alphas=self._steering_composer.snapshot_steering_alphas,
-                set_phase=lambda phase: setattr(self, "_gen_phase", phase),
+                phase_running=lambda: setattr(self, "_gen_phase", GenState.RUNNING),
+                phase_finalizing=lambda: setattr(
+                    self, "_gen_phase", GenState.FINALIZING,
+                ),
                 bind_runs=self._bind_instrument_runs,
                 score_geometry=self._score_aggregate_only,
                 finalize=self._finalize_generation,

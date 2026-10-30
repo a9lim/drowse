@@ -15,7 +15,7 @@ from typing import Any, cast
 import pytest
 import torch
 
-from drowse import LoomTree, Recipe, SamplingConfig, derive_seed_schedule
+from drowse import GenState, LoomTree, Recipe, SamplingConfig, derive_seed_schedule
 from drowse.generation.decode import GenerationConfig, GenerationState
 from drowse.generation.results import GenerationResult, RunSet
 from drowse.session.batch import (
@@ -295,7 +295,7 @@ class TestRunnerSweep:
         (user_id,) = tree.children_of[tree.root_id]
         assert tree.nodes[user_id].role == "user"
         assert tree.children_of[user_id] == list(runset.node_ids)
-        assert all(tree.nodes[n].role == "assistant" for n in runset.node_ids)
+        assert all(tree.nodes[str(n)].role == "assistant" for n in runset.node_ids)
         assert isinstance(runset, RunSet)
 
     def test_labelled_stateful_sweep_shares_one_labelled_anchor(self) -> None:
@@ -359,7 +359,8 @@ class TestFastBatchEligibility:
         "return_hidden", "persist_per_layer_scores", "persist_subspace_coords",
     ])
     def test_capture_heavy_sampling_flags_block(self, flag: str) -> None:
-        assert fast_batch_blocked(_prepared(), SamplingConfig(**{flag: True})) is True
+        sampling = replace(SamplingConfig(), **{flag: True})
+        assert fast_batch_blocked(_prepared(), sampling) is True
 
 
 class TestSteeringAlwaysOn:
@@ -562,6 +563,25 @@ class TestFastBatchOnTinySession:
             assert json.dumps(_numbers_blanked(fast.measurements), sort_keys=True) == (
                 json.dumps(_numbers_blanked(one.measurements), sort_keys=True)
             )
+
+    def test_batch_runs_and_finalizes_inside_the_generation_phases(
+        self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session, _script = make_tiny_session.scripted(_reply)
+        phases: list[GenState] = []
+        real = session.model.generate
+
+        def _generate(*args: Any, **kwargs: Any) -> Any:
+            phases.append(session.gen_state)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(session.model, "generate", _generate)
+        session.generate_batch(
+            ["alpha", "beta"], thinking=False,
+            on_result=lambda _idx, _result: phases.append(session.gen_state),
+        )
+        assert phases == [GenState.RUNNING, GenState.FINALIZING, GenState.FINALIZING]
+        assert session.gen_state is GenState.IDLE
 
     def test_return_probe_readings_false_skips_aggregates(
         self, make_tiny_session: TinySessionFactory, monkeypatch: pytest.MonkeyPatch,
