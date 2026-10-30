@@ -143,7 +143,7 @@ def stub_lens_kwargs(stub: Any, *, replay: Any = None) -> dict[str, Any]:
         capture_hidden=_capture_hidden,
         registry=_StubRegistry(stub),
         on_change=lambda _names: None,
-        resolve_profile=lambda selector: stub.ensure_profile_registered(selector),
+        resolve_profile=lambda selector: stub._registry.ensure_profile_registered(selector),
         assert_unsteered=lambda: None,
         replay=unwired_replay if replay is None else replay,
     )

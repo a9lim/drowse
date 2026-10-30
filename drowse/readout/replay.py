@@ -4,7 +4,7 @@ A token replay rebuilds the forward that produced one loom token and hands
 the captured hidden states to a family read.  The workflow itself (the loom
 anchor, the node's render, the recipe steering, the exclusive capture) sits
 above the instruments in the layer order, in
-:class:`drowse.session.replay.TokenReplayer`; each instrument takes it as an
+:class:`drowse.loom.replay.TokenReplayer`; each instrument takes it as an
 explicit :class:`TokenReplay` dependency and supplies only its family read,
 so the three families share one rebuild and differ only in what they read.
 """

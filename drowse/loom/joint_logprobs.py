@@ -32,16 +32,19 @@ that keep only the predictor logits.  Gated, phased, or curved steering and
 penalties depend on the decode step, so those branches replay one forced
 token per forward, with capture bound only when a probe gate reads it.
 
-The route is called lazily when the comparison UI opens; results cache on the
-session keyed by sorted ``(a_id, b_id)`` for the session lifetime. Tree
-mutations that rename or delete the involved
-nodes invalidate the entries (see ``DrowseSession`` cache wiring).
+:class:`JointLogprobReplayer` runs the replays over explicit collaborators
+(the tree, renderer, model, steering scope and manager, and the read plane for
+probe-gated branches).  The route is called lazily when the comparison UI
+opens; results cache on the session keyed by sorted ``(a_id, b_id)`` for the
+session lifetime, and tree edits invalidate the entries.
 """
 
 from __future__ import annotations
 
 import contextlib
 import math
+from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -54,15 +57,19 @@ from drowse.generation.decode import (
     _sampler_candidates,
     build_chat_input,
 )
-from drowse.generation.sampling import SamplingConfig
+from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, SamplingConfig
 from drowse.generation.scoring import shared_prefix_len
 from drowse.loom.diff import per_token_diff
 from drowse.model.chat import logits_keep_kwarg
 from drowse.steering.terms import Steering
 
-if TYPE_CHECKING:  # avoid a hard import cycle at module load
+if TYPE_CHECKING:
+    from drowse.generation.read_plane import ReadPlane
+    from drowse.generation.render import PromptRenderer
     from drowse.loom.recipe import Recipe
-    from drowse.session.session import DrowseSession
+    from drowse.loom.tree import LoomTree
+    from drowse.model.chat import ChatTraits
+    from drowse.steering.hooks import SteeringManager
 
 
 # Truncation budget for the approximate KL.  ~32 covers the practical
@@ -282,7 +289,7 @@ def _compute_rows(
 
 
 # ---------------------------------------------------------------------------
-# IO wrapper — talks to the session, tokenizer, model
+# IO wrapper — talks to the tree, renderer, tokenizer, model
 # ---------------------------------------------------------------------------
 
 
@@ -324,83 +331,6 @@ def _row_token_ids(rows: list[dict[str, Any]] | None) -> tuple[list[int], list[s
 def _sampling_from_recipe(recipe: "Recipe | None") -> SamplingConfig:
     sampling = recipe.sampling if recipe is not None else None
     return sampling if sampling is not None else SamplingConfig()
-
-
-def _branch_inputs(session: "DrowseSession", node_id: str) -> _ReplayBranch:
-    tree = session.tree
-    tokenizer = session.tokenizer
-    node = tree.nodes[node_id]
-    recipe = node.recipe
-    sampling = _sampling_from_recipe(recipe)
-    steering = Steering.from_value(
-        recipe.steering if recipe is not None else None,
-        profile_names=set(session.profiles),
-    )
-
-    stamped_thinking = recipe.thinking if recipe is not None else None
-    if stamped_thinking is not None:
-        thinking = bool(stamped_thinking)
-    elif steering is not None and steering.thinking is not None:
-        thinking = bool(steering.thinking)
-    else:
-        thinking = session.chat_traits.supports_thinking
-
-    system_prompt = (
-        recipe.resolved_system_prompt(session.config.system_prompt)
-        if recipe is not None else session.config.system_prompt
-    )
-    # Rebuild the exact prompt that opened this generated node.  Recipe
-    # presence is the capability boundary; the structural seat may be
-    # either human or model, and scene histories need not alternate.
-    prompt_tensor = session.renderer.prepare_input(
-        None,
-        thinking=thinking,
-        parent_node_id=node.parent_id,
-        user_role=node.role_label if node.role == "user" else None,
-        assistant_role=(
-            node.role_label if node.role == "assistant" else None
-        ),
-        gen_seat=node.role,
-        to_device=False,
-        system_prompt=system_prompt,
-    )
-    prompt_ids = [int(t) for t in prompt_tensor[0].tolist()]
-
-    response_ids, response_texts = _row_token_ids(node.tokens)
-    thinking_ids, _thinking_texts = _row_token_ids(node.thinking_tokens)
-
-    if not response_ids:
-        # A committed (non-streamed) node: recover its tokens from the closed
-        # render of the path through it.
-        messages = tree.messages_for(node_id, with_labels=True)
-        has_labels = any(m.get("label") for m in messages)
-        full_input = build_chat_input(
-            tokenizer,
-            messages,
-            system_prompt=system_prompt,
-            thinking=thinking,
-            add_generation_prompt=False,
-            model_type=session.renderer.model_type if has_labels else None,
-            scene=session.scene_grammar,
-            gen_seat=node.role,
-        )
-        full_ids = [int(t) for t in full_input[0].tolist()]
-        cut = shared_prefix_len(prompt_ids, full_ids)
-        prompt_ids = full_ids[:cut]
-        response_ids = full_ids[cut:]
-        response_texts = _decode_each(tokenizer, response_ids)
-    elif len(response_texts) != len(response_ids) or any(t == "" for t in response_texts):
-        response_texts = _decode_each(tokenizer, response_ids)
-
-    return _ReplayBranch(
-        prompt_ids=prompt_ids,
-        response_ids=response_ids,
-        token_ids=prompt_ids + response_ids,
-        token_strs=_decode_each(tokenizer, prompt_ids) + response_texts,
-        thinking_ids=thinking_ids,
-        sampling=sampling,
-        steering=steering,
-    )
 
 
 def _sampler_pool(
@@ -505,7 +435,7 @@ def _teacher_forced_pools(
 
 
 def _stepwise_pools(
-    session: "DrowseSession",
+    ctx: Any,
     model: Any,
     full: torch.Tensor,
     branch: _ReplayBranch,
@@ -515,7 +445,6 @@ def _stepwise_pools(
     gating_callback: Any,
 ) -> list[tuple[torch.Tensor, torch.Tensor]]:
     """One forced token per forward, driving the per-step trigger context."""
-    ctx = session._steering.ctx
     ctx.reset()
     prompt_len = len(branch.prompt_ids)
     n_thinking = len(branch.thinking_ids)
@@ -556,133 +485,248 @@ def _stepwise_pools(
     return pools
 
 
-def _replay_branch_logprobs(
-    session: "DrowseSession",
-    branch: _ReplayBranch,
-) -> SamplerRows:
-    """Force-replay one branch and return its visible response-row pools.
+class JointLogprobReplayer:
+    """Cross-evaluates two generated loom siblings by force-replaying both.
 
-    Rows are keyed by predictor position in the visible (prompt + response)
-    sequence; prompt and thinking-only rows are never kept.
+    Dependencies:
+
+    - ``tree``: the live loom tree (a callable: the session swaps its tree
+      on restore);
+    - ``model`` / ``tokenizer``: the loaded model;
+    - ``traits``: the chat facts (whether the family can think);
+    - ``renderer``: rebuilds each node's prompt render (and resolves the
+      default system prompt, the scene grammar and the model type);
+    - ``profile_names``: the registered profile names a recipe's steering
+      expression may reference;
+    - ``gen_config``: the session :class:`GenerationConfig` under a recipe's
+      sampling overrides;
+    - ``open_scope``: opens a steering scope for a recipe's expression;
+    - ``steering``: the :class:`SteeringManager` (the per-step trigger
+      context and the static-path predicates);
+    - ``needs_probe_gating``: whether the open steering reads probe gates;
+    - ``reads``: the read plane that binds a gate-only capture for those.
     """
-    if not branch.response_ids:
-        return SamplerRows.empty()
-    if not branch.prompt_ids:
-        raise ValueError("joint-logprob replay requires a non-empty prompt")
 
-    model = session.model
-    device = next(model.parameters()).device
-    forced = branch.thinking_ids + branch.response_ids
-    full = torch.tensor(
-        [branch.prompt_ids + forced], dtype=torch.long, device=device,
-    )
-    config = session._engine.gen_config(branch.sampling)
-    adjust = _LogitAdjust(branch.sampling, len(forced), device)
+    def __init__(
+        self,
+        *,
+        tree: Callable[[], "LoomTree"],
+        model: Any,
+        tokenizer: Any,
+        traits: "ChatTraits",
+        renderer: "PromptRenderer",
+        profile_names: Callable[[], Iterable[str]],
+        gen_config: Callable[[SamplingConfig | None], GenerationConfig],
+        open_scope: Callable[[Steering], AbstractContextManager[Any]],
+        steering: "SteeringManager",
+        needs_probe_gating: Callable[[], bool],
+        reads: "ReadPlane",
+    ) -> None:
+        self._tree = tree
+        self._model = model
+        self._tokenizer = tokenizer
+        self._traits = traits
+        self._renderer = renderer
+        self._profile_names = profile_names
+        self._gen_config = gen_config
+        self._open_scope = open_scope
+        self._steering = steering
+        self._needs_probe_gating = needs_probe_gating
+        self._reads = reads
 
-    steering_cm: Any = contextlib.nullcontext()
-    if branch.steering is not None and branch.steering.alphas:
-        steering_cm = session.steering(branch.steering)
+    def compute(self, a_id: str, b_id: str) -> JointLogprobs:
+        """Run cross-evaluation between two generated sibling nodes.
 
-    with steering_cm, torch.inference_mode():
-        manager = session._steering
-        if adjust.penalties is None and (
-            manager.all_fast_path() or manager.static_steerable()
-        ):
-            pools = _teacher_forced_pools(
-                model, full, len(branch.prompt_ids) + len(branch.thinking_ids) - 1,
-                adjust=adjust, config=config,
-            )
-        elif session._steering_composer.steering_needs_probe_gating():
-            reads = session._read_plane
-            gate_only = reads.resolve_demand(
-                want_hidden=False, live_scores_on=False,
-                has_monitor_probes=False, loom_attached=False,
-                wants_live_token_scores=False, persists_layer_scores=False,
-                persists_probe_row=False, persists_subspace_coords=False,
-                live_lens_active=False, live_sae_active=False,
-                final_probe_aggregate=False, capture_prompt=False,
-            )
-            try:
-                # Inside the try: ``begin`` binds every family's
-                # per-generation run, so a partial-bind failure must still
-                # reach the teardown below.
-                reads.begin(gate_only)
-                pools = _stepwise_pools(
-                    session, model, full, branch,
-                    adjust=adjust, config=config,
-                    gating_callback=reads.gate_score_callback(),
-                )
-            finally:
-                # A bound run must not leak past the request (a stale lens
-                # pin suppresses disk refresh between generations; a stale
-                # SAE binding keeps serving frozen units to idle reads) —
-                # even when the hook detach itself raises.
-                try:
-                    reads.end()
-                finally:
-                    reads.close_runs()
-        else:
-            pools = _stepwise_pools(
-                session, model, full, branch,
-                adjust=adjust, config=config,
-                gating_callback=None,
+        Builds each branch's prompt through the chat template, force-replays
+        its stored response tokens under that node's recipe, and assembles
+        per-aligned-position records.  The caller serializes it against any
+        concurrent generation on the same session (the server holds its
+        session lock, ``app.state.session_lock``, around the call).
+
+        Raises ``KeyError`` when either node id is unknown to the tree.
+        Returns an empty-rows :class:`JointLogprobs` when the branches share
+        no divergent generated tokens (e.g. one node is empty), which is the
+        least-surprising shape for the drawer to render.
+        """
+        tree = self._tree()
+        a_node = tree.nodes[a_id]
+        b_node = tree.nodes[b_id]
+        parent_id = a_node.parent_id if a_node.parent_id == b_node.parent_id else None
+        branch_a = self._branch_inputs(tree, a_id)
+        branch_b = self._branch_inputs(tree, b_id)
+        ids_a = branch_a.token_ids
+        ids_b = branch_b.token_ids
+        prefix_len = shared_prefix_len(ids_a, ids_b)
+
+        # If neither side has any assistant tokens past the prefix, return
+        # an empty result — nothing to align.
+        if prefix_len >= len(ids_a) and prefix_len >= len(ids_b):
+            return JointLogprobs(
+                a_id=a_id, b_id=b_id, parent_id=parent_id,
+                rows=(), n_rank1_changed=0,
             )
 
-    ids = torch.stack([pool_ids for pool_ids, _ in pools]).cpu()
-    logps = torch.stack([pool_logps for _, pool_logps in pools]).cpu()
-    first_visible = len(branch.prompt_ids) - 1
-    return SamplerRows(
-        {first_visible + j: j for j in range(len(pools))}, ids, logps,
-    )
-
-
-def compute_joint_logprobs(
-    session: "DrowseSession",
-    a_id: str,
-    b_id: str,
-) -> JointLogprobs:
-    """Run cross-evaluation between two generated sibling nodes.
-
-    Builds each branch's prompt through the chat template, force-replays
-    its stored response tokens under that node's recipe, and assembles
-    per-aligned-position records.  The caller serializes it against any
-    concurrent generation on the same session (the server holds its session
-    lock, ``app.state.session_lock``, around the call).
-
-    Raises ``KeyError`` when either node id is unknown to the tree.
-    Returns an empty-rows :class:`JointLogprobs` when the branches share
-    no divergent generated tokens (e.g. one node is empty), which is the
-    least-surprising shape for the drawer to render.
-    """
-    tree = session.tree
-    a_node = tree.nodes[a_id]
-    b_node = tree.nodes[b_id]
-    parent_id = a_node.parent_id if a_node.parent_id == b_node.parent_id else None
-    branch_a = _branch_inputs(session, a_id)
-    branch_b = _branch_inputs(session, b_id)
-    ids_a = branch_a.token_ids
-    ids_b = branch_b.token_ids
-    prefix_len = shared_prefix_len(ids_a, ids_b)
-
-    # If neither side has any assistant tokens past the prefix, return
-    # an empty result — nothing to align.
-    if prefix_len >= len(ids_a) and prefix_len >= len(ids_b):
+        rows = _compute_rows(
+            self._replay(branch_a),
+            self._replay(branch_b),
+            ids_a, ids_b, branch_a.token_strs, branch_b.token_strs, prefix_len,
+        )
+        n_changed = sum(1 for r in rows if r.aligned and r.rank_changed)
         return JointLogprobs(
             a_id=a_id, b_id=b_id, parent_id=parent_id,
-            rows=(), n_rank1_changed=0,
+            rows=tuple(rows), n_rank1_changed=n_changed,
         )
 
-    rows = _compute_rows(
-        _replay_branch_logprobs(session, branch_a),
-        _replay_branch_logprobs(session, branch_b),
-        ids_a, ids_b, branch_a.token_strs, branch_b.token_strs, prefix_len,
-    )
-    n_changed = sum(1 for r in rows if r.aligned and r.rank_changed)
-    return JointLogprobs(
-        a_id=a_id, b_id=b_id, parent_id=parent_id,
-        rows=tuple(rows), n_rank1_changed=n_changed,
-    )
+    def _branch_inputs(self, tree: "LoomTree", node_id: str) -> _ReplayBranch:
+        tokenizer = self._tokenizer
+        node = tree.nodes[node_id]
+        recipe = node.recipe
+        sampling = _sampling_from_recipe(recipe)
+        steering = Steering.from_value(
+            recipe.steering if recipe is not None else None,
+            profile_names=set(self._profile_names()),
+        )
 
+        stamped_thinking = recipe.thinking if recipe is not None else None
+        if stamped_thinking is not None:
+            thinking = bool(stamped_thinking)
+        elif steering is not None and steering.thinking is not None:
+            thinking = bool(steering.thinking)
+        else:
+            thinking = self._traits.supports_thinking
+
+        system_prompt = self._renderer.resolve_system_prompt(
+            recipe.system_prompt if recipe is not None else INHERIT_SYSTEM_PROMPT
+        )
+        # Rebuild the exact prompt that opened this generated node.  Recipe
+        # presence is the capability boundary; the structural seat may be
+        # either human or model, and scene histories need not alternate.
+        prompt_tensor = self._renderer.prepare_input(
+            None,
+            thinking=thinking,
+            parent_node_id=node.parent_id,
+            user_role=node.role_label if node.role == "user" else None,
+            assistant_role=(
+                node.role_label if node.role == "assistant" else None
+            ),
+            gen_seat=node.role,
+            to_device=False,
+            system_prompt=system_prompt,
+        )
+        prompt_ids = [int(t) for t in prompt_tensor[0].tolist()]
+
+        response_ids, response_texts = _row_token_ids(node.tokens)
+        thinking_ids, _thinking_texts = _row_token_ids(node.thinking_tokens)
+
+        if not response_ids:
+            # A committed (non-streamed) node: recover its tokens from the closed
+            # render of the path through it.
+            messages = tree.messages_for(node_id, with_labels=True)
+            has_labels = any(m.get("label") for m in messages)
+            full_input = build_chat_input(
+                tokenizer,
+                messages,
+                system_prompt=system_prompt,
+                thinking=thinking,
+                add_generation_prompt=False,
+                model_type=self._renderer.model_type if has_labels else None,
+                scene=self._renderer.scene_grammar,
+                gen_seat=node.role,
+            )
+            full_ids = [int(t) for t in full_input[0].tolist()]
+            cut = shared_prefix_len(prompt_ids, full_ids)
+            prompt_ids = full_ids[:cut]
+            response_ids = full_ids[cut:]
+            response_texts = _decode_each(tokenizer, response_ids)
+        elif len(response_texts) != len(response_ids) or any(t == "" for t in response_texts):
+            response_texts = _decode_each(tokenizer, response_ids)
+
+        return _ReplayBranch(
+            prompt_ids=prompt_ids,
+            response_ids=response_ids,
+            token_ids=prompt_ids + response_ids,
+            token_strs=_decode_each(tokenizer, prompt_ids) + response_texts,
+            thinking_ids=thinking_ids,
+            sampling=sampling,
+            steering=steering,
+        )
+
+    def _replay(self, branch: _ReplayBranch) -> SamplerRows:
+        """Force-replay one branch and return its visible response-row pools.
+
+        Rows are keyed by predictor position in the visible (prompt +
+        response) sequence; prompt and thinking-only rows are never kept.
+        """
+        if not branch.response_ids:
+            return SamplerRows.empty()
+        if not branch.prompt_ids:
+            raise ValueError("joint-logprob replay requires a non-empty prompt")
+
+        model = self._model
+        device = next(model.parameters()).device
+        forced = branch.thinking_ids + branch.response_ids
+        full = torch.tensor(
+            [branch.prompt_ids + forced], dtype=torch.long, device=device,
+        )
+        config = self._gen_config(branch.sampling)
+        adjust = _LogitAdjust(branch.sampling, len(forced), device)
+
+        steering_cm: Any = contextlib.nullcontext()
+        if branch.steering is not None and branch.steering.alphas:
+            steering_cm = self._open_scope(branch.steering)
+
+        with steering_cm, torch.inference_mode():
+            manager = self._steering
+            if adjust.penalties is None and (
+                manager.all_fast_path() or manager.static_steerable()
+            ):
+                pools = _teacher_forced_pools(
+                    model, full,
+                    len(branch.prompt_ids) + len(branch.thinking_ids) - 1,
+                    adjust=adjust, config=config,
+                )
+            elif self._needs_probe_gating():
+                reads = self._reads
+                gate_only = reads.resolve_demand(
+                    want_hidden=False, live_scores_on=False,
+                    has_monitor_probes=False, loom_attached=False,
+                    wants_live_token_scores=False, persists_layer_scores=False,
+                    persists_probe_row=False, persists_subspace_coords=False,
+                    live_lens_active=False, live_sae_active=False,
+                    final_probe_aggregate=False, capture_prompt=False,
+                )
+                try:
+                    # Inside the try: ``begin`` binds every family's
+                    # per-generation run, so a partial-bind failure must
+                    # still reach the teardown below.
+                    reads.begin(gate_only)
+                    pools = _stepwise_pools(
+                        manager.ctx, model, full, branch,
+                        adjust=adjust, config=config,
+                        gating_callback=reads.gate_score_callback(),
+                    )
+                finally:
+                    # A bound run must not leak past the request (a stale
+                    # lens pin suppresses disk refresh between generations;
+                    # a stale SAE binding keeps serving frozen units to idle
+                    # reads) — even when the hook detach itself raises.
+                    try:
+                        reads.end()
+                    finally:
+                        reads.close_runs()
+            else:
+                pools = _stepwise_pools(
+                    manager.ctx, model, full, branch,
+                    adjust=adjust, config=config,
+                    gating_callback=None,
+                )
+
+        ids = torch.stack([pool_ids for pool_ids, _ in pools]).cpu()
+        logps = torch.stack([pool_logps for _, pool_logps in pools]).cpu()
+        first_visible = len(branch.prompt_ids) - 1
+        return SamplerRows(
+            {first_visible + j: j for j in range(len(pools))}, ids, logps,
+        )
 
 # ---------------------------------------------------------------------------
 # Cache helpers — symmetric key so (a, b) and (b, a) dedupe
@@ -736,9 +780,9 @@ def reorient_for_request(
 
 
 __all__ = [
+    "JointLogprobReplayer",
     "JointLogprobRow",
     "JointLogprobs",
     "SamplerRows",
-    "compute_joint_logprobs",
     "reorient_for_request",
 ]

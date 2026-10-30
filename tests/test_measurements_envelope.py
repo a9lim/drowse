@@ -307,8 +307,8 @@ class TestReplayEnvelopes:
     def test_every_family_returns_the_same_envelope_wrapper(self) -> None:
         """``Instrument.token_readout`` is uniform: ``{"measurements": …}``
         from all three families, so the route dispatches without a branch."""
-        from drowse.readout.geometry import GeometryInstrument
         from drowse.lens.instrument import LensInstrument
+        from tests.support.geometry import stub_geometry_instrument
         from tests.support.sae import make_resident, stub_sae_instrument
 
         session = SimpleNamespace(
@@ -317,7 +317,7 @@ class TestReplayEnvelopes:
                 probe_names=["formal.casual"], probe_layers=lambda: {0},
             ),
         )
-        geometry = GeometryInstrument(  # type: ignore[arg-type]
+        geometry = stub_geometry_instrument(
             session, replay=_canned_replay({"formal.casual": _geometry_reading()}),
         )
         lens = LensInstrument(
@@ -370,14 +370,13 @@ class TestRejectedKnobs:
 
     @staticmethod
     def _instrument(family: str) -> Any:
-        from drowse.readout.geometry import GeometryInstrument
-        from tests.support.replay import unwired_replay
+        from tests.support.geometry import stub_geometry_instrument
         from tests.support.sae import stub_sae_instrument
 
         # The knob is refused before any replay work: the replay is unwired.
         session = SimpleNamespace(model_id="test/model")
         if family == "geometry":
-            return GeometryInstrument(session, replay=unwired_replay)  # type: ignore[arg-type]
+            return stub_geometry_instrument(session)
         return stub_sae_instrument(session)
 
     def test_geometry_rejects_top_k(self) -> None:

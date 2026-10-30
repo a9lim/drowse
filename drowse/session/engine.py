@@ -24,7 +24,7 @@ Everything runs inside :meth:`GenerationEngine.transaction`, the single-flight
 guard with an exception-hard teardown.
 
 Capture, per-token reads and the finalize reads go through the
-:class:`~drowse.session.read_plane.ReadPlane` the engine is built with; the
+:class:`~drowse.generation.read_plane.ReadPlane` the engine is built with; the
 prompt-render and loom-node helpers still go through the ``session``.
 """
 
@@ -86,7 +86,7 @@ if TYPE_CHECKING:
     from drowse.readout.capture_buffer import HiddenCapture
     from drowse.readout.planner import ReadDemand
     from drowse.session.authored_capture import AuthoredPromptCapture
-    from drowse.session.read_plane import ReadPlane
+    from drowse.generation.read_plane import ReadPlane
     from drowse.session.session import DrowseSession
     from drowse.steering.hooks import SteeringManager
 

@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import hashlib
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, TYPE_CHECKING
 
 import torch
 
+from drowse.base.exclusive import ExclusiveGuard
 from drowse.readout.replay import TokenReplay
 from drowse.readout.types import (
     GateRef,
@@ -36,7 +37,9 @@ from drowse.readout.types import (
 )
 
 if TYPE_CHECKING:
-    from drowse.session.session import DrowseSession
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.whitener import LayerWhitener
+    from drowse.readout.monitor import Monitor
 
 
 class GeometryRun:
@@ -71,7 +74,7 @@ class GeometryRun:
     ) -> dict[str, Any]:
         """Full whitened readings for the roster at this forward."""
         del step_id
-        monitor = self._instrument._session._monitor
+        monitor = self._instrument._monitor
         if not self.bound:
             with self._instrument.state_lock:
                 return monitor.score_single_token(hidden)
@@ -83,8 +86,8 @@ class GeometryRun:
         """One full-roster read at the pooled last-content slice — the same
         full scorer a live read uses, so it is bit-identical to a live read at
         that token.  The bound finalize read runs under ``_gen_lock``, which
-        every roster mutation also takes (``_model_exclusive``)."""
-        monitor = self._instrument._session._monitor
+        every roster mutation also takes (the exclusive section)."""
+        monitor = self._instrument._monitor
         if not self.bound:
             with self._instrument.state_lock:
                 return monitor.score_aggregate(pooled)
@@ -105,10 +108,34 @@ class GeometryInstrument:
     # reject.  The lens/SAE families carry one because their single strength
     # axis genuinely cannot answer a geometry channel.
 
-    def __init__(self, session: "DrowseSession", *, replay: TokenReplay) -> None:
-        self._session = session
-        # The loom-anchored token replay (the producing forward's capture);
-        # this family supplies the whitened read.
+    def __init__(
+        self,
+        *,
+        monitor: "Monitor",
+        exclusive: ExclusiveGuard,
+        resolve_manifold: Callable[[str], "Manifold"],
+        ensure_whitener: Callable[[], object],
+        replay: TokenReplay,
+    ) -> None:
+        """Dependencies:
+
+        - ``monitor``: the unified :class:`Monitor` this family reads (its
+          roster and whitened scorers);
+        - ``exclusive``: the exclusive-GPU section attach/detach hold;
+        - ``resolve_manifold``: resolves a probe selector to a loaded
+          :class:`Manifold` (a registry profile folded to a ray, a fitted
+          manifold, or a fresh extraction);
+        - ``ensure_whitener``: builds the neutral whitener (attach builds it
+          inside the exclusive section, before the factor build reads it);
+        - ``replay``: the loom-anchored token replay (the producing forward's
+          capture; this family supplies the whitened read).
+        """
+        # The unified Monitor (roster + whitened scorers).  Roster mutations
+        # go through this instrument, under ``state_lock``.
+        self._monitor = monitor
+        self._exclusive = exclusive
+        self._resolve_manifold = resolve_manifold
+        self._ensure_whitener = ensure_whitener
         self._replay = replay
         # The CAA live toggle — whether per-token monitor scoring feeds live
         # consumers.  Owned here (not on the session) so the three families
@@ -116,18 +143,17 @@ class GeometryInstrument:
         self._live = True
         # THE geometry-state boundary — the roster-coherence sibling of the
         # lens/SAE ``state_lock``s.  One reentrant leaf lock serializing
-        # every Monitor roster mutation (attach/detach, the session's
-        # fit-promotion and failed-override eviction walks, the whitener
-        # rebuild) against the coherent read surfaces (``names``/``specs``/
+        # every Monitor roster mutation (attach/detach, the registry's
+        # swap walk, the whitener rebuild) against the coherent read surfaces (``names``/``specs``/
         # ``manifolds``/``probe_hash``, the ``plan``/``bind`` roster reads,
         # and the idle-passthrough run reads) — an un-locked reader
         # iterating ``Monitor._probes`` RuntimeErrors under a concurrent
         # idle detach — the same tear class the lens boundary closes.
-        # A leaf lock: nothing acquires ``_gen_lock``/``_model_exclusive``
-        # while holding it (callers take those first), and it is NEVER
-        # taken on the bound per-token scoring path — mid-generation
-        # mutation is excluded by ``detach``'s reject-during-generation
-        # contract (``_model_exclusive``), not by this lock.
+        # A leaf lock: nothing enters the exclusive section while holding
+        # it (callers take that first), and it is NEVER taken on the bound
+        # per-token scoring path — mid-generation mutation is excluded by
+        # ``detach``'s reject-during-generation contract (the exclusive
+        # section), not by this lock.
         self.state_lock = threading.RLock()
         # The current per-generation run (idle passthrough until bind()).
         self.current_run = GeometryRun(
@@ -156,8 +182,8 @@ class GeometryInstrument:
         """Bind an immutable per-generation run.
 
         The binding carries the probe-name roster only: geometry specs
-        cannot be mutated by any un-locked path (attach/detach hold
-        ``_model_exclusive``), so unlike the SAE family there is no
+        cannot be mutated by any un-locked path (attach/detach hold the
+        exclusive section), so unlike the SAE family there is no
         mid-generation mutation to freeze against, and the full spec walk
         (which touches Monitor internals) stays off the per-generation
         path.
@@ -181,7 +207,7 @@ class GeometryInstrument:
         with self.state_lock:
             specs = {
                 str(name): {}
-                for name in self._session._monitor.probe_names
+                for name in self._monitor.probe_names
             }
         run = GeometryRun(
             self,
@@ -213,26 +239,25 @@ class GeometryInstrument:
         Probe attach loads the manifold onto the model device and builds
         device-resident whitened factors — GPU work that must not run
         concurrently with another model op; held under the exclusive
-        ``_model_exclusive`` section like the other families' attaches.
-        Cache invalidation is the probe roster's job.
+        section like the other families' attaches.  Cache invalidation is
+        the probe roster's job.
         """
-        session = self._session
         name = as_name if as_name is not None else selector
-        with session._model_exclusive(
+        with self._exclusive(
             "add_probe called while another model operation is in "
             "flight; retry shortly"
         ):
             # Manifold reads are Mahalanobis-only. Build the neutral artifact
             # under this same exclusive section so a concurrent generation
             # cannot race it.
-            _ = session.whitener
-            manifold = session._resolve_probe_manifold(selector)
+            self._ensure_whitener()
+            manifold = self._resolve_manifold(selector)
             # Geometry-state boundary: the roster write lands atomically
             # against the un-locked coherent readers (consistency against
-            # eviction/promotion comes from ``_model_exclusive``, which
+            # eviction/promotion comes from the exclusive section, which
             # those walks' callers hold).
             with self.state_lock:
-                session._monitor.add_probe(name, manifold, top_n=top_n)
+                self._monitor.add_probe(name, manifold, top_n=top_n)
         return name
 
     def detach(self, name: str) -> None:
@@ -248,12 +273,12 @@ class GeometryInstrument:
         geometry-state lock so an *idle* coherent reader (``specs``,
         ``plan``, the session-info route) can't tear mid-removal.
         """
-        with self._session._model_exclusive(
+        with self._exclusive(
             "remove_probe called while another model operation is in "
             "flight; retry shortly"
         ):
             with self.state_lock:
-                self._session._monitor.remove_probe(name)
+                self._monitor.remove_probe(name)
 
     def refresh_swapped(self, swaps: Mapping[int, Any]) -> list[str]:
         """Move attached probes off replaced manifold objects.
@@ -265,7 +290,7 @@ class GeometryInstrument:
         evicted).  One state-lock hold, so the un-locked roster readers see
         each remove+add pair atomically.  Returns the touched probe names.
         """
-        monitor = self._session._monitor
+        monitor = self._monitor
         touched: list[str] = []
         with self.state_lock:
             for name, attached in list(monitor.attached_probes().items()):
@@ -279,18 +304,32 @@ class GeometryInstrument:
                 touched.append(name)
         return touched
 
+    def adopt_whitener(self, whitener: "LayerWhitener | None") -> None:
+        """Point the Monitor's read metric at ``whitener`` (a freshly built
+        neutral whitener, or ``None`` at close) — a roster-wide mutation,
+        so under the geometry-state boundary."""
+        with self.state_lock:
+            self._monitor.set_whitener(whitener)
+
+    def clear(self) -> None:
+        """Detach every probe and drop the whitener (session close)."""
+        with self.state_lock:
+            for name in list(self._monitor.probe_names):
+                self._monitor.remove_probe(name)
+            self._monitor.set_whitener(None)
+
     def try_detach(self, name: str) -> bool:
         """Detach ``name`` if this family owns it; ``False`` when it doesn't.
 
         The uniform registry-removal face (``Instrument.try_detach``) the
         session's ``remove_probe`` walks across families.  Membership test
         and removal are one atomic state-lock hold, like the lens/SAE
-        siblings — but the removal itself additionally takes
-        ``_model_exclusive`` (see :meth:`detach`), so the check runs first
+        siblings — but the removal itself additionally takes the
+        exclusive section (see :meth:`detach`), so the check runs first
         and cheaply.
         """
         with self.state_lock:
-            if name not in self._session._monitor.probe_names:
+            if name not in self._monitor.probe_names:
                 return False
         self.detach(name)
         return True
@@ -345,7 +384,7 @@ class GeometryInstrument:
     @property
     def names(self) -> list[str]:
         with self.state_lock:
-            return list(self._session._monitor.probe_names)
+            return list(self._monitor.probe_names)
 
     def specs(self) -> dict[str, dict[str, Any]]:
         """Attached probe spec snapshots — the geometry analogue of the
@@ -354,9 +393,7 @@ class GeometryInstrument:
         state-lock read — a concurrent detach cannot tear the iteration."""
         with self.state_lock:
             out: dict[str, dict[str, Any]] = {}
-            for name, probe in (
-                self._session._monitor.attached_probes().items()
-            ):
+            for name, probe in self._monitor.attached_probes().items():
                 out[name] = {
                     "manifold": probe.manifold.name,
                     "top_n": int(probe.top_n),
@@ -371,7 +408,7 @@ class GeometryInstrument:
         and the analytics roster; a raw ``Monitor.manifolds`` comprehension
         tears under a concurrent detach."""
         with self.state_lock:
-            return self._session._monitor.manifolds
+            return self._monitor.manifolds
 
     # ---------------------------------------------------------------- planning
 
@@ -382,8 +419,8 @@ class GeometryInstrument:
         captured for the roster to read, whether anything reads per step,
         and which gate scalar keys belong to this family.  The session
         planner unions plans across families and picks physical retention.
-        The prep carries the request; roster mutations hold
-        ``_model_exclusive``, so there is no snapshot to consume.
+        The prep carries the request; roster mutations hold the
+        exclusive section, so there is no snapshot to consume.
 
         When probe gates are the family's *sole* per-token consumer and
         the caller disabled final probe readings, demand narrows to the
@@ -396,7 +433,7 @@ class GeometryInstrument:
                 f"prepare() returned, got family={prep.family!r}"
             )
         request = prep.request
-        monitor = self._session._monitor
+        monitor = self._monitor
         # One state-lock hold for the roster reads: the name set and the
         # layer union must come from the same roster (an un-locked
         # ``probe_layers`` iterates a live generator over ``_probes`` and
@@ -491,7 +528,7 @@ class GeometryInstrument:
                 "geometry token-readout takes no layers (the attached "
                 "roster's own fitted layers drive the capture)"
             )
-        monitor = self._session._monitor
+        monitor = self._monitor
         no_probes = (
             "session.geometry.token_readout: no geometry probes attached — "
             "attach one with session.add_probe(selector) first"
@@ -536,13 +573,12 @@ class GeometryInstrument:
         folded baked-direction view for continuity with the pre-coords
         scalar monitor's drift check; a multi-node / curved probe hashes
         the per-layer subspace geometry directly."""
-        session = self._session
         # Fetch under the state lock (the ``manifolds`` comprehension
         # iterates the roster); hash outside it — the manifold object is
         # immutable after attach (promotion swaps in a NEW object), so a
         # reference fetched here stays valid for the tensor walk below.
         with self.state_lock:
-            manifold = session._monitor.manifolds.get(name)
+            manifold = self._monitor.manifolds.get(name)
         if manifold is None:
             return None
         from drowse.geometry.fold import folded_directions

@@ -69,7 +69,7 @@ def test_append_turn_coalesces_and_validates_one_way(tiny_session: Any) -> None:
 def test_restore_announces_after_the_new_tree_is_installed(tiny_session: Any) -> None:
     tiny_session.append_turn(None, "kept", role="user")
     saved = tiny_session.tree.to_dict()
-    tiny_session.clear_history()
+    tiny_session.tree.reset()
     before = tiny_session.tree
     seen: list[tuple[str, bool, int]] = []
 

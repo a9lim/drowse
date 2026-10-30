@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import torch
 
+from drowse.base.exclusive import ExclusiveGuard
 from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT
 from drowse.loom.ops import TokenAnchor, resolve_token_anchor
 from drowse.readout.replay import ReplayedToken, ReplayLayers
@@ -32,9 +33,6 @@ if TYPE_CHECKING:
     from drowse.model.chat import ChatTraits
 
 T = TypeVar("T")
-
-#: ``exclusive(busy_msg, *, phase_msg=...)``: the session's exclusive-GPU guard.
-ExclusiveGuard = Callable[..., AbstractContextManager[Any]]
 
 
 class TokenReplayer:

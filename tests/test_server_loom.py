@@ -109,15 +109,9 @@ class _StubSession:
         self._block_until_stop = False
         self._stop_event = threading.Event()
 
-    def clear_history(self) -> None:
-        self.tree.reset()
-
     def restore_tree(self, data: dict[str, Any]):
         from drowse.session.session import DrowseSession
         return DrowseSession.restore_tree(self, data)  # type: ignore[arg-type]
-
-    def rewind(self) -> None:
-        self.tree.rewind()
 
     def probe_hashes(self) -> dict[str, str]:
         return {}
@@ -294,9 +288,6 @@ class _StubSession:
     def set_cast_member(self, label: Any, **kwargs: Any):
         from drowse.session.session import DrowseSession
         return DrowseSession.set_cast_member(self, label, **kwargs)  # type: ignore[arg-type]
-
-    def remove_cast_member(self, label: Any) -> None:
-        self.tree.remove_cast_member(label)
 
 
 @pytest.fixture
@@ -1498,7 +1489,6 @@ class TestJointLogprobsLock:
         ran the model forwards without the session lock."""
         import asyncio
 
-        import drowse.loom.joint_logprobs as joint_logprobs
         import drowse.server.runtime as runtime
 
         session, client = session_and_client
@@ -1519,7 +1509,7 @@ class TestJointLogprobsLock:
         cast(Any, client.app).state.session_lock = _HeldLock()
         session.joint_logprob_cache = {}
         monkeypatch.setattr(runtime, "SESSION_LOCK_TIMEOUT_SECONDS", 0.01)
-        monkeypatch.setattr(joint_logprobs, "compute_joint_logprobs", _forward)
+        monkeypatch.setattr(session, "joint_logprobs", _forward, raising=False)
         resp = client.post(
             "/drowse/v1/sessions/default/tree/joint-logprobs",
             json={"a_id": a, "b_id": b},

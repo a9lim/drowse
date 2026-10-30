@@ -1,4 +1,4 @@
-"""A real :class:`~drowse.session.read_plane.ReadPlane` over test fakes.
+"""A real :class:`~drowse.generation.read_plane.ReadPlane` over test fakes.
 
 :func:`make_read_plane` builds the read plane with explicit fakes for the
 capture, the Monitor and the three instruments (only the members a test
@@ -55,7 +55,7 @@ def make_read_plane(
 ) -> Any:
     """A ``ReadPlane`` over fakes.  The default geometry instrument routes
     its run's reads to ``monitor`` (as the real idle/bound run does)."""
-    from drowse.session.read_plane import ReadPlane
+    from drowse.generation.read_plane import ReadPlane
 
     monitor = monitor if monitor is not None else SimpleNamespace(probe_names=[])
     if geometry is None:

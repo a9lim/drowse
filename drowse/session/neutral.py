@@ -20,20 +20,17 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
 
 import torch
 
+from drowse.base.exclusive import ExclusiveGuard
 from drowse.errors import ConcurrentExtractionError, DrowseError
 
 if TYPE_CHECKING:
     from drowse.geometry.whitener import LayerWhitener
 
 _log = logging.getLogger(__name__)
-
-ExclusiveSection = Callable[..., AbstractContextManager[None]]
-
 
 class NeutralBaseline:
     """Lazily built neutral means + whitener for one loaded model."""
@@ -45,7 +42,7 @@ class NeutralBaseline:
         tokenizer: Any,
         layers: Any,
         model_id: str,
-        exclusive: ExclusiveSection,
+        exclusive: ExclusiveGuard,
         steered: Callable[[], bool],
     ) -> None:
         self._model = model

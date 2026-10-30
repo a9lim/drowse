@@ -112,12 +112,9 @@ def _stub_session() -> Any:
     # consumes their ``plan()`` demand — a MagicMock plan would poison the
     # capture layer union.  Lens/SAE state (live config, probe registry) lives ON
     # the instruments; tests set ``session._lens_instrument.live`` etc.
-    from drowse.readout.geometry import GeometryInstrument
-    from tests.support.replay import unwired_replay
+    from tests.support.geometry import stub_geometry_instrument
     from tests.support.sae import stub_sae_instrument
-    session._geometry_instrument = GeometryInstrument(
-        session, replay=unwired_replay,
-    )
+    session._geometry_instrument = stub_geometry_instrument(session)
     session._sae_instrument = stub_sae_instrument(session)
     session._lens_instrument.generation_lens = None
     session._lens_instrument.generation_lens_active = False

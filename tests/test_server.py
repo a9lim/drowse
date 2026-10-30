@@ -1126,11 +1126,8 @@ def test_joint_logprobs_lock_timeout_is_a_503_without_model_work(monkeypatch: An
 
     monkeypatch.setattr(runtime, "SESSION_LOCK_TIMEOUT_SECONDS", 0.05)
     computed: list[Any] = []
-    monkeypatch.setattr(
-        "drowse.loom.joint_logprobs.compute_joint_logprobs",
-        lambda *args, **kwargs: computed.append(args),
-    )
     session: Any = _StubSession()
+    session.joint_logprobs = lambda *args, **kwargs: computed.append(args)
     session.joint_logprob_cache = {}
     user_id = session.tree.add_user_turn("hi")
 

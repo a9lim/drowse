@@ -249,7 +249,7 @@ def test_session_set_cast_member_validates_steering():
     # Field-less call authors a bare named label.
     bare = DrowseSession.set_cast_member(_as_session(stub), "narrator")
     assert bare.recipe is None
-    DrowseSession.remove_cast_member(_as_session(stub), "narrator")
+    stub.tree.remove_cast_member("narrator")
     assert "narrator" not in stub.tree.cast
 
 

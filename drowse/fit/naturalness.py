@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 
 import torch
 
@@ -38,9 +38,44 @@ from drowse.geometry.subspace import (
 )
 
 if TYPE_CHECKING:
-    from drowse.session.session import DrowseSession
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.profile import Profile
+    from drowse.generation.sampling import SamplingConfig
     from drowse.steering.grammar import ManifoldTerm
     from drowse.store.manifold_folder import ManifoldFolder
+
+
+class ArtifactSink(Protocol):
+    """Loads fitted manifolds and registers in-memory steering profiles."""
+
+    def ensure_manifold_loaded(self, key: str) -> "Manifold": ...
+
+    def put_profile(self, name: str, tensors: "Profile") -> None: ...
+
+
+class NaturalnessHost(Protocol):
+    """The loaded-model surface :func:`evaluate` drives (a ``DrowseSession``
+    satisfies it): the model, manifold fits, steered generation, and the
+    artifact registry (manifold loads, the linear-chord baseline profile)."""
+
+    @property
+    def model(self) -> Any: ...
+
+    @property
+    def tokenizer(self) -> Any: ...
+
+    @property
+    def device(self) -> torch.device: ...
+
+    @property
+    def registry(self) -> ArtifactSink: ...
+
+    def fit(self, folder: Any) -> "Manifold": ...
+
+    def generate(
+        self, input: Any, *, steering: str | None = ...,
+        sampling: "SamplingConfig | None" = ...,
+    ) -> Any: ...
 
 
 class NaturalnessError(ValueError, DrowseError):
@@ -300,7 +335,7 @@ def _single_manifold_term(steering: str) -> "ManifoldTerm":
 
 
 def _behavior_layout(
-    session: "DrowseSession", folder: "ManifoldFolder",
+    session: NaturalnessHost, folder: "ManifoldFolder",
 ) -> tuple[ManifoldDomain, torch.Tensor]:
     """The chart the behavior manifold is fitted over: ``(domain, node_coords)``.
 
@@ -347,7 +382,7 @@ def _corpus_rows(
 
 
 def evaluate(
-    session: "DrowseSession",
+    session: NaturalnessHost,
     manifold: "str | Path | ManifoldFolder",
     prompt: str,
     steering: str,
@@ -404,7 +439,7 @@ def evaluate(
 
     scores = [_score("manifold", steering, steering)]
     if linear_term is not None:
-        act = session.ensure_manifold_loaded(linear_term.manifold)
+        act = session.registry.ensure_manifold_loaded(linear_term.manifold)
         position = act.resolve_position(linear_term.position)
         start = act.node_coords[0]
         chord = {
@@ -426,6 +461,7 @@ def evaluate(
 
 __all__ = [
     "NaturalnessError",
+    "NaturalnessHost",
     "NaturalnessReport",
     "NaturalnessScore",
     "bhattacharyya_distance",

@@ -13,7 +13,7 @@ without a session or a model:
   per-token step sink scores, the resulting :class:`CaptureMode`, and the
   curved-foot warm-start policy.
 
-The session's read plane (:class:`drowse.session.read_plane.ReadPlane`) binds
+The session's read plane (:class:`drowse.generation.read_plane.ReadPlane`) binds
 the instrument runs, calls :func:`plan_capture`, and applies the plan to its
 :class:`~drowse.readout.capture_buffer.HiddenCapture`.
 

@@ -134,7 +134,7 @@ class LayerWhitener:
         ``neutral_activations`` is ``{layer: [N, D] fp32 tensor}`` (the
         shape produced by :func:`drowse.fit.capture.compute_neutral_activations`).
         ``layer_means`` is ``{layer: [D]}`` — typically the cached means
-        from the same activations (:class:`drowse.session.neutral.NeutralBaseline`).
+        from the same activations (the session's neutral baseline).
 
         Layers present in ``neutral_activations`` but not in
         ``layer_means`` are skipped (centering would be undefined).

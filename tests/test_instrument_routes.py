@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from drowse.readout.geometry import GeometryInstrument
 from drowse.lens.instrument import LensInstrument
 from drowse.lens.jlens import resolve_token_atom
+from tests.support.geometry import stub_geometry_instrument
 from tests.support.lens import stub_lens_kwargs
 from drowse.sae.instrument import SaeInstrument
 from drowse.server.instrument_routes import instrument_families
@@ -110,7 +110,7 @@ def _mock_session() -> Any:
     session.geometry_replay = MagicMock()
     session.lens_replay = MagicMock()
     session.sae_replay = MagicMock()
-    geometry = GeometryInstrument(session, replay=session.geometry_replay)
+    geometry = stub_geometry_instrument(session, replay=session.geometry_replay)
     lens = _FakeLens(session)
     # The SAE lifecycle the routes drive is mocked on the instrument.
     sae = stub_sae_instrument(session, cls=_FakeSae, replay=session.sae_replay)

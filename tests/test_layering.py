@@ -1,11 +1,17 @@
 """The package layer order: no drowse module imports a higher layer.
 
-An AST walk over every module under ``drowse/``.  Every runtime import counts —
-module level and function level alike, since a deferred import is still a
-dependency.  Imports under ``if TYPE_CHECKING:`` are exempt: they never run,
-so they create no dependency, only an annotation.
+An AST walk over every module under ``drowse/``.  Every import counts — module
+level, function level and ``if TYPE_CHECKING:`` alike: a deferred import is
+still a dependency, and a type-only one still couples the lower layer to the
+higher one's shape (type such a parameter against a narrow ``Protocol`` at the
+lower layer instead).
 
 Lower layers come first; a module may import its own layer or any lower one.
+
+A second walk keeps the session's collaborators honest: outside
+``drowse/session/`` no code reaches a session private (``session._x`` /
+``sess._x``, ``<x>.session._x``, ``self._session._x``); collaborators and
+frontends take explicit dependencies or the public API instead.
 """
 from __future__ import annotations
 
@@ -66,29 +72,14 @@ def _layer(module: str) -> int | None:
     return None if best is None else best[0]
 
 
-def _is_type_checking(test: ast.expr) -> bool:
-    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
-        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
-    )
-
-
-def _runtime_imports(
+def _imports(
     path: Path, modules: set[str], root: Path = ROOT,
 ) -> list[tuple[int, str]]:
-    """``(line, imported drowse module)`` for every runtime import in ``path``."""
+    """``(line, imported drowse module)`` for every import in ``path``."""
     me = _module_name(path, root)
     package = me.split(".") if path.name == "__init__.py" else me.split(".")[:-1]
     found: list[tuple[int, str]] = []
-
-    def visit(node: ast.AST) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.If) and _is_type_checking(child.test):
-                for stmt in child.orelse:
-                    visit_stmt(stmt)
-                continue
-            visit_stmt(child)
-
-    def visit_stmt(node: ast.AST) -> None:
+    for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
         if isinstance(node, ast.Import):
             found.extend((node.lineno, alias.name) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -105,14 +96,27 @@ def _runtime_imports(
                     continue
                 submodule = f"{source}.{alias.name}"
                 found.append((node.lineno, submodule if submodule in modules else source))
-        elif isinstance(node, ast.If) and _is_type_checking(node.test):
-            for stmt in node.orelse:
-                visit_stmt(stmt)
-        else:
-            visit(node)
-
-    visit(ast.parse(path.read_text(), filename=str(path)))
+    found.sort()
     return [(line, target) for line, target in found if target.split(".")[0] == "drowse"]
+
+
+def _is_private(attr: str) -> bool:
+    return attr.startswith("_") and not attr.startswith("__")
+
+
+def _session_private_reaches(path: Path) -> list[tuple[int, str]]:
+    """``(line, source)`` for every ``session._x`` / ``sess._x`` /
+    ``<x>.session._x`` / ``self._session._x`` attribute access in ``path``."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+        if not (isinstance(node, ast.Attribute) and _is_private(node.attr)):
+            continue
+        owner = node.value
+        if (isinstance(owner, ast.Name) and owner.id in ("session", "sess")) or (
+            isinstance(owner, ast.Attribute) and owner.attr in ("session", "_session")
+        ):
+            found.append((node.lineno, ast.unparse(node)))
+    return found
 
 
 def _scan() -> tuple[list[str], set[tuple[str, str]], list[str]]:
@@ -127,7 +131,7 @@ def _scan() -> tuple[list[str], set[tuple[str, str]], list[str]]:
         if mine is None:
             unassigned.append(me)
             continue
-        for line, target in _runtime_imports(path, modules):
+        for line, target in _imports(path, modules):
             theirs = _layer(target)
             if theirs is None or theirs <= mine:
                 continue
@@ -161,15 +165,54 @@ def test_allowlist_is_current() -> None:
     ("from drowse.fit.capture import x\n", [(1, "drowse.fit.capture")]),
     ("def f():\n    from drowse.fit import capture\n", [(2, "drowse.fit.capture")]),
     ("import drowse.loom.tree\n", [(1, "drowse.loom.tree")]),
-    ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from drowse.loom import tree\n", []),
+    (
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from drowse.loom import tree\n",
+        [(3, "drowse.loom.tree")],
+    ),
+    (
+        "import typing\nif typing.TYPE_CHECKING:\n    pass\nelse:\n    import drowse.loom.tree\n",
+        [(5, "drowse.loom.tree")],
+    ),
     ("from drowse import __version__\n", []),
 ])
-def test_scanner_reads_runtime_imports(
+def test_scanner_reads_every_import(
     tmp_path: Path, source: str, expected: list[tuple[int, str]],
 ) -> None:
-    """The walk sees module- and function-level imports and skips type-only ones."""
+    """The walk sees module-level, function-level and type-only imports."""
     module = tmp_path / "drowse" / "geometry" / "probe.py"
     module.parent.mkdir(parents=True)
     module.write_text(source)
     modules = {"drowse.fit.capture", "drowse.loom.tree", "drowse.geometry.probe"}
-    assert _runtime_imports(module, modules, tmp_path) == expected
+    assert _imports(module, modules, tmp_path) == expected
+
+
+def test_no_session_private_reaches_outside_the_session_package() -> None:
+    """Collaborators take explicit dependencies; only ``drowse/session/``
+    reads the session's private attributes."""
+    session_pkg = PACKAGE / "session"
+    reaches = [
+        f"{path.relative_to(ROOT)}:{line}: {source}"
+        for path in sorted(PACKAGE.rglob("*.py"))
+        if session_pkg not in path.parents
+        for line, source in _session_private_reaches(path)
+    ]
+    assert not reaches, "session-private reaches:\n" + "\n".join(reaches)
+
+
+@pytest.mark.parametrize(("source", "expected"), [
+    ("session._monitor.add(x)\n", [(1, "session._monitor")]),
+    ("self._session._engine\n", [(1, "self._session._engine")]),
+    ("app.state.session._read_plane\n", [(1, "app.state.session._read_plane")]),
+    ("sess._gen_lock.acquire()\n", [(1, "sess._gen_lock")]),
+    ("# session._monitor\nx = 'session._monitor'\n", []),
+    ("my_session._monitor\n", []),
+    ("self._session.monitor\n", []),
+    ("session.__class__\n", []),
+    ("other._monitor\n", []),
+])
+def test_session_private_scanner(
+    tmp_path: Path, source: str, expected: list[tuple[int, str]],
+) -> None:
+    module = tmp_path / "probe.py"
+    module.write_text(source)
+    assert _session_private_reaches(module) == expected

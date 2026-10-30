@@ -1,4 +1,4 @@
-"""The loom-anchored token replay (:class:`drowse.session.replay.TokenReplayer`).
+"""The loom-anchored token replay (:class:`drowse.loom.replay.TokenReplayer`).
 
 A token replay rebuilds the forward that *produced* a loom token and reads it
 with one instrument family.  The contract every family shares is that the

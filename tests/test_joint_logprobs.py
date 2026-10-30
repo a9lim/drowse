@@ -4,7 +4,7 @@
 Covers the pure-math helpers in isolation — building a real model would
 load weights and a tokenizer, but the inner alignment + lookup is a
 plain tensor + index walk that we can exercise with hand-built
-log-softmax tensors.  The IO wrapper (``compute_joint_logprobs``) is
+log-softmax tensors.  The IO wrapper (``JointLogprobReplayer``) is
 checked via a thin in-memory ``MockSession`` shim so we cover the full
 forward-pass + cache + reorient path without HF weights.
 """
@@ -12,7 +12,7 @@ forward-pass + cache + reorient path without HF weights.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -25,7 +25,6 @@ from drowse.loom.joint_logprobs import (
     JointLogprobs,
     SamplerRows,
     _approx_kl_topk,
-    _branch_inputs,
     _cache_key,
     _compute_rows,
     reorient_for_request,
@@ -39,7 +38,6 @@ from drowse.server.tree_routes import (
 from drowse.steering.triggers import TriggerContext
 from tests.conftest import FakeLogitsModel
 from tests.support.lens import stub_lens_instrument
-from tests.support.replay import unwired_replay
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +297,7 @@ class _MockTokenizer:
 
     Just enough surface area to feed ``build_chat_input``'s base-model
     fallback branch (no ``chat_template`` attribute) plus
-    ``compute_joint_logprobs``'s ``decode([id])`` calls.
+    the replayer's ``decode([id])`` calls.
     """
 
     chat_template = None  # forces the base-model branch in build_chat_input
@@ -403,7 +401,8 @@ class _MockSteering:
 
 
 class _MockSession:
-    """Just enough surface for ``compute_joint_logprobs`` to run.
+    """Just enough surface for a :class:`JointLogprobReplayer` to run
+    (:meth:`replayer` builds one from the mock's current attributes).
 
     Carries REAL instruments and a real read plane over them, so the
     replay's run lifecycle is exercised: ``begin`` here binds all three
@@ -413,9 +412,8 @@ class _MockSession:
     suite)."""
 
     def __init__(self):
-        from types import SimpleNamespace
 
-        from drowse.readout.geometry import GeometryInstrument
+        from tests.support.geometry import stub_geometry_instrument
         from tests.support.read_plane import make_read_plane
         from tests.support.sae import stub_sae_instrument
         from drowse.readout.types import ReadRequest
@@ -441,9 +439,7 @@ class _MockSession:
             },
         )()
         self._engine = SimpleNamespace(gen_config=lambda _sampling: self.config)
-        self._geometry_instrument = GeometryInstrument(  # type: ignore[arg-type]
-            self, replay=unwired_replay,
-        )
+        self._geometry_instrument = stub_geometry_instrument(self)
         self._lens_instrument = stub_lens_instrument(self)
         self._sae_instrument = stub_sae_instrument(self)
 
@@ -463,10 +459,41 @@ class _MockSession:
         self._steering_composer = SimpleNamespace(
             steering_needs_probe_gating=lambda: False,
         )
-        self.renderer = SimpleNamespace(
-            prepare_input=self._prepare_input, model_type=None,
+        self.renderer = self.mock_renderer(self._prepare_input)
+
+    def mock_renderer(self, prepare_input: Any) -> Any:
+        """The renderer surface the replay reads: the prompt render, the
+        model type, the scene grammar and the default system prompt."""
+
+        from drowse.generation.sampling import InheritSystemPrompt
+
+        return SimpleNamespace(
+            prepare_input=prepare_input, model_type=None, scene_grammar=None,
+            resolve_system_prompt=lambda prompt: (
+                self.config.system_prompt
+                if isinstance(prompt, InheritSystemPrompt) else prompt
+            ),
         )
-        self.scene_grammar = None
+
+    def replayer(self) -> Any:
+        """A real replayer over this mock's current collaborators."""
+        from drowse.loom.joint_logprobs import JointLogprobReplayer
+
+        return JointLogprobReplayer(
+            tree=lambda: cast(Any, self.tree),
+            model=self.model,
+            tokenizer=self.tokenizer,
+            traits=self.chat_traits,
+            renderer=self.renderer,
+            profile_names=lambda: self.profiles,
+            gen_config=lambda sampling: self._engine.gen_config(sampling),
+            open_scope=lambda value: self.steering(value),  # type: ignore[attr-defined]
+            steering=cast(Any, self._steering),
+            needs_probe_gating=lambda: (
+                self._steering_composer.steering_needs_probe_gating()
+            ),
+            reads=self._read_plane,
+        )
 
     def _prepare_input(self, _input: Any, **kwargs: Any) -> torch.Tensor:
         node_id = kwargs["parent_node_id"]
@@ -478,7 +505,6 @@ class _MockSession:
 
     def force_stepwise_gated(self, gate: Any = None) -> None:
         """Route replay through the per-step gated path."""
-        from types import SimpleNamespace
 
         self._steering.static = False
         self._steering_composer = SimpleNamespace(
@@ -501,8 +527,6 @@ def test_gated_replay_passes_the_forward_step_to_the_gate_callback():
     zero-arg call TypeErrors under the step-aware contract (sol's observe
     round-2 P1: the rest of this suite never exercises gated steering, so
     the regression was invisible here)."""
-    from drowse.loom.joint_logprobs import compute_joint_logprobs
-
     session: Any = _MockSession()
     steps: list[int] = []
 
@@ -512,7 +536,7 @@ def test_gated_replay_passes_the_forward_step_to_the_gate_callback():
 
     session.force_stepwise_gated(_gate)
 
-    result = compute_joint_logprobs(session, "a1", "a2")
+    result = session.replayer().compute("a1", "a2")
 
     assert result.a_id == "a1"
     assert steps and steps[0] == 0
@@ -527,8 +551,6 @@ def test_gated_replay_passes_the_forward_step_to_the_gate_callback():
 
 @pytest.mark.parametrize("offset", [-1000., 0., 1000.])
 def test_joint_replay_preserves_finite_logit_offsets(offset: float):
-    from drowse.loom.joint_logprobs import compute_joint_logprobs
-
     session: Any = _MockSession()
     vocab = len(session.tokenizer._vocab) + 16
     logits = torch.arange(vocab, dtype=torch.float32) / 4
@@ -536,7 +558,7 @@ def test_joint_replay_preserves_finite_logit_offsets(offset: float):
     session.model = session._model = FakeLogitsModel(
         lambda ids: (logits + offset).expand(1, ids.shape[1], vocab).clone(),
     )
-    result = compute_joint_logprobs(session, "a1", "a2")
+    result = session.replayer().compute("a1", "a2")
     expected = logits.log_softmax(-1)
     for row in result.rows:
         if row.a_text:
@@ -548,11 +570,9 @@ def test_joint_replay_preserves_finite_logit_offsets(offset: float):
     session.assert_runs_closed()
 
 
-def test_compute_joint_logprobs_runs_end_to_end_on_mock():
-    from drowse.loom.joint_logprobs import compute_joint_logprobs
-
+def test_joint_logprobs_runs_end_to_end_on_mock():
     session: Any = _MockSession()
-    result = compute_joint_logprobs(session, "a1", "a2")
+    result = session.replayer().compute("a1", "a2")
     assert result.a_id == "a1"
     assert result.b_id == "a2"
     assert result.parent_id == "u1"
@@ -586,8 +606,6 @@ def test_joint_logprobs_closes_runs_on_replay_failure():
     """A mid-replay model failure must still close every bound run — the
     bind happens inside the replay ``try`` so even a partial-bind failure
     reaches the teardown."""
-    from drowse.loom.joint_logprobs import compute_joint_logprobs
-
     session: Any = _MockSession()
     session.force_stepwise_gated()
 
@@ -597,15 +615,13 @@ def test_joint_logprobs_closes_runs_on_replay_failure():
     session._model = FakeLogitsModel(_boom)
     session.model = session._model
     with pytest.raises(RuntimeError, match="mid-replay"):
-        compute_joint_logprobs(session, "a1", "a2")
+        session.replayer().compute("a1", "a2")
     session.assert_runs_closed()
 
 
 def test_joint_logprobs_closes_runs_when_detach_raises():
     """Teardown is exception-hard: a raising hook detach must not skip run
     closure (a leaked bound run pins a stale lens between generations)."""
-    from drowse.loom.joint_logprobs import compute_joint_logprobs
-
     session: Any = _MockSession()
     session.force_stepwise_gated()
 
@@ -614,15 +630,13 @@ def test_joint_logprobs_closes_runs_when_detach_raises():
 
     session._read_plane.capture.detach = _detach_boom
     with pytest.raises(RuntimeError, match="detach failed"):
-        compute_joint_logprobs(session, "a1", "a2")
+        session.replayer().compute("a1", "a2")
     session.assert_runs_closed()
 
 
-def test_compute_joint_logprobs_to_dict_round_trip():
-    from drowse.loom.joint_logprobs import compute_joint_logprobs
-
+def test_joint_logprobs_to_dict_round_trip():
     session: Any = _MockSession()
-    result = compute_joint_logprobs(session, "a1", "a2")
+    result = session.replayer().compute("a1", "a2")
     payload = result.to_dict()
     assert payload["a_id"] == "a1" and payload["b_id"] == "a2"
     assert payload["parent_id"] == "u1"
@@ -651,8 +665,8 @@ def test_branch_inputs_rebuilds_generated_human_seat_prompt():
         seen.update(kwargs)
         return torch.tensor([[0, 1]], dtype=torch.long)
 
-    session.renderer = SimpleNamespace(prepare_input=prepare_input, model_type=None)
-    branch = _branch_inputs(session, "a1")
+    session.renderer = session.mock_renderer(prepare_input)
+    branch = session.replayer()._branch_inputs(session.tree, "a1")
 
     assert branch.prompt_ids == [0, 1]
     assert branch.response_ids == [2]
@@ -692,16 +706,12 @@ def _long_branch_session(calls: list[int]) -> Any:
 
 def test_teacher_forced_replay_matches_stepwise_replay():
     """The chunked teacher-forced path reproduces the per-step replay."""
-    from drowse.loom.joint_logprobs import compute_joint_logprobs
-
     forced_calls: list[int] = []
-    forced = compute_joint_logprobs(
-        _long_branch_session(forced_calls), "a1", "a2",
-    )
+    forced = _long_branch_session(forced_calls).replayer().compute("a1", "a2")
     step_calls: list[int] = []
     stepwise_session = _long_branch_session(step_calls)
     stepwise_session._steering.static = False
-    stepwise = compute_joint_logprobs(stepwise_session, "a1", "a2")
+    stepwise = stepwise_session.replayer().compute("a1", "a2")
 
     assert forced.rows == stepwise.rows
     assert any(r.lp_a_in_a is not None for r in forced.rows)
@@ -711,14 +721,10 @@ def test_teacher_forced_replay_matches_stepwise_replay():
 
 
 def test_replay_keeps_only_the_sampler_pool_per_row():
-    from drowse.loom.joint_logprobs import (
-        _branch_inputs as branch_inputs,
-        _replay_branch_logprobs,
-    )
-
     session = _long_branch_session([])
-    branch = branch_inputs(session, "a1")
-    rows = _replay_branch_logprobs(session, branch)
+    replayer = session.replayer()
+    branch = replayer._branch_inputs(session.tree, "a1")
+    rows = replayer._replay(branch)
 
     assert rows.ids.shape == (len(branch.response_ids), 6)   # top_k pool, not vocab
     assert rows.ids.device.type == "cpu"

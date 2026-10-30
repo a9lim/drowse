@@ -2,7 +2,7 @@
 
 - :func:`unwired_replay` — the ``replay`` dependency for an instrument a test
   never replays through (it fails loudly if one does).
-- :class:`ReplayRig` — a real :class:`~drowse.session.replay.TokenReplayer`
+- :class:`ReplayRig` — a real :class:`~drowse.loom.replay.TokenReplayer`
   over a toy model and a real loom tree, with the prompt render, the steering
   scopes, the exclusive section and the capture forward recorded.  Instrument
   tests hand ``rig.replay`` to the instrument under test.
@@ -52,7 +52,7 @@ class ReplayRig:
     ) -> None:
         from drowse.loom.tree import LoomTree
         from drowse.model.chat import ChatTraits
-        from drowse.session.replay import TokenReplayer
+        from drowse.loom.replay import TokenReplayer
 
         self.model = frozen_toy(n_layers=n_layers) if model is None else model
         self.tokenizer = CharTokenizer() if tokenizer is None else tokenizer

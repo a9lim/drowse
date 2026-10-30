@@ -40,6 +40,7 @@ from drowse.errors import (
 from drowse.generation.token_callback import TokenSink
 from drowse.model.scene import TurnGrammar
 from drowse.generation.render import PromptRenderer
+from drowse.generation.scoring import ChoiceScorer
 from drowse.session.authored_capture import AuthoredPromptCapture, plan_authored_capture
 from drowse.events import LoomMutated
 from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT, InheritSystemPrompt
@@ -48,7 +49,7 @@ from drowse.loom.recipe import (
     Recipe,
 )
 from drowse.loom.tree import LoomTree
-from drowse.loom.diff import node_diff
+from drowse.loom.joint_logprobs import JointLogprobReplayer, JointLogprobs
 from drowse.loom.ops import (
     append_turn,
     begin_generation_turn,
@@ -60,12 +61,12 @@ from drowse.model.load import load_model
 from drowse.readout.types import InstrumentFamily, ProbeReading
 from drowse.readout.monitor import Monitor
 from drowse.readout.roster import ProbeRoster
-from drowse.session.read_plane import ReadPlane
+from drowse.generation.read_plane import ReadPlane
 from drowse.readout.geometry import GeometryInstrument
 from drowse.lens.instrument import LensInstrument
 from drowse.sae.instrument import SaeInstrument
 from drowse.sae.runtime import SaeRuntime
-from drowse.session.replay import TokenReplayer
+from drowse.loom.replay import TokenReplayer
 from drowse.store.bundled_probes import bootstrap_probe_roster
 from drowse.geometry.profile import Profile
 from drowse.generation.results import (
@@ -354,7 +355,6 @@ class DrowseSession:
             model_id=self.model_id, exclusive=self._model_exclusive,
             steered=lambda: self._steering.plan is not None,
         )
-        self._neutral.on_whitener(self._adopt_whitener)
         # Corpus generation and the extract/fit/bake glue.  Wired before the
         # probe bootstrap below, which fits stale bundled axes through ``fit``;
         # ``dls`` gates every flat fit's straddle-pruning.
@@ -364,15 +364,6 @@ class DrowseSession:
             traits=self._chat, scene=lambda: self.scene_grammar,
             model_type=self._renderer.model_type,
         )
-        self._extraction = Extraction(
-            self, self.events, self._corpus,
-            exclusive=self._model_exclusive,
-            assert_unsteered=self._assert_unsteered_artifact_operation,
-            adopt=self._registry.adopt_fitted,
-            evict=self._registry.evict_artifact,
-            register_profile=self._registry.put_profile,
-            dls=dls,
-        )
         self._steering_composer = SteeringComposer(
             artifacts=self._registry, neutral=self._neutral,
             manager=self._steering, layers=self._layers,
@@ -380,6 +371,21 @@ class DrowseSession:
             lock=self._gen_lock, events=self.events,
             generation_phase=self._mid_generation_phase,
             on_prefill_steering_change=lambda: self._engine.prefix_cache.clear(),
+        )
+        self._extraction = Extraction(
+            self, self.events, self._corpus,
+            exclusive=self._model_exclusive,
+            assert_unsteered=self._steering_composer.assert_unsteered,
+            adopt=self._registry.adopt_fitted,
+            evict=self._registry.evict_artifact,
+            register_profile=self._registry.put_profile,
+            dls=dls,
+        )
+        # Restricted-choice completion scoring (the logit read of a template).
+        self._scorer = ChoiceScorer(
+            model=self._model, tokenizer=self._tokenizer,
+            open_scope=self._steering_composer.open_scope,
+            exclusive=self._model_exclusive,
         )
         # One unified Monitor for every probe shape (flat axes, flat discover
         # fits, curved manifolds), then the three read instruments over it.
@@ -396,8 +402,14 @@ class DrowseSession:
             capture=partial(_capture_all_hidden_states, self._model, self._layers),
         )
         self._geometry_instrument = GeometryInstrument(
-            self, replay=self._token_replay,
+            monitor=self._monitor,
+            exclusive=self._model_exclusive,
+            resolve_manifold=self._resolve_probe_manifold,
+            ensure_whitener=self._neutral.whitener,
+            replay=self._token_replay,
         )
+        # A freshly built whitener re-points the Monitor's read metric.
+        self._neutral.on_whitener(self._geometry_instrument.adopt_whitener)
         # The J-lens family: resident lens, fit lifecycle, probes, live
         # readout and token replay, over explicit dependencies.
         self._lens_instrument = LensInstrument(
@@ -413,8 +425,8 @@ class DrowseSession:
             ),
             registry=self._registry,
             on_change=lambda names: self._roster.changed(names),
-            resolve_profile=self.ensure_profile_registered,
-            assert_unsteered=self._assert_unsteered_artifact_operation,
+            resolve_profile=self._registry.ensure_profile_registered,
+            assert_unsteered=self._steering_composer.assert_unsteered,
             replay=self._token_replay,
         )
         # The SAE family: resident dictionary + Neuronpedia metadata (the
@@ -425,7 +437,7 @@ class DrowseSession:
             SaeRuntime(
                 self,
                 exclusive=self._model_exclusive,
-                assert_unsteered=self._assert_unsteered_artifact_operation,
+                assert_unsteered=self._steering_composer.assert_unsteered,
             ),
             replay=self._token_replay,
             put_direction=self._registry.put_profile,
@@ -463,6 +475,20 @@ class DrowseSession:
             reads=self._read_plane,
             release=self._release_generation,
             default_return_top_k=return_top_k,
+        )
+        # Cross-branch joint logprobs: force-replays two loom siblings.
+        self._joint_logprobs = JointLogprobReplayer(
+            tree=lambda: self.tree,
+            model=self._model,
+            tokenizer=self._tokenizer,
+            traits=self._chat,
+            renderer=self._renderer,
+            profile_names=lambda: self._registry.profiles,
+            gen_config=self._engine.gen_config,
+            open_scope=self._steering_composer.open_scope,
+            steering=self._steering,
+            needs_probe_gating=self._steering_composer.steering_needs_probe_gating,
+            reads=self._read_plane,
         )
         # Fans, batches and sweeps: the multi-row runner over the engine.
         # Built last among the collaborators: the batched ``model.generate``
@@ -717,23 +743,6 @@ class DrowseSession:
         edits."""
         return self._joint_logprob_cache
 
-    def ensure_manifold_loaded(self, key: str) -> Manifold:
-        """The manifold artifact for registry key ``key``, loading it if absent.
-
-        ``key`` is the grammar's ``[ns/]name[:variant]`` registry key.
-        Raises :class:`ManifoldNotRegisteredError` on a miss."""
-        return self._registry.ensure_manifold_loaded(key)
-
-    def ensure_profile_registered(
-        self, name: str, *, role: str = "vector",
-    ) -> dict[int, torch.Tensor]:
-        """Resolve and register a steering direction for ``name``, returning
-        its per-layer tensors.
-
-        Uses the manifold-first resolution chain: in-memory bake, then a fitted
-        2-node ``pca`` manifold."""
-        return self._registry.ensure_profile_registered(name, role=role)
-
     @property
     def gen_state(self) -> GenState:
         """Lifecycle phase of the current generation (``IDLE`` between gens).
@@ -780,12 +789,6 @@ class DrowseSession:
         :class:`ConcurrentExtractionError` when a build is needed while a model
         op, a generation, or a steering scope is active."""
         return self._neutral.whitener()
-
-    def _adopt_whitener(self, whitener: Any) -> None:
-        """Keep the Monitor's read metric in lock-step with a freshly built
-        whitener (a roster mutation, so under the geometry-state boundary)."""
-        with self._geometry_instrument.state_lock:
-            self._monitor.set_whitener(whitener)
 
     def _mid_generation_phase(self) -> str | None:
         """The phase name while a generation is mid-step, else ``None``."""
@@ -936,14 +939,6 @@ class DrowseSession:
         finally:
             self._gen_lock.release()
 
-    def _assert_unsteered_artifact_operation(self) -> None:
-        """Refuse persisted neutral/fit work under active steering hooks."""
-        if self._steering_composer.active:
-            raise ConcurrentExtractionError(
-                "artifact-producing model operations cannot run inside an "
-                "active steering scope; exit session.steering() first"
-            )
-
     def extract(
         self,
         concept: str,
@@ -1053,12 +1048,10 @@ class DrowseSession:
         returns the set with per-candidate ``sum``/``mean`` logprobs and their
         softmax probabilities. ``steering=`` runs the scoring forward under a
         steering expression — the distributional before/after read. See
-        :func:`drowse.generation.scoring.score_choices`.
+        :meth:`drowse.generation.scoring.ChoiceScorer.score_choices`.
         """
-        from drowse.generation.scoring import score_choices as _score_choices
-
-        return _score_choices(
-            self, messages, choices,
+        return self._scorer.score_choices(
+            messages, choices,
             assistant_prefix=assistant_prefix, labels=labels,
             steering=steering, system_prompt=system_prompt,
         )
@@ -1076,15 +1069,14 @@ class DrowseSession:
         selector string (``<name>`` / ``<ns>/<name>``). Returns one
         :class:`~drowse.generation.scoring.ChoiceScores` per context.
         """
-        from drowse.generation.scoring import score_template as _score_template
         from drowse.store.templates import TemplateFolder, resolve_template
 
         tmpl = (
             template if isinstance(template, TemplateFolder)
             else resolve_template(template)
         )
-        return _score_template(
-            self, tmpl, steering=steering, system_prompt=system_prompt,
+        return self._scorer.score_template(
+            tmpl, steering=steering, system_prompt=system_prompt,
         )
 
     @overload
@@ -1201,9 +1193,12 @@ class DrowseSession:
 
     # -- Conversation (loom) --
 
-    def diff_nodes(self, a_id: str, b_id: str) -> Any:
-        """Return a :class:`drowse.loom.diff.NodeDiff` between two nodes."""
-        return node_diff(self.tree, a_id, b_id)
+    def joint_logprobs(self, a_id: str, b_id: str) -> JointLogprobs:
+        """Cross-evaluate two generated loom siblings (uncached); see
+        :meth:`~drowse.loom.joint_logprobs.JointLogprobReplayer.compute`.
+        The caller serializes it against concurrent generation; the server
+        caches results in :attr:`joint_logprob_cache`."""
+        return self._joint_logprobs.compute(a_id, b_id)
 
     def fork_from_token(
         self,
@@ -1289,18 +1284,6 @@ class DrowseSession:
         )
         self.tree.set_cast_member(label, member)
         return member
-
-    def remove_cast_member(self, label: str) -> None:
-        """Drop the cast member under ``label`` (no-op when absent)."""
-        self.tree.remove_cast_member(label)
-
-    def rewind(self) -> None:
-        """Walk the active node back one submission (non-destructive)."""
-        self.tree.rewind()
-
-    def clear_history(self) -> None:
-        """Reset the tree to a fresh root (destructive; refused mid-generation)."""
-        self.tree.reset()
 
     def restore_tree(self, data: dict[str, Any]) -> LoomTree:
         """Atomically replace the live conversation with a validated tree.
@@ -1754,9 +1737,7 @@ class DrowseSession:
         self._sae_instrument.probes.clear()
         self._sae_instrument.live = None
         self._sae_instrument.runtime.close()
-        for name in list(self._monitor.probe_names):
-            self._monitor.remove_probe(name)
-        self._monitor.set_whitener(None)
+        self._geometry_instrument.clear()
 
         # The artifact registry, its derived caches, the neutral baseline.
         self._registry.clear()
