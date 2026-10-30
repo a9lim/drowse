@@ -7,7 +7,6 @@ import pytest
 
 import drowse.loom.tree as loom_module
 from drowse.events import EventBus, LoomMutated
-from drowse.generation.sampling import SamplingConfig
 from drowse.loom.recipe import CastMember, Recipe
 from drowse.loom.tree import LoomTree
 
@@ -101,10 +100,10 @@ def test_shared_loom_operation_transcript_matches_python_source_of_truth(
             tree.set_cast_member(
                 operation["label"],
                 CastMember(
-                    recipe=Recipe(
+                    recipe=Recipe.from_parts(
                         steering=operation["steering"],
                         thinking=operation["thinking"],
-                        sampling=SamplingConfig(seed=operation["seed"]),
+                        seed=operation["seed"],
                     ),
                     notes=operation["notes"],
                 ),

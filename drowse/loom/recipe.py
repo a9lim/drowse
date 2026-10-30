@@ -92,23 +92,65 @@ class Recipe:
     probes: list[str] = field(default_factory=list)
     probe_hashes: dict[str, str] = field(default_factory=dict)
     system_prompt: str | None | InheritSystemPrompt = INHERIT_SYSTEM_PROMPT
+    # Writer shape only.  True for a recipe that records a seed but no
+    # sampling block — a seed-only cast member (the HTTP cast surface takes
+    # steering, thinking and seed, never a sampling block) or a file written
+    # that way.  It persists as ``"sampling": null`` plus the top-level
+    # ``seed``; in memory the seed still lives in ``sampling.seed`` and
+    # composition never reads this flag.  Build one with :meth:`from_parts`.
+    seed_only: bool = False
+
+    def __post_init__(self) -> None:
+        if self.seed_only and (
+            self.sampling is None
+            or self.sampling.seed is None
+            or self.sampling != SamplingConfig(seed=self.sampling.seed)
+        ):
+            raise ValueError(
+                "a seed-only recipe carries SamplingConfig(seed=<int>) and "
+                "no other sampling field"
+            )
+
+    @classmethod
+    def from_parts(
+        cls,
+        *,
+        steering: str | None = None,
+        sampling: SamplingConfig | None = None,
+        thinking: bool | None = None,
+        seed: int | None = None,
+        **rest: Any,
+    ) -> "Recipe":
+        """Build a recipe whose seed may arrive beside the sampling block.
+
+        ``seed`` folds into ``sampling.seed`` (it wins when both are set).  A
+        seed with no sampling block is marked :attr:`seed_only`, so it keeps
+        its ``"sampling": null`` writer shape.  ``rest`` passes through to
+        the constructor (``probes``, ``probe_hashes``, ``system_prompt``).
+        """
+        seed_only = False
+        if seed is not None:
+            seed_only = sampling is None
+            sampling = replace(sampling or SamplingConfig(), seed=seed)
+        return cls(
+            steering=steering, sampling=sampling, thinking=thinking,
+            seed_only=seed_only, **rest,
+        )
 
     def resolved_system_prompt(self, default: str | None) -> str | None:
         return default if isinstance(self.system_prompt, InheritSystemPrompt) else self.system_prompt
 
     def to_dict(self) -> dict[str, Any]:
-        """The persisted shape.
+        """The persisted shape (tree_format 2, transcript v2, the wire).
 
-        The seed rides the top-level ``seed`` key.  A sampling block that
-        carries nothing but the seed serializes as ``"sampling": null`` —
-        the shape a seed-only recipe has always had on disk and on the wire.
+        Any sampling block serializes in full, and the top-level ``seed``
+        mirrors ``sampling.seed``.  Only a :attr:`seed_only` recipe writes
+        ``"sampling": null``.
         """
         seed = _seed_of(self)
         sampling = self.sampling
         sampling_out: dict[str, Any] | None = None
-        if sampling is not None and (
-            seed is None or sampling != SamplingConfig(seed=seed)
-        ):
+        if sampling is not None and not self.seed_only:
             sampling_out = {}
             for f in fields(SamplingConfig):
                 v = getattr(sampling, f.name)
@@ -138,7 +180,8 @@ class Recipe:
         nested sampling block is checked against ``SamplingConfig``'s own
         fields so a bad key raises :class:`LoomTreeError` rather than a bare
         ``TypeError`` out of the constructor.  The top-level ``seed`` folds
-        into ``sampling.seed`` (it wins when both are set).
+        into ``sampling.seed`` (it wins when both are set); a seed with a
+        null sampling block reads back :attr:`seed_only`.
         """
         require_fields(data, _RECIPE_FIELDS, "recipe", optional=frozenset({"system_prompt"}))
         if "system_prompt" in data and data["system_prompt"] is not None and not isinstance(data["system_prompt"], str):
@@ -181,12 +224,11 @@ class Recipe:
                 )
             except TypeError as e:
                 raise LoomTreeError(f"recipe sampling is not constructible: {e}") from e
-        if seed is not None:
-            sampling = replace(sampling or SamplingConfig(), seed=seed)
-        return cls(
+        return cls.from_parts(
             steering=steering,
             sampling=sampling,
             thinking=data["thinking"],
+            seed=seed,
             probes=list(data["probes"]),
             probe_hashes=dict(data["probe_hashes"]),
             system_prompt=data.get("system_prompt", INHERIT_SYSTEM_PROMPT),

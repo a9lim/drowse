@@ -59,9 +59,11 @@ def test_finalized_generation_recipe_keeps_prompt_through_probe_hashing(
     expected = None if raw else "Current default instruction" if isinstance(prompt, InheritSystemPrompt) else prompt
     assert saved_recipe["system_prompt"] == expected
     assert saved_recipe["probe_hashes"] == {"calm": "calm-sha256"}
-    # The seed has one in-memory home and keeps its on-disk shape.
+    # The seed has one in-memory home; a stamped sampling block persists
+    # in full with the top-level seed mirroring it.
     assert saved_recipe["seed"] == 7
-    assert saved_recipe["sampling"] is None
+    assert isinstance(saved_recipe["sampling"], dict)
+    assert saved_recipe["sampling"]["seed"] == 7
     restored = LoomTree.from_dict(tree.to_dict()).get(node_id)
     assert restored.recipe is not None
     assert restored.recipe.resolved_system_prompt("Changed after generation") == expected
@@ -79,11 +81,73 @@ def test_recipe_has_no_separate_seed_field():
     assert not hasattr(Recipe(), "seed")
 
 
-def test_seed_only_sampling_serializes_as_null_sampling_plus_seed():
+def test_seed_carrying_sampling_block_serializes_in_full():
+    """Regression: a block holding only the seed (every fan sibling
+    generated with ``sampling=None``) collapsed to ``"sampling": null``,
+    which the browser runtime refuses to fork and the TS port never writes."""
     data = Recipe(steering="0.25 calm", sampling=SamplingConfig(seed=7)).to_dict()
+    assert isinstance(data["sampling"], dict)
+    assert data["sampling"]["seed"] == 7
+    assert data["seed"] == 7
+    restored = Recipe.from_dict(data)
+    assert restored.sampling == SamplingConfig(seed=7)
+    assert restored.to_dict() == data
+
+
+def test_seed_only_recipe_keeps_the_null_sampling_shape():
+    recipe = Recipe.from_parts(steering="0.25 calm", seed=7)
+    assert recipe.seed_only
+    assert recipe.sampling == SamplingConfig(seed=7)
+    data = recipe.to_dict()
     assert data["sampling"] is None
     assert data["seed"] == 7
-    assert Recipe.from_dict(data).sampling == SamplingConfig(seed=7)
+    restored = Recipe.from_dict(data)
+    assert restored.seed_only
+    assert restored.to_dict() == data
+    # Folding a seed into an existing block is not seed-only.
+    folded = Recipe.from_parts(sampling=SamplingConfig(temperature=0.5), seed=7)
+    assert not folded.seed_only
+    assert folded.sampling == SamplingConfig(temperature=0.5, seed=7)
+
+
+@pytest.mark.parametrize("sampling", [
+    None, SamplingConfig(), SamplingConfig(temperature=0.5, seed=7),
+])
+def test_seed_only_marker_requires_a_bare_seed_block(sampling: SamplingConfig | None):
+    with pytest.raises(ValueError):
+        Recipe(sampling=sampling, seed_only=True)
+
+
+def test_fan_siblings_round_trip_with_their_sampling_blocks():
+    """The serial fan stamps ``SamplingConfig(seed=s)`` on each sibling when
+    the call passed no sampling; each persists a full block with its seed."""
+    tree = LoomTree()
+    parent = tree.add_user_turn("Describe a voyage")
+    session = cast(Any, SimpleNamespace(
+        tree=tree,
+        config=SimpleNamespace(system_prompt=None),
+        _monitor=SimpleNamespace(probe_names=[]),
+        _probe_hash=lambda _name: None,
+    ))
+    schedule = derive_seed_schedule(None, 3)
+    node_ids = []
+    for seed in schedule:
+        node_id = DrowseSession._start_loom_assistant(
+            session, None, stateless=False, raw=False, parent_node_id=parent,
+            sampling=SamplingConfig(seed=seed), steering_obj=None,
+            use_thinking_req=False, system_prompt=INHERIT_SYSTEM_PROMPT,
+        )
+        assert node_id is not None
+        tree.finalize_assistant(node_id, text="A voyage", finish_reason="stop")
+        node_ids.append(node_id)
+    saved = tree.to_dict()
+    rows = {row["id"]: row for row in saved["nodes"]}
+    for node_id, seed in zip(node_ids, schedule):
+        recipe = rows[node_id]["recipe"]
+        assert isinstance(recipe["sampling"], dict)
+        assert recipe["sampling"]["seed"] == seed
+        assert recipe["seed"] == seed
+    assert LoomTree.from_dict(saved).to_dict() == saved
 
 
 def test_full_sampling_round_trips_with_its_seed():

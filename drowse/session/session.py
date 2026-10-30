@@ -7242,17 +7242,16 @@ class DrowseSession:
         if steering:
             from drowse.steering.grammar import parse_expr
             parse_expr(steering)  # raises SteeringExprError on bad syntax
-        if seed is not None:
-            from dataclasses import replace as _replace
-            sampling = _replace(sampling or SamplingConfig(), seed=seed)
         recipe: Recipe | None = None
         if (
             steering is not None
             or sampling is not None
             or thinking is not None
+            or seed is not None
         ):
-            recipe = Recipe(
+            recipe = Recipe.from_parts(
                 steering=steering, sampling=sampling, thinking=thinking,
+                seed=seed,
             )
         member = CastMember(recipe=recipe, notes=notes)
         self.tree.set_cast_member(label, member)
