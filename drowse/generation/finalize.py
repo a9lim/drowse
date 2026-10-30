@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
 
@@ -18,6 +18,25 @@ from drowse.generation.results import GenerationResult, ProbeReading
 
 if TYPE_CHECKING:
     from drowse.session.session import DrowseSession
+
+
+# Below this elapsed time a tokens/s figure is noise; report 0.
+MIN_ELAPSED_FOR_RATE = 0.1
+
+
+class FamilyAggregates(NamedTuple):
+    """End-of-generation aggregate readings, one dict per read family.
+
+    Each family keeps its native reading type (geometry ``ProbeReading``,
+    lens/SAE ``ScalarReading``).  A caller that pooled and scored its own
+    aggregates (the batched ``model.generate`` path reads one batch row of a
+    shared tail ring) hands them to :func:`finalize_generation` instead of
+    letting it score from the session's capture.
+    """
+
+    geometry: dict[str, ProbeReading]
+    lens: dict[str, ScalarReading]
+    sae: dict[str, ScalarReading]
 
 
 def finalize_generation(
@@ -36,8 +55,13 @@ def finalize_generation(
     mean_logprob: float | None = None,
     mean_surprise: float | None = None,
     min_elapsed_for_rate: float = 1e-9,
+    aggregates: FamilyAggregates | None = None,
 ) -> GenerationResult:
-    """Decode, score probes, update session side effects, and build a result."""
+    """Decode, score probes, update session side effects, and build a result.
+
+    ``aggregates`` supplies pre-scored per-family aggregate readings; the
+    capture-mode scoring is skipped and no per-token scores are kept.
+    """
     token_count = len(generated_ids)
     tok_per_sec = token_count / elapsed if elapsed > min_elapsed_for_rate else 0.0
     response_ids = generated_ids[session._gen_state.thinking_end_idx:]
@@ -57,7 +81,8 @@ def finalize_generation(
         and (
             return_hidden
             or (
-                return_probe_readings
+                aggregates is None
+                and return_probe_readings
                 and session._monitor.probe_names
                 and capture_mode is CaptureMode.FULL
             )
@@ -110,7 +135,9 @@ def finalize_generation(
         return aggregate_stack
 
     agg_vals: dict[str, ProbeReading] = {}
-    if return_probe_readings and session._monitor.probe_names and generated_ids:
+    if aggregates is not None:
+        session._last_per_token_scores = None
+    elif return_probe_readings and session._monitor.probe_names and generated_ids:
         if capture_mode is CaptureMode.INCREMENTAL:
             agg_vals, per_token = session._score_incremental(generated_ids)
         elif capture_mode is CaptureMode.LEAN_INCREMENTAL:
@@ -150,31 +177,34 @@ def finalize_generation(
         hidden_states = trimmed
 
     geometry_aggregates: dict[str, ProbeReading] = {}
-    if return_probe_readings and session._monitor.probe_names and generated_ids:
-        geometry_aggregates = dict(agg_vals)
-    # Pinned J-lens token probes (readout channel — not monitor probes):
-    # one band readout pooled at the last content token, same aggregate
-    # semantics as the monitor roster.  Their native ``ScalarReading``s stay
-    # native all the way into the envelope; the cross-family
-    # ``probe_readings`` dict below is the one projection.
     lens_aggregates: dict[str, ScalarReading] = {}
-    if (
-        return_probe_readings
-        and generated_ids
-        and session.lens.names
-    ):
-        lens_aggregates = session._score_lens_probes_aggregate(
-            generated_ids, pooled=_aggregate_pooled_slice(),
-        )
     sae_aggregates: dict[str, ScalarReading] = {}
-    if (
-        return_probe_readings
-        and generated_ids
-        and session.sae.names
-    ):
-        sae_aggregates = session._score_sae_probes_aggregate(
-            generated_ids, pooled=_aggregate_pooled_slice(),
-        )
+    if aggregates is not None:
+        geometry_aggregates, lens_aggregates, sae_aggregates = aggregates
+    else:
+        if return_probe_readings and session._monitor.probe_names and generated_ids:
+            geometry_aggregates = dict(agg_vals)
+        # Pinned J-lens token probes (readout channel — not monitor probes):
+        # one band readout pooled at the last content token, same aggregate
+        # semantics as the monitor roster.  Their native ``ScalarReading``s
+        # stay native all the way into the envelope; the cross-family
+        # ``probe_readings`` dict below is the one projection.
+        if (
+            return_probe_readings
+            and generated_ids
+            and session.lens.names
+        ):
+            lens_aggregates = session._score_lens_probes_aggregate(
+                generated_ids, pooled=_aggregate_pooled_slice(),
+            )
+        if (
+            return_probe_readings
+            and generated_ids
+            and session.sae.names
+        ):
+            sae_aggregates = session._score_sae_probes_aggregate(
+                generated_ids, pooled=_aggregate_pooled_slice(),
+            )
 
     manifold_aggregates: dict[str, Any] = {
         **geometry_aggregates, **lens_aggregates, **sae_aggregates,
