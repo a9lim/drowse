@@ -429,8 +429,8 @@ class SaeInstrument:
 
         Validation may fetch the feature's Neuronpedia metadata (outside
         every lock): ``max_act`` is the probe's strength unit.  Cache
-        invalidation (prefix cache, probe-hash cache, analytics) is the
-        probe roster's job (:class:`~drowse.readout.roster.ProbeRoster`).
+        invalidation (probe-hash cache, analytics) is the probe roster's
+        job (:class:`~drowse.readout.roster.ProbeRoster`).
         """
         raw_id = selector.split("/", 1)[1]
         validated = self.validate_feature(raw_id)

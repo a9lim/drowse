@@ -433,8 +433,7 @@ class DrowseSession:
             forget_probe_hashes=lambda names: self._roster.forget(names),
         )
         # The probe roster: attach/detach routing by namespace and the
-        # transcript probe-hash caches; a roster change drops the prefix cache
-        # (the next capture attaches a different layer set) and the analytics.
+        # transcript probe-hash caches; a roster change drops the analytics.
         self._roster = ProbeRoster(
             geometry=self._geometry_instrument,
             lens=self._lens_instrument,
@@ -800,10 +799,14 @@ class DrowseSession:
     # / ``.sae`` / ``.geometry`` outside).
 
     def _on_roster_change(self) -> None:
-        """A probe was attached, detached or changed: the next capture
-        attaches a different layer set than the cached prefix was prefilled
-        under, and the analytics roster moved."""
-        self._engine.prefix_cache.clear()
+        """A probe was attached, detached or changed: the analytics roster
+        moved.
+
+        The cached prefix survives: it is prefilled with capture suspended,
+        and every read a hit serves (per-token rows, gate scores, the pooled
+        aggregate) comes from the suffix prefill and the decode forwards the
+        hit still runs.
+        """
         self._registry.invalidate_analytics()
 
     @property

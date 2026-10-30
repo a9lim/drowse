@@ -155,7 +155,7 @@ def test_clear_drops_every_digest() -> None:
     assert families["sae"].hash_calls.count("sae/1") == 2
 
 
-def test_a_session_add_probe_drops_the_prefix_cache_and_the_digest(
+def test_a_session_remove_probe_drops_the_digest_but_keeps_the_prefix(
     make_tiny_session: Any,
 ) -> None:
     from tests.support.sessions import register_vectors
@@ -165,9 +165,10 @@ def test_a_session_add_probe_drops_the_prefix_cache_and_the_digest(
     session.add_probe("mood")
     first = session.probe_hashes()["mood"]
     session.cache_prefix([{"role": "user", "content": "hello there, a shared prefix"}])
-    assert session._engine.prefix_cache
+    entry = session._engine.prefix_cache.entry
+    assert entry is not None
     session.remove_probe("mood")
-    assert not session._engine.prefix_cache
+    assert session._engine.prefix_cache.entry is entry
     assert "mood" not in session.probe_hashes()
     session.add_probe("mood")
     assert session.probe_hashes()["mood"] == first

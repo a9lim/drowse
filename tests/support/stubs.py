@@ -173,7 +173,6 @@ def wire_stub_read_plane(stub: Any) -> Any:
         wire_stub_steering(stub)
 
     def _roster_changed() -> None:
-        _drop_prefix_cache(stub)
         registry = getattr(stub, "__dict__", {}).get("_registry")
         if registry is not None:
             registry.invalidate_analytics()

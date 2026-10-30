@@ -830,8 +830,8 @@ class LensInstrument:
         full fitted layer set, and pre-warms the device transport stack so
         the first decode step doesn't hitch on the J_l transfer.  The probe
         reads ONE channel — ``coords = (strength,)``, the mean layer
-        probability ``mean_l p_l(v)``.  Cache invalidation (prefix cache,
-        probe-hash cache, analytics) is the probe roster's job
+        probability ``mean_l p_l(v)``.  Cache invalidation (probe-hash
+        cache, analytics) is the probe roster's job
         (:class:`~drowse.readout.roster.ProbeRoster`).
         """
         word = selector.split("/", 1)[1]
