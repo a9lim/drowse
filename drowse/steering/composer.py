@@ -1010,16 +1010,12 @@ class SteeringComposer:
     def snapshot_steering_alphas(self) -> dict[str, float]:
         """Flatten the active steering stack for result steering receipts.
 
-        For a plain vector entry, ``entry[0]`` is the additive alpha (the
-        strength coefficient, typically in ``[0, 1]``).
-
-        For a :class:`~drowse.steering.grammar.ManifoldTerm`, ``entry.coeff``
-        delegates to ``entry.along`` — the *slide fraction* toward the manifold
-        position (clamped ``[0, 1]`` at injection time), not an additive
-        scalar.  These two kinds are semantically different (slide fraction vs
-        additive alpha), but both are reported as a single ``float`` here for
-        a uniform telemetry snapshot.  Callers that need to distinguish them
-        should inspect the live ``Steering.alphas`` dict directly.
+        For a plain vector entry, ``entry[0]`` is the signed push alpha.  For
+        an ablation it is the ablation strength, and for a
+        :class:`~drowse.steering.grammar.ManifoldTerm` it is ``along``: the
+        push magnitude toward the position on an affine fit, a slide fraction
+        capped at 1 on a curved one.  All are reported as one ``float`` for a
+        uniform receipt; callers that need the kind read ``Steering.alphas``.
         """
         snap: dict[str, float] = {}
         for name, entry in self.flatten_stack().items():

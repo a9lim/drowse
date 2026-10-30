@@ -14,7 +14,7 @@ Grammar::
     atom        := [ns "/"] NAME ["." NAME] [":" variant]
                  | "sae" "/" INT
                  | ("jlens" | "slens") "/" "#" INT      # exact vocab id
-    trigger    := phase ["&" gate] | gate
+    trigger     := phase ["&" gate] | gate
     phase       := preset | ("first" | "after") ":" INT
     preset      := "before" | "after" | "both" | "thinking" | "response"
                  | "prompt" | "generated"
@@ -234,21 +234,27 @@ class AblationTerm:
 class ManifoldTerm:
     """Manifold-steering entry in ``Steering.alphas``.
 
-    Produced by a ``manifold % position`` term.  The session loads the
+    Produced by a ``manifold % position`` term.  The composer loads the
     named :class:`~drowse.geometry.manifold.Manifold` artifact on scope entry
-    and hands the hook a per-layer subspace + domain + the authoring
-    ``position`` coords; the hook runs the unified along/onto injection
+    and lowers the term into the steering plan: an affine (flat) fit joins
+    the merged push subspace, a curved fit gets its own along/onto injection
     (:func:`~drowse.geometry.manifold.subspace_inject`).  Stored as a value
     inside ``Steering.alphas`` under the key ``"<manifold>%<position>"`` so
     two positions on the same manifold compose as distinct entries and
     never collide with plain / projected / ablation keys.
 
-    The two coefficients (each clamped to ``[0, 1]`` at apply time):
+    The two coefficients:
 
     - ``along`` — slide the projected foot toward ``position`` geodesically
-      in coordinate space (the principled "directional" op).
+      in coordinate space (the principled "directional" op).  On an affine
+      fit it is the signed, unclamped push magnitude (negative pushes away);
+      on a curved fit it is a fraction of the way to the position — values
+      above 1 cap at 1 and a negative value raises
+      :class:`~drowse.errors.SteeringCompositionError`, since a curved
+      position has no opposite.
     - ``onto`` — collapse the off-manifold, in-subspace residual onto the
-      surface (vacuous when the surface fills its subspace).
+      surface, a fraction in ``[0, 1]`` (vacuous when the surface fills its
+      subspace, so ignored on an affine fit).
 
     The off-*subspace* residual is always kept verbatim, which is what lets a
     manifold term compose with neighbors at zero cross-talk; ``~`` / ``|``

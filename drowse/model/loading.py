@@ -1550,8 +1550,8 @@ def _finalize_model(
     # treats hooks as external state and recompiles only when the
     # hook's *Python-scalar* inputs change.  The unified steering hook
     # reads its per-gen coefficients from pre-traced per-layer ``(D,)``
-    # offset buffers updated in place (:meth:`SteeringManager.write_compiled_offsets`,
-    # installed by :func:`install_persistent_offset_hooks`), so compile sees
+    # offset buffers updated in place (:meth:`SteeringManager.install`,
+    # attached by :func:`install_persistent_offset_hooks`), so compile sees
     # no structural change and never retraces across α changes between
     # generations.
     if compile and plan.device == "cuda":
