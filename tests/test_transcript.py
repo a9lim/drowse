@@ -291,7 +291,7 @@ def test_guard_model_mismatch_warns_on_default():
     assert any("model" in str(w.message) for w in caught)
     # First imported node carries a banner note.
     notes = []
-    for n in sess.tree.descendants(sess.tree.root_id):
+    for n in sess.tree.nodes.values():
         if n.notes:
             notes.append(n.notes)
     assert any("model_mismatch" in n for n in notes)
@@ -468,3 +468,204 @@ def test_import_merges_cast_and_flags_conflicts():
     # carries the guard notes.
     imported_node = sess.tree.path_to(leaf)[-1]
     assert "cast_conflict" in imported_node.notes
+
+
+# ---------------------------------------------------------------------------
+# Strict reader
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("turn, match", [
+    ({"text": "hi"}, "missing: role"),
+    ({"role": "user"}, "missing: text"),
+    ({"role": "tool", "text": "x"}, "role must be"),
+    ({"role": "user", "text": 3}, "text must be a string"),
+    ({"role": "user", "text": "x", "extra": 1}, "unknown keys: extra"),
+    ({"role": "user", "text": "x", "speaker": "Captain Hook"}, "speaker"),
+    ({"role": "user", "text": "x", "thinking": 7}, "thinking must be a string"),
+    ({"role": "assistant", "text": "x", "readings": {"a": "high"}}, "finite numbers"),
+    ({"role": "assistant", "text": "x", "readings": {"a": float("nan")}}, "finite numbers"),
+    ({"role": "assistant", "text": "x", "readings": {"a": True}}, "finite numbers"),
+    ({"role": "assistant", "text": "x", "recipe": {"steering": None}}, "recipe"),
+])
+def test_turn_reader_is_strict(turn: dict, match: str):
+    """Regression: missing roles defaulted to "user" and bad readings were
+    silently dropped."""
+    with pytest.raises(TranscriptFormatError, match=match):
+        Transcript.from_dict({"drowse_transcript": 2, "turns": [turn]})
+
+
+@pytest.mark.parametrize("extra, match", [
+    ({"surprise": 1}, "unknown keys: surprise"),
+    ({"cast": {"Bad Label": {"recipe": None, "notes": ""}}}, "cast.Bad Label"),
+    ({"cast": {"deer": {"recipe": None, "notes": "", "origin": "observed"}}}, "origin"),
+    ({"cast": {"deer": "skittish"}}, "must be a mapping"),
+    ({"probes": [{"name": "calm"}]}, "missing: sha256"),
+    ({"model_id": 3}, "model_id must be a string"),
+])
+def test_root_reader_is_strict(extra: dict, match: str):
+    with pytest.raises(TranscriptFormatError, match=match):
+        Transcript.from_dict({"drowse_transcript": 2, "turns": [], **extra})
+
+
+def test_minimal_transcript_reads_with_optional_header_fields_absent():
+    t = Transcript.from_dict({
+        "drowse_transcript": 2,
+        "turns": [{"role": "user", "text": "hi"}],
+    })
+    assert t.model_id is None and t.probes == [] and t.cast == {}
+
+
+# ---------------------------------------------------------------------------
+# Atomic, single-event import
+# ---------------------------------------------------------------------------
+
+
+def _event_session():
+    from drowse.events import EventBus, LoomMutated
+
+    sess = _StubSession()
+    events: list[LoomMutated] = []
+    bus = EventBus()
+    bus.subscribe(lambda e: events.append(e) if isinstance(e, LoomMutated) else None)
+    sess.tree = LoomTree(model_id="m1", events=bus)
+    return sess, events
+
+
+def test_import_is_one_mutation_with_cast_additions():
+    from drowse import CastMember
+
+    sess, events = _event_session()
+    t = Transcript(
+        model_id="m1", system_prompt=None, probes=[],
+        turns=[
+            TranscriptTurn(role="user", text="hi", speaker="captain"),
+            TranscriptTurn(role="assistant", text="ahoy", recipe=Recipe(steering="0.3 calm"),
+                           readings={"angry.calm": 0.2}),
+            TranscriptTurn(role="user", text="more"),
+        ],
+        cast={"narrator": CastMember(notes="stage voice")},
+    )
+    leaf = t.import_into(sess)
+    (event,) = events
+    assert event.op == "import"
+    assert event.rev == sess.tree.rev == 1
+    assert event.added == tuple(n.id for n in sess.tree.path_to(leaf)[1:])
+    assert event.active_node_id == leaf == sess.tree.active_node_id
+    assert "narrator" in sess.tree.cast
+    user, assistant, _ = sess.tree.path_to(leaf)[1:]
+    assert user.role_label == "captain"
+    assert assistant.applied_steering == "0.3 calm"
+    assert assistant.aggregate_readings == {"angry.calm": 0.2}
+    assert assistant.tokens is None and assistant.thinking_tokens is None
+
+
+def test_failed_import_leaves_tree_and_cast_untouched():
+    """Regression: a bad turn partway through used to leave a partial branch
+    and a partial cast behind."""
+    from drowse import CastMember
+    from drowse.loom.errors import InvalidNodeOperationError
+
+    sess, events = _event_session()
+    t = Transcript(
+        model_id="m1", system_prompt=None, probes=[],
+        turns=[
+            TranscriptTurn(role="user", text="hi"),
+            TranscriptTurn(role="assistant", text="x", speaker="Not A Slug"),
+        ],
+        cast={"narrator": CastMember(notes="stage voice")},
+    )
+    before = (sess.tree.rev, dict(sess.tree.nodes), dict(sess.tree.cast))
+    with pytest.raises(InvalidNodeOperationError):
+        t.import_into(sess)
+    assert (sess.tree.rev, dict(sess.tree.nodes), dict(sess.tree.cast)) == before
+    assert events == []
+
+
+def test_merge_with_nothing_new_notes_the_anchor_in_one_update():
+    sess, events = _event_session()
+    u1 = sess.tree.add_user_turn("hi")
+    u2 = sess.tree.add_user_turn("how", parent_id=u1)
+    events.clear()
+    t = Transcript(
+        model_id="m2", system_prompt=None, probes=[],
+        turns=[TranscriptTurn(role="user", text="hi"), TranscriptTurn(role="user", text="how")],
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        leaf = t.import_into(sess, mode="here")
+    assert leaf == u2
+    (event,) = events
+    assert event.added == () and event.updated == (u2,)
+    assert "model_mismatch" in sess.tree.get(u2).notes
+
+
+# ---------------------------------------------------------------------------
+# Replay
+# ---------------------------------------------------------------------------
+
+
+class _ReplaySession(_StubSession):
+    """Stub whose ``generate`` lands a finalized sibling, like the session."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[dict] = []
+
+    def generate(self, input, **kwargs):
+        from drowse.generation.results import GenerationResult, RunSet
+
+        assert input is None
+        self.calls.append(kwargs)
+        node_id = self.tree.begin_assistant(
+            kwargs["parent_node_id"], seat=kwargs["gen_seat"],
+            recipe=Recipe(steering=kwargs["steering"], sampling=kwargs["sampling"]),
+        )
+        self.tree.finalize_assistant(
+            node_id, text="Rain today.", aggregate_readings={"angry.calm": 0.1},
+        )
+        result = GenerationResult(
+            text="Rain today.", tokens=[], token_count=0, tok_per_sec=0.0, elapsed=0.0,
+        )
+        return RunSet([result], node_ids=[node_id], kind="generation")
+
+
+def test_replay_regenerates_each_generated_turn_under_its_history():
+    """Regression: ``experiment transcript run`` replayed each user turn
+    statelessly, without the conversation before it."""
+    sess = _ReplaySession()
+    sampling = SamplingConfig(temperature=0.7, seed=42)
+    t = Transcript(
+        model_id="m1", system_prompt=None, probes=[],
+        turns=[
+            TranscriptTurn(role="user", text="Weather?"),
+            TranscriptTurn(role="assistant", text="Sunshine.",
+                           recipe=Recipe(steering="0.3 calm", sampling=sampling, thinking=False,
+                                         system_prompt="Be brief."),
+                           readings={"angry.calm": -0.12}),
+            TranscriptTurn(role="user", text="Tomorrow?"),
+            TranscriptTurn(role="assistant", text="Clouds.", recipe=Recipe(sampling=sampling)),
+        ],
+    )
+    out = t.replay(sess)
+    path = sess.tree.path_to(out.leaf_id)
+    recorded = [n for n in path if n.recipe is not None]
+    assert [step.recorded_id for step in out.steps] == [n.id for n in recorded]
+    first, second = sess.calls
+    # Each regeneration is a sibling under the recorded turn's parent, so
+    # the model sees every earlier turn of the transcript.
+    assert first["parent_node_id"] == recorded[0].parent_id
+    assert second["parent_node_id"] == recorded[1].parent_id
+    assert sess.tree.get(second["parent_node_id"]).text == "Tomorrow?"
+    assert first["steering"] == "0.3 calm"
+    assert second["steering"] == ""          # unsteered stays unsteered
+    assert first["sampling"] == sampling
+    assert first["thinking"] is False
+    assert first["system_prompt"] == "Be brief."
+    assert first["append_same_role"] is False
+    assert first["gen_seat"] == "assistant"
+    step = out.steps[0]
+    assert sess.tree.get(step.replay_id).parent_id == recorded[0].parent_id
+    (delta,) = step.diff.readings
+    assert delta.name == "angry.calm"
+    assert delta.delta == pytest.approx(0.1 - (-0.12))

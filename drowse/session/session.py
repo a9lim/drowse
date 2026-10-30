@@ -6843,21 +6843,9 @@ class DrowseSession:
         share one (the common sibling-comparison case); ``None``
         otherwise.
         """
-        from drowse.loom.diff import NodeDiff, readings_diff, text_diff
+        from drowse.loom.diff import node_diff
 
-        a = self.tree.get(a_id)
-        b = self.tree.get(b_id)
-        parent_id = a.parent_id if a.parent_id == b.parent_id else None
-        return NodeDiff(
-            a_id=a_id,
-            b_id=b_id,
-            parent_id=parent_id,
-            text=text_diff(a.text or "", b.text or ""),
-            readings=readings_diff(
-                a.aggregate_readings or {},
-                b.aggregate_readings or {},
-            ),
-        )
+        return node_diff(self.tree, a_id, b_id)
 
     def fork_from_token(
         self,

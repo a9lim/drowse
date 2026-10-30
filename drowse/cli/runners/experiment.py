@@ -278,56 +278,31 @@ def _run_transcript_run(args: argparse.Namespace) -> None:
     session = _pkg._make_session(args)
     _pkg._print_model_info(session)
 
-    # Import via ``default`` so the transcript lands as a fresh branch
-    # under the synthetic root; replay walks the imported branch and
-    # reports drift inline.
+    # The transcript lands as a fresh branch under the synthetic root and
+    # every generated turn regenerates under its recipe with the branch's
+    # full history before it.
     try:
-        leaf_id = transcript.import_into(
-            session, mode="default", strict=args.strict,
-        )
+        replay = transcript.replay(session, mode="default", strict=args.strict)
     except TranscriptError as e:
         print(f"transcript run: {e}", file=sys.stderr)
         sys.exit(2)
 
     print(f"transcript: {len(transcript.turns)} turns loaded "
-          f"(leaf: {leaf_id[:8]})")
+          f"(leaf: {replay.leaf_id[:8]}, {len(replay.steps)} regenerated)")
     print()
-    for idx, turn in enumerate(transcript.turns):
-        if turn.role != "user":
-            continue
-        print(f"--- replay turn {idx} ---")
-        print(f"user: {turn.text[:80]}")
-        # Look ahead for the assistant turn this user prompt produced.
-        expected = None
-        if idx + 1 < len(transcript.turns) and transcript.turns[idx + 1].role == "assistant":
-            expected = transcript.turns[idx + 1]
-        try:
-            recipe = expected.recipe if expected is not None else None
-            steering = recipe.steering if recipe is not None else None
-            sampling = recipe.sampling if recipe is not None else None
-            result = session.generate(
-                turn.text,
-                steering=steering,
-                sampling=sampling,
-                stateless=True,
-            ).first
-        except Exception as e:
-            print(f"  replay failed: {e}")
-            continue
-        print(f"assistant: {result.text[:120]}")
-        if expected is not None and expected.readings:
-            actual = {
-                name: (reading.coords[0] if reading.coords else 0.0)
-                for name, reading in result.probe_readings.items()
-            }
-            deltas = []
-            for name, expected_v in expected.readings.items():
-                actual_v = actual.get(name, 0.0)
-                deltas.append((name, actual_v - expected_v, expected_v, actual_v))
-            deltas.sort(key=lambda x: abs(x[1]), reverse=True)
+    for idx, step in enumerate(replay.steps):
+        recorded = session.tree.get(step.recorded_id)
+        replayed = session.tree.get(step.replay_id)
+        print(f"--- replay turn {idx} ({recorded.role}) ---")
+        print(f"recorded: {recorded.text[:120]}")
+        print(f"replayed: {replayed.text[:120]}")
+        if step.diff.readings:
             print("  readings drift (top 5):")
-            for name, d, ev, av in deltas[:5]:
-                print(f"    {name:<32}  Δ {d:+.4f}  (expected {ev:+.4f} → got {av:+.4f})")
+            for delta in step.diff.readings[:5]:
+                print(
+                    f"    {delta.name:<32}  Δ {delta.delta:+.4f}  "
+                    f"(recorded {delta.a_value:+.4f} → got {delta.b_value:+.4f})"
+                )
         print()
 
 

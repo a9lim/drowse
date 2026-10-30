@@ -37,8 +37,8 @@ import zlib
 from contextlib import suppress
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Any, BinaryIO, Callable, Iterator, Literal, cast
+from dataclasses import dataclass, field, replace
+from typing import Any, BinaryIO, Callable, Iterator, Literal, Mapping, Sequence, cast
 
 from drowse.events import EventBus, LoomMutated
 from drowse.loom.errors import (
@@ -49,6 +49,7 @@ from drowse.loom.errors import (
     require_fields,
 )
 from drowse.loom.recipe import CastMember, Recipe
+from drowse.model.role_templates import InvalidRoleError, validate_role
 
 # ---------------------------------------------------------------------------
 # ulid — tiny inline implementation
@@ -943,6 +944,70 @@ class LoomTree:
             ))
             return new.id
 
+    def graft(
+        self,
+        parent_id: str,
+        chain: Sequence[LoomNode],
+        *,
+        cast: Mapping[str, CastMember] | None = None,
+        note: str | None = None,
+    ) -> str:
+        """Attach a prepared chain of turns under ``parent_id`` in one mutation.
+
+        ``chain`` lists the new turns root-to-leaf as :class:`LoomNode`
+        templates; their ``id`` and ``parent_id`` are ignored — the graft
+        assigns fresh ids and links each node under the previous one.
+        ``cast`` members land for labels the roster does not already hold.
+        ``note`` is stamped on the first grafted node (or on ``parent_id``
+        when the chain is empty).
+
+        Everything is validated before the first write, so a bad turn leaves
+        the tree untouched; the whole graft is one ``rev`` and one ``import``
+        event (``added`` = the chain, ``active_node_id`` = its leaf).  Like
+        :meth:`branch`, grafting new children never disturbs an in-flight
+        generation.  Returns the chain's leaf id (``parent_id`` when empty).
+        """
+
+        for node in chain:
+            if node.role not in ("user", "assistant"):
+                raise InvalidNodeOperationError(
+                    f"graft: turns occupy the user or assistant seat, got {node.role!r}"
+                )
+        try:
+            for label in [n.role_label for n in chain if n.role_label is not None]:
+                validate_role(label)
+            for label in cast or {}:
+                validate_role(label)
+        except InvalidRoleError as error:
+            raise InvalidNodeOperationError(f"graft: {error}") from error
+        with self._lock:
+            if parent_id not in self.nodes:
+                raise UnknownNodeError(parent_id)
+            added: list[str] = []
+            current = parent_id
+            for template in chain:
+                node = replace(template, id=_ulid(), parent_id=current)
+                self._add_child(current, node)
+                added.append(node.id)
+                current = node.id
+            for label, member in (cast or {}).items():
+                self.cast.setdefault(label, member)
+            updated: tuple[str, ...] = ()
+            if note:
+                target = added[0] if added else parent_id
+                self.nodes[target].notes = note
+                if not added:
+                    updated = (parent_id,)
+            if added:
+                self.active_node_id = current
+            self.rev += 1
+            self._emit(LoomMutated(
+                op="import", rev=self.rev,
+                added=tuple(added), updated=updated,
+                active_node_id=current if added else None,
+            ))
+            return current
+
     def navigate(self, node_id: str) -> None:
         """Re-point :attr:`active_node_id` to ``node_id``.
 
@@ -1056,7 +1121,6 @@ class LoomTree:
         role slug (it is rendered into turn headers); validation mirrors
         the per-turn ``role_label`` rules.
         """
-        from drowse.model.role_templates import validate_role
 
         validate_role(label)
         with self._lock:
@@ -1239,7 +1303,6 @@ class LoomTree:
         tree.root_id = data["root_id"]
         tree.active_node_id = data["active_node_id"]
         tree.cast = {}
-        from drowse.model.role_templates import validate_role
         for label, raw in raw_cast.items():
             if not isinstance(label, str) or not isinstance(raw, dict):
                 raise LoomTreeError("cast must map string labels to member objects")
