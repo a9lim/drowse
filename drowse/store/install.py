@@ -33,7 +33,7 @@ from drowse.base.atomic import write_json_atomic
 from drowse.base.integrity import NAME_REGEX, hash_file
 from drowse.base.paths import manifold_dir, manifolds_dir
 from drowse.base.staging import promote, recover_backup, staging_area
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, RequestError, SourceSpecError
 from drowse.naming import RESERVED_NAMESPACES
 from drowse.store.archive import (
     LOCAL_ONLY_MANIFOLD_KEYS,
@@ -118,7 +118,7 @@ def install_manifold(
 
     coord, revision = split_revision(str(target))
     if "/" not in coord:
-        raise ValueError(
+        raise SourceSpecError(
             "install target must be a .drowse file, a manifold folder, or "
             f"'<owner>/<repo>[@revision]': {str(target)!r}"
         )
@@ -135,14 +135,14 @@ def install_manifold(
 
 def _validate_local_tree(source: Path) -> None:
     if source.is_symlink():
-        raise ValueError(f"local manifold source {source} is a symbolic link")
+        raise RequestError(f"local manifold source {source} is a symbolic link")
     for root, directories, files in os.walk(source, followlinks=False):
         for name in directories + files:
             path = Path(root) / name
             if path.is_symlink():
-                raise ValueError(f"local manifold source {path} is a symbolic link")
+                raise RequestError(f"local manifold source {path} is a symbolic link")
             if not path.is_dir() and not path.is_file():
-                raise ValueError(
+                raise RequestError(
                     f"local manifold source {path} is not a regular file or directory"
                 )
 
@@ -161,7 +161,7 @@ def _materialize_local_closure(source: Path, area: Path) -> ArchiveClosure:
         _preflight_manifold_codec_sizes(source)
         folder = ManifoldFolder.load(source)
     except (ManifoldFormatError, DrowseArchiveError) as exc:
-        raise ValueError(f"{source}: source folder is not a manifold ({exc})") from exc
+        raise RequestError(f"{source}: source folder is not a manifold ({exc})") from exc
     manifold_stage = area / "manifolds" / "local" / folder.name
     for path in _payload_paths(folder):
         destination = manifold_stage / path.relative_to(folder.folder)
@@ -199,21 +199,21 @@ def _materialize_local_closure(source: Path, area: Path) -> ArchiveClosure:
 def _split_as(as_: str) -> tuple[str, str]:
     parts = as_.split("/")
     if len(parts) != 2:
-        raise ValueError(f"as_ must be '<ns>/<name>', got {as_!r}")
+        raise RequestError(f"as_ must be '<ns>/<name>', got {as_!r}")
     return parts[0], parts[1]
 
 
 def _install_destination(namespace: str, name: str) -> Path:
     for label, component in (("namespace", namespace), ("name", name)):
         if not NAME_REGEX.fullmatch(component):
-            raise ValueError(
+            raise RequestError(
                 f"install target {label} {component!r} doesn't match NAME_REGEX "
                 f"{NAME_REGEX.pattern}"
             )
     if namespace in RESERVED_NAMESPACES:
-        raise ValueError(f"install target namespace {namespace!r} is reserved")
+        raise RequestError(f"install target namespace {namespace!r} is reserved")
     if namespace == _BUNDLED_NAMESPACE:
-        raise ValueError(
+        raise RequestError(
             f"install target namespace {namespace!r} is the bundled namespace; "
             "install under another namespace"
         )

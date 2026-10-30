@@ -34,6 +34,7 @@ from typing import Any
 
 from drowse.base.atomic import artifact_lock, write_json_atomic
 from drowse.base.paths import ensure_within, model_dir
+from drowse.errors import SourceSpecError
 
 LOCAL = "local"
 LOCAL_PREFIX = "local:"
@@ -125,18 +126,18 @@ class SourceFamily:
     def _validate(self, ref: SourceRef) -> None:
         if ref.kind == LOCAL:
             if self.local_name.fullmatch(ref.name) is None:
-                raise ValueError(
+                raise SourceSpecError(
                     f"invalid local {self.label} name {ref.name!r} "
                     f"(must match {self.local_name.pattern})"
                 )
         elif ref.kind == self.provider_kind:
             if not self._provider_name_ok(ref.name):
-                raise ValueError(
+                raise SourceSpecError(
                     f"invalid {self.label} {self.provider_kind} source "
                     f"name {ref.name!r}"
                 )
         else:
-            raise ValueError(f"unknown {self.label} source kind {ref.kind!r}")
+            raise SourceSpecError(f"unknown {self.label} source kind {ref.kind!r}")
 
     def _grammar(self) -> str:
         provider = (
@@ -146,13 +147,13 @@ class SourceFamily:
         return f"local:NAME or {provider}"
 
     def parse(self, source: str) -> SourceRef:
-        """Parse the public source grammar; raises ``ValueError``."""
+        """Parse the public source grammar; raises :class:`~drowse.errors.SourceSpecError`."""
         text = source.strip()
         if text.startswith(LOCAL_PREFIX):
             ref = SourceRef(LOCAL, text[len(LOCAL_PREFIX):])
         elif self.provider_prefix is not None:
             if not text.startswith(self.provider_prefix):
-                raise ValueError(
+                raise SourceSpecError(
                     f"{self.label} source must be {self._grammar()}, "
                     f"got {source!r}"
                 )
@@ -162,7 +163,7 @@ class SourceFamily:
         try:
             self._validate(ref)
         except ValueError as exc:
-            raise ValueError(
+            raise SourceSpecError(
                 f"{self.label} source must be {self._grammar()}: {exc}"
             ) from None
         return ref

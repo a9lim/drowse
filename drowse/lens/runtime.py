@@ -20,6 +20,7 @@ from typing import Any
 import torch
 
 from drowse.base.lru import BoundedLRU
+from drowse.errors import RequestError
 from drowse.lens.jlens import (
     JacobianLens,
     aggregate_readout,
@@ -105,8 +106,8 @@ def select_rows(tensor: torch.Tensor, rows: Sequence[int]) -> torch.Tensor:
     )
 
 
-def _missing_layers_error(lens: JacobianLens, missing: Sequence[int]) -> ValueError:
-    return ValueError(
+def _missing_layers_error(lens: JacobianLens, missing: Sequence[int]) -> RequestError:
+    return RequestError(
         f"layers {list(missing)} not in the fitted lens "
         f"(fitted: {lens.source_layers[0]}..{lens.source_layers[-1]})"
     )
@@ -190,7 +191,7 @@ class LensRuntime:
     ) -> list[int]:
         """Resolve a readout selector over ``lens``'s fitted layers.
 
-        Raises ``ValueError`` when an explicit layer is not fitted.
+        Raises :class:`~drowse.errors.RequestError` when an explicit layer is not fitted.
         """
         req = resolve_layer_selector(
             layers, lens.source_layers, n_layers=self.n_layers,
@@ -439,7 +440,7 @@ class LensRuntime:
             if layer in directions and layer in lens.jacobians
         ]
         if not req:
-            raise ValueError(
+            raise RequestError(
                 f"no overlap between {label!r}'s layers and the fitted lens layers"
             )
         out: dict[int, tuple[float, list[tuple[str, float]]]] = {}

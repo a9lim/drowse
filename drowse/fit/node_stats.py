@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 
 import torch
 
-from drowse.errors import is_out_of_memory_error
+from drowse.errors import is_out_of_memory_error, ManifoldSpecError
 from drowse.fit import capture
 from drowse.store.manifold_tensors import ActivationRowStore
 
@@ -65,7 +65,7 @@ def compute_manifold_node_stats(
         zip(node_groups, roles, strict=True),
     ):
         if not responses or len(responses) % k != 0:
-            raise ValueError(
+            raise ManifoldSpecError(
                 f"node corpus ({len(responses)} responses) must be a non-empty "
                 f"multiple of the baseline prompt set ({k})"
             )

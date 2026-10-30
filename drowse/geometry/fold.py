@@ -17,7 +17,7 @@ from typing import Any
 
 import torch
 
-from drowse.errors import WhitenerError
+from drowse.errors import SteeringCompositionError, WhitenerError
 from drowse.geometry.domains import CustomDomain
 from drowse.geometry.manifold import Manifold
 from drowse.geometry.subspace import LayerSubspace
@@ -238,7 +238,7 @@ def project_profile(
             continue
         out[layer] = projected
     if not out:
-        raise ValueError(
+        raise SteeringCompositionError(
             f"project_profile: no layers produced for operator {operator!r} "
             f"(base layers: {sorted(base.keys())}, "
             f"onto layers: {sorted(onto.keys())})"

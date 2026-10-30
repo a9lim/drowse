@@ -54,7 +54,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from drowse.errors import is_out_of_memory_error
+from drowse.errors import is_out_of_memory_error, RequestError
 from drowse.lens.key import FITTABLE_KINDS, LensKey
 from drowse.lens.jlens import (
     DEFAULT_CHECKPOINT_EVERY,
@@ -330,9 +330,9 @@ def fit_jacobian_lens(
         sorted(set(source_layers)) if source_layers is not None else list(range(final_idx))
     )
     if not sources:
-        raise ValueError("source_layers must name at least one source layer")
+        raise RequestError("source_layers must name at least one source layer")
     if any(l < 0 or l >= final_idx for l in sources):
-        raise ValueError(
+        raise RequestError(
             f"source_layers must lie in [0, {final_idx}) — the final layer is "
             f"the transport target, not a source; got {sources}"
         )

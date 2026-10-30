@@ -52,6 +52,7 @@ from drowse.fit.publish import (
     publish_fit_if_current,
     take_authoring_snapshot,
 )
+from drowse.errors import ManifoldSpecError, RequestError
 
 if TYPE_CHECKING:
     from drowse.geometry.manifold import Manifold
@@ -579,7 +580,7 @@ def _resolve_fit_geometry(
         k = int(node_coords.shape[1])
         floor = (k + 1) if effective_fit_mode == "pca" else min_nodes(k)
         if floor > K:
-            raise ValueError(
+            raise ManifoldSpecError(
                 f"auto manifold {mf.name!r}: resolved topology "
                 f"{choice.winner_name!r} (k={k}) needs >= {floor} nodes, "
                 f"got K={K}"
@@ -682,7 +683,7 @@ def _resolve_fit_geometry(
             floor = min_nodes(k)
             floor_reason = "for the RBF fit"
         if floor > K:
-            raise ValueError(
+            raise ManifoldSpecError(
                 f"discover manifold {mf.name!r}: picked k={k} needs "
                 f">= {floor} nodes {floor_reason}, got K={K}"
             )
@@ -924,7 +925,7 @@ class ManifoldExtractionPipeline:
         projections straddle the neutral baseline; curved fits never run DLS.
         """
         if sae_revision is not None and sae is None:
-            raise ValueError("sae_revision requires an SAE release")
+            raise RequestError("sae_revision requires an SAE release")
         progress = on_progress or (lambda _message: None)
         started = time.perf_counter()
         folder = Path(folder)
@@ -1034,7 +1035,7 @@ class ManifoldExtractionPipeline:
             baseline_prompts=snapshot.baseline_prompts,
         )
         if backend is not None and any(r is not None for r in identity.node_roles):
-            raise ValueError(
+            raise RequestError(
                 "SAE-backed and role-baselined manifold fits are mutually exclusive"
             )
         source_fp = getattr(

@@ -26,6 +26,7 @@ from drowse.fit.pipeline import ManifoldExtractionPipeline
 from drowse.geometry.fold import folded_directions
 from drowse.geometry.profile import Profile
 from drowse.naming import _slug, canonical_concept_name
+from drowse.errors import RequestError
 
 if TYPE_CHECKING:
     from drowse.fit.pipeline import ModelHandle
@@ -90,7 +91,7 @@ def resolve_extraction_target(
     (match,) = matches
     upstream = _upstream_source(match.namespace, match.folder)
     if force and upstream is not None:
-        raise ValueError(
+        raise RequestError(
             f"{name!r} is installed at {match.namespace}/{name} from "
             f"{_describe_upstream(upstream)}, which `pack refresh` restores its "
             "corpus from. Pass namespace='local' to regenerate a forked copy "
@@ -282,7 +283,7 @@ class Extraction:
         from drowse.store.manifold_folder import _locked_manifest
 
         if sae is not None and role is not None:
-            raise ValueError(
+            raise RequestError(
                 "SAE-backed and role-baselined extraction are mutually exclusive"
             )
         folder = manifold_dir(target.namespace, name)
@@ -325,14 +326,14 @@ class Extraction:
         if target.upstream is not None:
             # ``force`` on an upstream-backed folder is refused, so the only
             # remedy is a separate local copy.
-            raise ValueError(
+            raise RequestError(
                 f"manifold {where} (installed from "
                 f"{_describe_upstream(target.upstream)}) carries "
                 f"role baseline {existing!r}, not uniformly {role!r}; pass "
                 "namespace='local' to author a separate copy (bare references "
                 "then need a namespace)"
             )
-        raise ValueError(
+        raise RequestError(
             f"manifold {where} already carries role baseline {existing!r}, not "
             f"uniformly {role!r}; pass force=True to replace its corpus"
         )

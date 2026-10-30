@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from drowse.base.atomic import artifact_lock, write_json_atomic
 from drowse.base.paths import parse_tensor_filename
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, ManifoldSpecError
 from drowse.store.manifold_folder import (
     ManifoldFolder,
     _locked_manifest,
@@ -209,13 +209,13 @@ def _apply_fit_overrides_locked(
         return
     mf = ManifoldFolder.load(folder, verify_manifest=False)
     if not mf.is_discover:
-        raise ValueError(
+        raise ManifoldSpecError(
             "fit_mode/hyperparams overrides are discover-mode only; "
             f"{folder} is authored"
         )
     requested_mode = fit_mode or mf.fit_mode
     if requested_mode not in {"pca", "spectral", "auto"}:
-        raise ValueError(f"invalid discover fit mode {requested_mode!r}")
+        raise ManifoldSpecError(f"invalid discover fit mode {requested_mode!r}")
     # Hyperparameters belong to their discriminated fit mode. A mode change
     # starts a fresh parameter set; carrying the previous mode's keys would
     # either be ignored or violate the exact current schema.

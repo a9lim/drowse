@@ -40,6 +40,7 @@ import torch
 from drowse.geometry.domains import BoxAxis, BoxDomain, CustomDomain, ManifoldDomain
 from drowse.geometry.rbf import RbfFitPlan
 from drowse.geometry.subspace import pca_basis
+from drowse.errors import ManifoldSpecError
 
 if TYPE_CHECKING:
     from drowse.geometry.whitener import LayerWhitener
@@ -148,7 +149,7 @@ def derive_pca_coords(
             f"{tuple(gram.shape)}"
         )
     if K < 2:
-        raise ValueError(
+        raise ManifoldSpecError(
             f"PCA coord derivation needs >= 2 centroids, got {K}"
         )
     # Symmetrize away finite-precision drift, then eigendecompose.  eigh is
@@ -336,7 +337,7 @@ def _laplacian_eigen(
             f"{tuple(gram.shape)}"
         )
     if K < 4:
-        raise ValueError(
+        raise ManifoldSpecError(
             f"spectral embedding needs >= 4 centroids to form a k-NN graph, "
             f"got {K}"
         )
@@ -355,7 +356,7 @@ def _laplacian_eigen(
 
     components = _connected_components(mask)
     if components > 1:
-        raise ValueError(
+        raise ManifoldSpecError(
             f"spectral embedding: k-NN graph has {components} connected "
             f"components (need 1). Raise k_nn or switch to PCA."
         )
@@ -461,7 +462,7 @@ def derive_spectral_coords(
         # Need at least 4 nodes to form any kind of k-NN graph and have
         # a candidate gap range.  Below that the heuristics are pure
         # noise; raise early rather than ship a meaningless embedding.
-        raise ValueError(
+        raise ManifoldSpecError(
             f"spectral coord derivation needs >= 4 centroids, got {K}"
         )
     # Graph build + normalized-Laplacian eigendecomposition, shared with the

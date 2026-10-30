@@ -27,6 +27,8 @@ from dataclasses import dataclass, replace
 
 import torch
 
+from drowse.errors import ManifoldSpecError, PoisednessError
+
 # Log-spaced GCV grid over the mean off-diagonal kernel magnitude.
 _GCV_GRID = (-6.0, 3.0, 40)
 
@@ -41,13 +43,13 @@ def _check_poised(node_params: torch.Tensor) -> tuple[int, int]:
     """
     K, m = node_params.shape
     if m + 1 > K:
-        raise ValueError(
+        raise PoisednessError(
             f"RBF poisedness failure: {K} nodes cannot determine an affine "
             f"term in {m} embedding dimensions (need >= {m + 1})"
         )
     centered = node_params - node_params.mean(dim=0, keepdim=True)
     if int(torch.linalg.matrix_rank(centered)) != m:
-        raise ValueError(
+        raise PoisednessError(
             f"RBF poisedness failure: the {K} node coordinates do not "
             f"affinely span the {m}-dim embedding space (they lie in a "
             f"lower-dimensional flat); spread the nodes across every axis"
@@ -166,7 +168,7 @@ class RbfFitPlan:
             return None
         if isinstance(smoothing, (int, float)) and not isinstance(smoothing, bool):
             return float(smoothing) * self.e_scale
-        raise ValueError(
+        raise ManifoldSpecError(
             f"smoothing must be 'auto', a float, or 0/None; got {smoothing!r}"
         )
 

@@ -54,6 +54,7 @@ from drowse.readout.types import (
     scalar_gate_keys,
     validate_gate_channels,
 )
+from drowse.errors import RequestError
 
 if TYPE_CHECKING:
     from drowse.readout.protocol import LatestSlices
@@ -861,7 +862,7 @@ class SaeInstrument:
         from drowse.readout.measurements import build_measurements
 
         if layers is not None:
-            raise ValueError(
+            raise RequestError(
                 "sae token-readout takes no layers (the readout is at the "
                 "resident hook layer)"
             )
@@ -869,7 +870,7 @@ class SaeInstrument:
         resident = self.runtime.require()
         layer = resident.layer
         if not 1 <= k <= min(resident.width, 256):
-            raise ValueError(f"top_k must be in [1, {min(resident.width, 256)}]")
+            raise RequestError(f"top_k must be in [1, {min(resident.width, 256)}]")
 
         def read(hidden: dict[int, torch.Tensor]) -> list[tuple[int, float]]:
             acts = self.runtime.encode(hidden[layer])

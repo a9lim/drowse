@@ -36,7 +36,7 @@ from typing import Any, Protocol
 
 import torch
 
-from drowse.errors import SaeFeatureError, SaeNotLoadedError
+from drowse.errors import RequestError, SaeFeatureError, SaeNotLoadedError, SourceSpecError
 from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.sae import neuronpedia
 from drowse.sae.backend import LocalSaeBackend, resolve_sae_backend, sae_binding
@@ -203,7 +203,7 @@ class SaeRuntime:
 
         release = release.strip()
         if not release:
-            raise ValueError("SAE release must not be empty")
+            raise SourceSpecError("SAE release must not be empty")
         handle = self._handle
         with self.exclusive(
             "SAE load called while another model operation is in flight; retry shortly"
@@ -317,7 +317,7 @@ class SaeRuntime:
         release = sae_release(SourceRef(LOCAL, local_name))
         docs = list(documents)
         if not docs:
-            raise ValueError("SAE training needs at least one corpus document")
+            raise RequestError("SAE training needs at least one corpus document")
         corpus_sha = hashlib.sha256(repr(docs).encode("utf-8")).hexdigest()
         with self.exclusive(
             "SAE train called while another model use is in flight",
