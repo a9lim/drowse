@@ -295,7 +295,7 @@ class SourceFamily:
         slot = self._slot(model_id, ref)
         path = self.active_path(model_id)
         with artifact_lock(path):
-            selection = (
+            selection: dict[str, SourceRef | None] = (
                 {"": ref} if self.slots is None
                 else {**(self._read(model_id) or {}), slot: ref}
             )

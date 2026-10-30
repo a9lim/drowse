@@ -478,9 +478,10 @@ def parse_manifest(data: Any, *, location: str = "manifold.json") -> ManifestSpe
             raise ManifoldFormatError(f"manifold {name!r} field 'hyperparams' must be dict")
         hyperparams = sanitize_hyperparams(fit_mode, data["hyperparams"])
     else:
-        domain = data.get("domain")
-        if not isinstance(domain, dict) or not domain:
+        raw_domain = data.get("domain")
+        if not isinstance(raw_domain, dict) or not raw_domain:
             raise ManifoldFormatError(f"{fit_mode} manifold {name!r} needs a 'domain' object")
+        domain = raw_domain
         try:
             parsed_domain = domain_from_spec(domain)
         except (ValueError, KeyError, TypeError) as exc:

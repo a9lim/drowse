@@ -430,9 +430,11 @@ class TestLiveSources:
             **live_sources(self._LENS, self._SAE),
         )
         assert env is not None
-        assert env["instruments"]["lens"]["binding"]["source"] == "local:j"
-        sae = env["instruments"]["sae"]["binding"]
-        assert (sae["source"], sae["layer"]) == ("saelens:scope", 14)
+        lens, sae = env["instruments"].get("lens"), env["instruments"].get("sae")
+        assert lens is not None and sae is not None
+        assert lens["binding"]["source"] == "local:j"
+        binding = sae["binding"]
+        assert (binding["source"], binding.get("layer")) == ("saelens:scope", 14)
 
 
 # ---------------------------------------------------------------------------

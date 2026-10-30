@@ -28,11 +28,11 @@ if TYPE_CHECKING:
 class LayerMap(Protocol):
     """One layer's source → target affine map (e.g. a Procrustes alignment)."""
 
-    def apply_vectors(self, vectors: torch.Tensor) -> torch.Tensor:
+    def apply_vectors(self, vectors: torch.Tensor, /) -> torch.Tensor:
         """Map direction rows ``(.., D_src)`` by the linear factor only."""
         ...
 
-    def apply_points(self, points: torch.Tensor) -> torch.Tensor:
+    def apply_points(self, points: torch.Tensor, /) -> torch.Tensor:
         """Map points ``(.., D_src)`` by the full affine map."""
         ...
 

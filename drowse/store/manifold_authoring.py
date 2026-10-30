@@ -155,8 +155,12 @@ def _validate_statements(name: str, label: str, statements: Any) -> list[str]:
 
 def _authored_nodes(
     name: str, domain: Any, nodes: Any,
-) -> tuple[list[ManifestNode], list[tuple[str, list[str]]]]:
-    """Validate the authoring shape ``[{label, coords, statements, role?, kind?}]``."""
+) -> tuple[list[ManifestNode], list[tuple[str, list[str]]], list[tuple[float, ...]]]:
+    """Validate the authoring shape ``[{label, coords, statements, role?, kind?}]``.
+
+    Returns the manifest nodes, the per-node corpora and the validated
+    per-node coords (every authored node has them).
+    """
     n = domain.intrinsic_dim
     floor = min_nodes(n)
     if not isinstance(nodes, list) or len(nodes) < floor:
@@ -166,6 +170,7 @@ def _authored_nodes(
         )
     manifest_nodes: list[ManifestNode] = []
     corpora: list[tuple[str, list[str]]] = []
+    node_coords: list[tuple[float, ...]] = []
     for entry in nodes:
         if not isinstance(entry, dict):
             raise ManifoldFormatError(f"manifold {name!r} node {entry!r} must be an object")
@@ -185,14 +190,15 @@ def _authored_nodes(
                 f"{n} number(s), got {coords!r}"
             )
         corpora.append((label, _validate_statements(name, label, entry.get("statements"))))
+        node_coords.append(tuple(float(c) for c in coords))
         manifest_nodes.append(ManifestNode(
             label=label,
             role=validate_node_role(name, label, entry.get("role")),
             kind=validate_node_kind(name, label, entry.get("kind")),
-            coords=tuple(float(c) for c in coords),
+            coords=node_coords[-1],
         ))
     validate_node_labels(name, [node.label for node in manifest_nodes])
-    return manifest_nodes, corpora
+    return manifest_nodes, corpora, node_coords
 
 
 def authoring_advisories(
@@ -288,7 +294,7 @@ def create_manifold_folder(
         domain = domain_from_spec(normalize_domain_spec(domain_spec))
     except (ValueError, KeyError) as exc:
         raise ManifoldFormatError(f"invalid manifold domain: {exc}") from exc
-    manifest_nodes, corpora = _authored_nodes(name, domain, nodes)
+    manifest_nodes, corpora, node_coords = _authored_nodes(name, domain, nodes)
     payload = manifest_payload(
         name=name, description=description, fit_mode="authored",
         nodes=manifest_nodes, domain=domain.to_spec(),
@@ -297,9 +303,7 @@ def create_manifold_folder(
         manifold_dir(namespace, name), _corpus_builder(payload, corpora),
         force=False, label=f"{namespace}/{name}",
     )
-    return folder, authoring_advisories(
-        name, payload["domain"], [node.coords for node in manifest_nodes],
-    )
+    return folder, authoring_advisories(name, payload["domain"], node_coords)
 
 
 @_lock_namespace_name
@@ -759,10 +763,12 @@ def update_manifold_folder(
     if description is not None:
         mf.description = description
     if nodes is not None:
-        manifest_nodes, corpora = _authored_nodes(mf.name, domain_from_spec(mf.domain), nodes)
+        manifest_nodes, corpora, node_coords = _authored_nodes(
+            mf.name, domain_from_spec(mf.domain), nodes,
+        )
         write_node_corpus(folder, corpora)
         mf.node_labels = [node.label for node in manifest_nodes]
-        mf.node_coords = [list(node.coords or ()) for node in manifest_nodes]
+        mf.node_coords = [list(coords) for coords in node_coords]
         mf.node_roles = [node.role for node in manifest_nodes]
         mf.node_kinds = [node.kind for node in manifest_nodes]
     mf.write_metadata()
