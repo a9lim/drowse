@@ -1207,6 +1207,22 @@ def test_sidecar_preserves_explicit_null_raw_token_ids(tmp_path: Path):
     assert LoomTree.load(path).nodes[node.id].raw_token_ids is None
 
 
+def test_sidecar_token_rows_are_type_checked_by_the_node_reader(tmp_path: Path):
+    tree = _seed_tree()
+    node = tree.nodes[tree.active_node_id]
+    node.tokens = [{"token_id": 7, "text": "x"}]
+    path = tmp_path / "tree.json"
+    tree.save(path)
+    sidecar = tmp_path / "tree.tokens.json.gz"
+    with gzip.open(sidecar, "rt", encoding="utf-8") as f:
+        payload = json.load(f)
+    payload["nodes"][node.id]["tokens"] = "not rows"
+    with gzip.open(sidecar, "wt", encoding="utf-8") as f:
+        json.dump(payload, f)
+    with pytest.raises(LoomTreeError, match="'tokens' must be a list or null"):
+        LoomTree.load(path)
+
+
 # ---------------------------------------------------------------------------
 # Per-turn role labels (roleplay scaffold)
 # ---------------------------------------------------------------------------

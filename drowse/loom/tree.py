@@ -1467,21 +1467,18 @@ class LoomTree:
             by_id = token_payload["nodes"]
             if not isinstance(by_id, dict):
                 raise LoomTreeError("token sidecar field 'nodes' must be an object")
-            main_by_id = {raw["id"]: raw for raw in data["nodes"]}
+            nodes = data["nodes"]
+            if not isinstance(nodes, list) or not all(isinstance(raw, dict) for raw in nodes):
+                raise LoomTreeError("loom tree field 'nodes' must be a list of objects")
+            main_by_id = {raw.get("id"): raw for raw in nodes}
             for node_id, node_tokens in by_id.items():
                 if node_id not in main_by_id:
                     raise LoomTreeError(f"token sidecar references unknown node {node_id!r}")
                 if not isinstance(node_tokens, dict):
                     raise LoomTreeError(f"token sidecar node {node_id!r} must be an object")
                 require_fields(node_tokens, _TOKEN_FIELDS, f"token sidecar node {node_id!r}")
-                for field_name in ("tokens", "thinking_tokens", "raw_token_ids"):
-                    value = node_tokens[field_name]
-                    if value is not None and not isinstance(value, list):
-                        raise LoomTreeError(
-                            f"token sidecar node {node_id!r} field {field_name!r} "
-                            "must be a list or null"
-                        )
-                    main_by_id[node_id][field_name] = value
+                # Merged rows go through LoomNode.from_dict's token checks.
+                main_by_id[node_id].update(node_tokens)
         return cls.from_dict(data, events=events)
 
 
