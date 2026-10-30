@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 import torch
 
-from drowse.fit.capture import project_profile
+from drowse.geometry.fold import project_profile
 from drowse.steering.hooks import _lower_affine_subspaces
 from drowse.geometry.whitener import LayerWhitener
 from drowse.geometry.inject import synthesize_subspace

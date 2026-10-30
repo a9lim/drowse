@@ -411,7 +411,7 @@ def _fold(ref: str, model_id: str) -> _Folded:
     check the recorded per-node roles, transfer variants their source model.
     """
     from drowse.base.paths import encode_release_id, manifold_dir, manifolds_dir
-    from drowse.fit.capture import folded_directions
+    from drowse.geometry.fold import folded_directions
     from drowse.geometry.profile import Profile
     from drowse.store.manifold_tensors import load_manifold
     from drowse.store.selectors import AmbiguousSelectorError, canonicalize_atom
@@ -468,7 +468,7 @@ def _fold_all(model_id: str) -> "dict[tuple[str, str], Profile]":
     single direction, keyed by ``(namespace, name)``.  (No bundled
     materialization: it lands corpora, never fitted tensors.)"""
     from drowse.base.paths import tensor_filename
-    from drowse.fit.capture import folded_directions
+    from drowse.geometry.fold import folded_directions
     from drowse.geometry.profile import Profile
     from drowse.store.manifold_tensors import load_manifold
     from drowse.store.manifold_authoring import iter_manifold_folders

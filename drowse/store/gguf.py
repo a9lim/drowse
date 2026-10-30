@@ -207,7 +207,7 @@ def export_gguf_manifold(
     """Export a fitted 2-node ``pca`` manifold to GGUF by folding it to a vector.
 
     Sources each per-model profile by folding the manifold
-    (:func:`~drowse.fit.capture.folded_directions`), then writes a
+    (:func:`~drowse.geometry.fold.folded_directions`), then writes a
     llama.cpp control-vector GGUF via :func:`write_gguf_profile`.
     ``model_scope`` restricts to one base model; without it, every fitted
     ``raw`` tensor is exported (one ``.gguf`` per model).
@@ -224,7 +224,7 @@ def export_gguf_manifold(
         drowse_home, manifold_dir, parse_tensor_filename, tensor_filename,
     )
     from drowse.store.manifold_tensors import load_manifold
-    from drowse.fit.capture import folded_directions
+    from drowse.geometry.fold import folded_directions
 
     mdir = manifold_dir(ns, name)
     if not (mdir / "manifold.json").is_file():

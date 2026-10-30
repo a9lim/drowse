@@ -20,7 +20,7 @@ from drowse.geometry.whitener import (
     WhitenerError,
 )
 from drowse.geometry.profile import Profile
-from drowse.fit.capture import project_profile
+from drowse.geometry.fold import project_profile
 
 
 # ---------------------------------------------------------------- helpers ---

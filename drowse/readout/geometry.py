@@ -481,7 +481,7 @@ class GeometryInstrument:
             manifold = session._monitor.manifolds.get(name)
         if manifold is None:
             return None
-        from drowse.fit.capture import folded_directions
+        from drowse.geometry.fold import folded_directions
 
         h = hashlib.sha256()
         try:

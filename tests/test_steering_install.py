@@ -176,7 +176,7 @@ def test_inverted_regen_flips_affine_manifold_terms_and_refuses_curved() -> None
     to clamp silently to a no-op, so "inverted" regenerated unsteered text).
     """
     from drowse import Recipe
-    from drowse.fit.capture import fold_directions_to_subspace
+    from drowse.geometry.fold import fold_directions_to_subspace
 
     session, _buffers = _session(compiled=False)
     ray = fold_directions_to_subspace(
@@ -302,7 +302,7 @@ def test_unknown_vector_raises_before_the_scope_is_entered() -> None:
 def test_curved_manifold_terms_names_only_curved_positions() -> None:
     """The composer's curvature query (loom's ``inverted`` regen asks which
     ``%`` terms have no signed opposite)."""
-    from drowse.fit.capture import fold_directions_to_subspace
+    from drowse.geometry.fold import fold_directions_to_subspace
 
     session, _buffers = _session(compiled=False)
     ray = fold_directions_to_subspace(

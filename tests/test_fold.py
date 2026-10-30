@@ -16,7 +16,7 @@ from __future__ import annotations
 import torch
 import pytest
 
-from drowse.fit.capture import (
+from drowse.geometry.fold import (
     fold_directions_to_subspace,
     folded_directions,
     is_foldable_vector_manifold,

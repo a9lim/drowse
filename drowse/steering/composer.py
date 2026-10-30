@@ -31,6 +31,8 @@ from drowse.errors import (
     SteeringExprError,
 )
 from drowse.events import EventBus, SteeringApplied, SteeringCleared
+from drowse.geometry.fold import fold_directions_to_subspace, project_profile
+from drowse.geometry.inject import synthesize_subspace
 from drowse.steering.grammar import AblationTerm, ManifoldTerm, ProjectedTerm
 from drowse.steering.hooks import SteeringManager, SteeringPlan
 from drowse.steering.terms import (
@@ -902,9 +904,6 @@ class SteeringComposer:
         the push's exclusive lock, so it goes through the unguarded
         ``ensure`` rather than the public getters.
         """
-        from drowse.fit.capture import fold_directions_to_subspace
-        from drowse.geometry.inject import synthesize_subspace
-
         record = deps.append if deps is not None else (lambda _dep: None)
         artifacts = self._artifacts
         neutral = self._neutral
@@ -920,8 +919,6 @@ class SteeringComposer:
             return prof
 
         def _projected(name: str, spec: _ProjectionSpec) -> dict[int, torch.Tensor]:
-            from drowse.fit.capture import project_profile
-
             base = _profile(spec.base, "projection base")
             onto = _profile(spec.onto, "projection onto")
             memo = self._projections.get(name)

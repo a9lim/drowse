@@ -87,7 +87,7 @@ def _resolve_component(
     """Load a merge component as ``(profile, source_tensor_path)``.
 
     Folds a fitted 2-node ``pca`` manifold down to a single direction
-    (:func:`~drowse.fit.capture.folded_directions`).  The returned path
+    (:func:`~drowse.geometry.fold.folded_directions`).  The returned path
     is the manifold's fitted tensor file, so provenance hashing is uniform.
     """
     mpath = _manifold_tensor_path(ns, name, sid, variant)
@@ -96,7 +96,7 @@ def _resolve_component(
             f"component {coord} not installed (no fitted manifold for {sid})"
         )
     from drowse.store.manifold_tensors import load_manifold
-    from drowse.fit.capture import folded_directions
+    from drowse.geometry.fold import folded_directions
     manifold = load_manifold(mpath)
     metadata = dict(manifold.metadata)
     raw_roles = metadata.get("node_roles")
@@ -327,10 +327,10 @@ def _merge_into_manifold_locked(
     Each component resolves to a per-layer ``dict[int, Tensor]`` direction (a
     fitted 2-node ``pca`` manifold folded down), the
     directions are linearly combined, and the result is folded to a one-pole
-    ray (:func:`~drowse.fit.capture.fold_directions_to_subspace`) and frozen
+    ray (:func:`~drowse.geometry.fold.fold_directions_to_subspace`) and frozen
     into the baked tensor.  Returns the manifold folder path.
     """
-    from drowse.fit.capture import fold_directions_to_subspace
+    from drowse.geometry.fold import fold_directions_to_subspace
     from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
     from drowse.base.paths import manifold_dir
 

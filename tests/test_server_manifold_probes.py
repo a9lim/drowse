@@ -1215,7 +1215,7 @@ def _fitted_discover_manifold(model_id: str, name: str = "heap") -> Any:
     """Author a discover folder under ``$DROWSE_HOME`` and land a flat fit."""
     import torch
 
-    from drowse.fit.capture import fold_directions_to_subspace
+    from drowse.geometry.fold import fold_directions_to_subspace
     from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION
     from drowse.store.manifold_tensors import save_manifold
     from drowse.store.manifold_folder import ManifoldFolder

@@ -314,7 +314,7 @@ class TestPerLayerScores:
         # Two probes sharing layer 0, scored against a hidden state.  No
         # torch model needed.
         from drowse.readout.monitor import Monitor
-        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.geometry.fold import fold_directions_to_subspace
 
         from tests._whitener import isotropic_whitener
         means = {0: torch.zeros(4)}
@@ -347,7 +347,7 @@ class TestPerLayerScores:
 
     def test_empty_input_returns_empty(self) -> None:
         from drowse.readout.monitor import Monitor
-        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.geometry.fold import fold_directions_to_subspace
         from tests._whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}
@@ -361,7 +361,7 @@ class TestPerLayerScores:
 
     def test_layers_outside_probe_cache_omitted(self) -> None:
         from drowse.readout.monitor import Monitor
-        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.geometry.fold import fold_directions_to_subspace
         from tests._whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}

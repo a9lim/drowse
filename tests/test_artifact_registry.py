@@ -25,9 +25,9 @@ def _registry() -> ArtifactRegistry:
 class _Recorder:
     def __init__(self, registry: ArtifactRegistry) -> None:
         self.changes = 0
-        self.swaps: list[tuple[set[int], Any]] = []
+        self.swaps: list[dict[int, Any]] = []
         registry.on_change(self._changed)
-        registry.on_swap(lambda ids, replacement: self.swaps.append((ids, replacement)))
+        registry.on_swap(lambda swaps: self.swaps.append(dict(swaps)))
 
     def _changed(self) -> None:
         self.changes += 1
@@ -100,11 +100,11 @@ def test_evict_artifact_drops_every_consumer_and_reports_the_swap() -> None:
     registry.evict_artifact("local", "mood", feature="raw")
     assert set(registry.manifolds) == {"mood:sae-rel", "other/mood"}
     assert set(registry.profiles) == {"other/mood"}
-    assert seen.swaps == [({id(raw)}, None)]
+    assert seen.swaps == [{id(raw): None}]
 
     registry.evict_artifact("local", "mood")
     assert set(registry.manifolds) == {"other/mood"}
-    assert seen.swaps[-1] == ({id(sae)}, None)
+    assert seen.swaps[-1] == {id(sae): None}
 
 
 def test_analytics_snapshot_is_cached_until_a_mutation() -> None:
@@ -158,3 +158,91 @@ def test_snapshot_built_across_a_mutation_is_not_cached() -> None:
     fresh = registry.analytics_snapshot("a", live=live, lock=lock)
     assert fresh is not None and torch.equal(fresh[0], 2.0 * torch.ones(2))
     assert len(builds) == 2
+
+
+class _Fold:
+    """A stand-in probe fold: carries the tensors it was folded from."""
+
+    def __init__(self, key: str, tensors: Any) -> None:
+        self.key = key
+        self.tensors = dict(tensors)
+
+
+def _ray(direction: torch.Tensor, *, share: float = 1.0) -> Any:
+    from drowse.geometry.domains import CustomDomain
+    from drowse.geometry.manifold import Manifold
+    from drowse.geometry.subspace import LayerSubspace
+
+    unit = (direction / direction.norm()).reshape(1, -1)
+    layer = LayerSubspace.affine(
+        torch.zeros(direction.numel()), unit,
+        node_coords=torch.tensor([[1.0]]),
+    )
+    return Manifold(
+        name="mood", domain=CustomDomain(1), node_labels=["+"],
+        node_coords=torch.tensor([[1.0]]), layers={0: layer},
+        feature_space="raw", node_roles=[None], node_kinds=[None],
+        mahalanobis_share={0: share},
+    )
+
+
+def test_evict_artifact_reports_tracked_probe_folds() -> None:
+    """C4: a probe folded from a registered profile never held a loaded
+    manifold, so eviction has to find it through the registry's fold index."""
+    registry = _registry()
+    registry.set_probe_folder(_Fold)  # type: ignore[arg-type]
+    seen = _Recorder(registry)
+    registry.put_profile("local/mood", {0: torch.ones(2)})
+    fold = registry.fold_probe("local/mood", registry.profiles["local/mood"])
+    alias = registry.fold_probe("mood", {0: torch.ones(2)})
+    other = registry.fold_probe("other/mood", {0: torch.ones(2)})
+
+    registry.evict_artifact("local", "mood")
+    assert seen.swaps == [{id(fold): None, id(alias): None}]
+    registry.evict_artifact("other", "mood")
+    assert seen.swaps[-1] == {id(other): None}
+
+
+def test_adopt_fitted_refolds_tracked_probe_folds() -> None:
+    registry = _registry()
+    registry.set_probe_folder(_Fold)  # type: ignore[arg-type]
+    seen = _Recorder(registry)
+    first = registry.fold_probe("local/mood", {0: torch.ones(2)})
+    second = registry.fold_probe("local/mood", {0: torch.ones(2)})
+
+    direction = torch.tensor([3.0, 4.0])
+    registry.adopt_fitted("local/mood", _ray(direction, share=2.0))
+    (swaps,) = seen.swaps
+    refold = swaps[id(first)]
+    assert swaps == {id(first): refold, id(second): refold}
+    assert isinstance(refold, _Fold) and refold.key == "local/mood"
+    assert torch.allclose(refold.tensors[0], 2.0 * direction / 5.0)
+
+    # The refold is tracked in turn: the next eviction reaches it.
+    registry.evict_artifact("local", "mood")
+    assert seen.swaps[-1] == {id(refold): None}
+
+
+def test_adopt_fitted_drops_probe_folds_when_the_fit_no_longer_folds() -> None:
+    registry = _registry()
+    registry.set_probe_folder(_Fold)  # type: ignore[arg-type]
+    seen = _Recorder(registry)
+    fold = registry.fold_probe("local/mood", {0: torch.ones(2)})
+    rank2 = _ray(torch.tensor([1.0, 0.0]))
+    rank2.layers[0] = type(rank2.layers[0]).affine(
+        torch.zeros(2), torch.eye(2), node_coords=torch.tensor([[1.0, 0.0]]),
+    )
+    registry.adopt_fitted("local/mood", rank2)
+    assert seen.swaps == [{id(fold): None}]
+
+
+def test_detached_probe_folds_drop_out_of_the_index() -> None:
+    import gc
+
+    registry = _registry()
+    registry.set_probe_folder(_Fold)  # type: ignore[arg-type]
+    seen = _Recorder(registry)
+    registry.fold_probe("local/mood", {0: torch.ones(2)})
+    gc.collect()
+    registry.evict_artifact("local", "mood")
+    assert seen.swaps == []

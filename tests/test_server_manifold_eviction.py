@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import torch
 
 from drowse.base.paths import manifold_dir
 from drowse.errors import ManifoldNotRegisteredError, ProfileNotRegisteredError
@@ -18,8 +19,7 @@ from tests.support.sessions import baseline_corpus
 pytestmark = pytest.mark.usefixtures("isolated_home")
 
 
-@pytest.fixture
-def fitted(tiny_session: Any) -> Any:
+def _fit_mood(session: Any) -> None:
     create_discover_manifold_folder(
         "local", "mood", "test axis", fit_mode="pca",
         node_corpora={
@@ -28,7 +28,12 @@ def fitted(tiny_session: Any) -> Any:
         },
         hyperparams={"max_dim": 1},
     )
-    tiny_session.fit(manifold_dir("local", "mood"))
+    session.fit(manifold_dir("local", "mood"))
+
+
+@pytest.fixture
+def fitted(tiny_session: Any) -> Any:
+    _fit_mood(tiny_session)
     # A push term loads the manifold, the probe attaches that loaded object,
     # and an ablation folds it into the profile registry — three in-memory
     # consumers of the folder.
@@ -96,3 +101,53 @@ def test_evict_artifact_refuses_during_a_model_op(fitted: Any) -> None:
         fitted.gen_lock.release()
     assert len(errors) == 1 and isinstance(errors[0], ConcurrentExtractionError)
     assert "local/mood" in fitted.manifolds
+
+
+@pytest.fixture
+def folded_probe(tiny_session: Any) -> Any:
+    """Probes attached *after* an ablation registered the folded profile read a
+    fold of that profile, not the registry's manifold object."""
+    _fit_mood(tiny_session)
+    with tiny_session.steering("0.2 !local/mood"):
+        pass
+    assert "local/mood" in tiny_session.profiles
+    tiny_session.add_probe("local/mood")
+    tiny_session.add_probe("local/mood", as_name="mood-alias")
+    probes = tiny_session.monitor.manifolds
+    assert probes["local/mood"] is not tiny_session.manifolds["local/mood"]
+    return tiny_session
+
+
+def test_delete_route_drops_probes_folded_from_the_profile(
+    folded_probe: Any, app_client: Any,
+) -> None:
+    client = app_client(folded_probe)
+    response = client.delete("/drowse/v1/manifolds/local/mood")
+    assert response.status_code == 200, response.text
+
+    assert "local/mood" not in folded_probe.profiles
+    assert "local/mood" not in folded_probe.monitor.probe_names
+    assert "mood-alias" not in folded_probe.monitor.probe_names
+
+
+def test_fit_route_refolds_probes_folded_from_the_profile(
+    folded_probe: Any, app_client: Any,
+) -> None:
+    before = dict(folded_probe.monitor.manifolds)
+    client = app_client(folded_probe)
+    response = client.post(
+        "/drowse/v1/manifolds/local/mood/fit", json={"force": True},
+    )
+    assert response.status_code == 200, response.text
+
+    after = folded_probe.monitor.manifolds
+    for name in ("local/mood", "mood-alias"):
+        assert name in after
+        assert after[name] is not before[name]
+        # Still the profile's 1-node fold, rebuilt from the new fit.
+        assert after[name].node_labels == before[name].node_labels
+    refit = folded_probe.profiles["local/mood"]
+    probe_layer = next(iter(after["local/mood"].layers))
+    basis = after["local/mood"].layers[probe_layer].basis.reshape(-1)
+    direction = refit[probe_layer].to(basis).reshape(-1)
+    assert torch.allclose(basis, direction / direction.norm(), atol=1e-5)

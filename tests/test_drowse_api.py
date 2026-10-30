@@ -337,7 +337,7 @@ class TestProbes:
         from types import SimpleNamespace
         import torch
 
-        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.geometry.fold import fold_directions_to_subspace
         from tests._whitener import isotropic_whitener
 
         session, client = session_and_client
@@ -1099,7 +1099,7 @@ class TestScoreSingleToken:
         import torch
         from drowse.readout.monitor import Monitor
         from drowse.generation.results import ProbeReading
-        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.geometry.fold import fold_directions_to_subspace
 
         from tests._whitener import isotropic_whitener
         dim = 16
@@ -1594,7 +1594,7 @@ class TestAnalyticsMultiNodeProbe:
         from drowse.geometry.subspace import LayerSubspace
         from drowse.geometry.manifold import Manifold
         from drowse.session.session import DrowseSession
-        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.geometry.fold import fold_directions_to_subspace
 
         session, client = session_and_client
         torch.manual_seed(3)

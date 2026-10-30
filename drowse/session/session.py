@@ -1068,6 +1068,7 @@ class DrowseSession:
         ))
         self._registry.on_change(lambda: self._invalidate_prefix_cache())
         self._registry.on_swap(self._refresh_swapped_probes)
+        self._registry.set_probe_folder(self._fold_profile_probe)
         self._registry.set_atom_resolver("jlens", lambda atom: self.register_jlens_direction(atom))
         self._registry.set_atom_resolver("sae", lambda atom: self.register_sae_direction(atom))
         # Neutral means + whitener, built lazily from one neutral load.
@@ -1212,7 +1213,7 @@ class DrowseSession:
         ``emotions``) is excluded: the direction-cosine analytics fold every
         name to a single steering direction, which only a folded affine
         ``R = 1`` manifold has."""
-        from drowse.fit.capture import is_foldable_vector_manifold
+        from drowse.geometry.fold import is_foldable_vector_manifold
 
         names = set(self._registry.profiles)  # registered vectors are always R=1
         # One locked roster snapshot — this serves un-locked analytics
@@ -1335,21 +1336,21 @@ class DrowseSession:
         ):
             self._registry.evict_artifact(namespace, name, feature=feature)
 
-    def _refresh_swapped_probes(
-        self, old_ids: set[int], replacement: Manifold | None,
-    ) -> None:
+    def _refresh_swapped_probes(self, swaps: Mapping[int, Manifold | None]) -> None:
         """Move attached geometry probes off replaced manifold objects.
 
-        Each probe reading an object in ``old_ids`` is re-attached on
-        ``replacement`` (same name and nearest-node roster size), or detached
-        when the artifact was evicted.  Lands under the geometry-state lock
-        so the un-locked roster readers see the remove+add pair atomically.
+        ``swaps`` maps a replaced object's ``id`` to its replacement: each
+        probe reading one is re-attached on the replacement (same name and
+        nearest-node roster size), or detached when it maps to ``None`` (the
+        artifact was evicted).  Lands under the geometry-state lock so the
+        un-locked roster readers see the remove+add pair atomically.
         """
         monitor = self._monitor
         with self._geometry_instrument.state_lock:
             for probe_name, attached in list(monitor.attached_probes().items()):
-                if id(attached.manifold) not in old_ids:
+                if id(attached.manifold) not in swaps:
                     continue
+                replacement = swaps[id(attached.manifold)]
                 top_n = attached.top_n
                 monitor.remove_probe(probe_name)
                 if replacement is not None:
@@ -4493,7 +4494,7 @@ class DrowseSession:
         on-disk manifold folder stays the bare canonical name.
         """
         from drowse.fit.pipeline import ManifoldExtractionPipeline
-        from drowse.fit.capture import folded_directions
+        from drowse.geometry.fold import folded_directions
 
         pipe = ManifoldExtractionPipeline(self, self.events)
         # Suppress the pipeline's own ``ManifoldExtracted`` so the vector path
@@ -4630,7 +4631,7 @@ class DrowseSession:
         from drowse.base.paths import tensor_filename
         from drowse.store.manifold_tensors import load_manifold
         from drowse.model.fingerprint import loaded_model_fingerprint
-        from drowse.fit.capture import folded_directions
+        from drowse.geometry.fold import folded_directions
 
         live_fingerprint = loaded_model_fingerprint(self._model, self.model_id)
         dst_folder = merge_into_manifold(
@@ -5580,12 +5581,15 @@ class DrowseSession:
     def _resolve_probe_manifold(self, selector: str) -> "Manifold":
         """Resolve a probe selector to a loaded :class:`Manifold`.
 
-        Mirrors the steering resolver, in order: (1) an in-memory baked
-        ``Profile`` already in ``_profiles`` (ad-hoc ``extract`` / ``merge`` /
-        projection results) → folded into a 1-node neutral-anchored ray;
-        (2) a fitted manifold on disk (``[ns/]name[:variant]``) → loaded
-        directly, so a 2-node ``pca`` reads rank-1 and a discover / curved fit
-        reads rank-R; (3) a bare concept with neither → extracted, then folded.
+        Mirrors the steering resolver, in order: (1) a direction profile
+        already in the registry (an ``extract`` / ``bake`` result, a
+        registered ``Profile``, a fold cached by an earlier steer) → folded
+        into a 1-node neutral-anchored ray; (2) a fitted manifold on disk
+        (``[ns/]name[:variant]``) → loaded directly, so a 2-node ``pca`` reads
+        rank-1 and a discover / curved fit reads rank-R; (3) a bare concept
+        with neither → extracted, then folded.  Folds go through
+        :meth:`ArtifactRegistry.fold_probe`, which tracks them, so evicting
+        or re-fitting the artifact reaches these probes too.
 
         ``jlens/<word>`` selectors never reach this resolver — ``add_probe``
         routes them to the lens-probe registry (the readout channel), so the
@@ -5593,23 +5597,23 @@ class DrowseSession:
         nonsense manifold named "jlens/<word>".
         """
         profile = self._registry.profiles.get(selector)
-        if profile is not None:
-            return self._fold_profile_probe(selector, profile)
-        try:
-            return self._registry.ensure_manifold_loaded(selector)
-        except ManifoldNotRegisteredError:
-            pass
-        _, profile = self.extract(selector)
-        return self._fold_profile_probe(selector, profile)
+        if profile is None:
+            try:
+                return self._registry.ensure_manifold_loaded(selector)
+            except ManifoldNotRegisteredError:
+                pass
+            _, profile = self.extract(selector)
+        return self._registry.fold_probe(selector, profile)
 
     def _fold_profile_probe(self, name: str, profile: Any) -> "Manifold":
         """Fold a baked per-layer ``Profile`` into a 1-node neutral-anchored ray.
 
         A ``Profile`` is a per-layer baked direction; the monitor reads probes
         as flat manifolds (the rank-1 coordinate case), so fold it via the
-        same primitive ``extract`` uses for a monopolar concept.
+        same primitive ``extract`` uses for a monopolar concept.  The registry
+        calls this through :meth:`ArtifactRegistry.fold_probe`.
         """
-        from drowse.fit.capture import fold_directions_to_subspace
+        from drowse.geometry.fold import fold_directions_to_subspace
         return fold_directions_to_subspace(
             name, dict(profile), self.layer_means, whitener=self.whitener,
         )

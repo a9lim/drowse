@@ -92,6 +92,8 @@ def wire_stub_steering(
         registry.set_atom_resolver("jlens", lambda atom: stub.register_jlens_direction(atom))
     if hasattr(stub, "register_sae_direction"):
         registry.set_atom_resolver("sae", lambda atom: stub.register_sae_direction(atom))
+    if hasattr(stub, "_fold_profile_probe"):
+        registry.set_probe_folder(lambda key, tensors: stub._fold_profile_probe(key, tensors))
     for name, tensors in (profiles or {}).items():
         registry.put_profile(name, tensors)
     for key, manifold in (manifolds or {}).items():

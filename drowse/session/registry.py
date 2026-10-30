@@ -11,8 +11,10 @@ a method here, so the dependent caches move with it:
   the analytics CPU snapshots and fires the ``on_change`` listeners (the
   session wires its prefix-cache invalidation there);
 - a manifold *swap* (``adopt_fitted`` / ``evict_artifact``) also fires the
-  ``on_swap`` listeners with the identities of the replaced objects, so the
-  session can refresh or drop monitor probes that read them;
+  ``on_swap`` listeners with a map from each replaced object's identity to its
+  replacement (``None`` when evicted), so the session can refresh or drop the
+  monitor probes that read them.  That covers the loaded manifolds and the
+  probe folds handed out by :meth:`ArtifactRegistry.fold_probe`;
 - lazy loads (``ensure_manifold_loaded`` / ``ensure_profile_registered``)
   memoize what is already on disk and fire nothing.
 
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 import json
 import threading
+import weakref
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +36,7 @@ from typing import Any
 import torch
 
 from drowse.errors import ManifoldNotRegisteredError, ProfileNotRegisteredError
+from drowse.geometry.fold import folded_directions, is_foldable_vector_manifold
 from drowse.geometry.manifold import Manifold
 from drowse.geometry.profile import Profile
 from drowse.steering.grammar import RESERVED_NAMESPACES
@@ -42,6 +46,11 @@ Tensors = dict[int, torch.Tensor]
 # Variants that name a family of fitted tensors rather than one tensor; they
 # concretize against the files on disk for the loaded model.
 _BARE_VARIANTS = frozenset({"sae", "from", "role"})
+
+# ``id(replaced manifold) -> replacement`` (``None``: evicted), the payload of
+# an ``on_swap`` notification.
+Swaps = Mapping[int, "Manifold | None"]
+ProbeFolder = Callable[[str, Mapping[int, torch.Tensor]], Manifold]
 
 
 @dataclass(frozen=True)
@@ -100,8 +109,14 @@ class ArtifactRegistry:
         self._profiles: dict[str, Tensors] = {}
         self._manifolds: dict[str, Manifold] = {}
         self._on_change: list[Callable[[], None]] = []
-        self._on_swap: list[Callable[[set[int], Manifold | None], None]] = []
+        self._on_swap: list[Callable[[Swaps], None]] = []
         self._atom_resolvers: dict[str, Callable[[str], str]] = {}
+        # Probe folds handed out per registry key, so an eviction or re-fit of
+        # the artifact the key names reaches probes that never held a loaded
+        # manifold.  Weak (keyed by ``id``, since a Manifold is unhashable):
+        # a detached probe's fold drops out on its own.
+        self._probe_folder: ProbeFolder | None = None
+        self._probe_folds: dict[str, weakref.WeakValueDictionary[int, Manifold]] = {}
         # Read-side analytics snapshots (CPU copies), dropped on any
         # invalidating mutation.  ``_epoch`` advances with every drop so a
         # snapshot built across a concurrent mutation is never stored.
@@ -127,10 +142,16 @@ class ArtifactRegistry:
         """Call ``callback`` after every invalidating mutation."""
         self._on_change.append(callback)
 
-    def on_swap(self, callback: Callable[[set[int], Manifold | None], None]) -> None:
-        """Call ``callback(old_ids, replacement)`` when loaded manifolds are
-        replaced (``replacement`` is the promoted fit) or evicted (``None``)."""
+    def on_swap(self, callback: Callable[[Swaps], None]) -> None:
+        """Call ``callback(swaps)`` when manifolds this registry handed out are
+        replaced or evicted; ``swaps`` maps each old object's ``id`` to its
+        replacement, or to ``None`` when it was evicted."""
         self._on_swap.append(callback)
+
+    def set_probe_folder(self, fold: ProbeFolder) -> None:
+        """Install the fold :meth:`fold_probe` uses (``fold(key, tensors)``
+        builds the 1-node neutral-anchored ray a probe reads)."""
+        self._probe_folder = fold
 
     def set_atom_resolver(self, namespace: str, resolver: Callable[[str], str]) -> None:
         """Route a reserved ``<namespace>/<atom>`` profile key to ``resolver``.
@@ -145,11 +166,37 @@ class ArtifactRegistry:
         for callback in self._on_change:
             callback()
 
-    def _swapped(self, old_ids: set[int], replacement: Manifold | None) -> None:
-        if not old_ids:
+    def _swapped(self, swaps: Swaps) -> None:
+        if not swaps:
             return
         for callback in self._on_swap:
-            callback(old_ids, replacement)
+            callback(swaps)
+
+    def _matching_fold_keys(
+        self, namespace: str, name: str, feature: str | None,
+    ) -> list[str]:
+        return [
+            key for key in self._probe_folds
+            if artifact_key_matches(key, namespace, name, feature)
+        ]
+
+    def fold_probe(self, key: str, tensors: Mapping[int, torch.Tensor]) -> Manifold:
+        """Fold ``tensors`` (the direction registered or extracted under
+        ``key``) into the ray a probe reads, and track it.
+
+        A tracked fold moves with its artifact: :meth:`adopt_fitted` re-folds
+        it from the new fit and :meth:`evict_artifact` reports it evicted, the
+        same way a loaded manifold is swapped.
+        """
+        if self._probe_folder is None:
+            raise RuntimeError("ArtifactRegistry.fold_probe: no probe folder installed")
+        manifold = self._probe_folder(key, tensors)
+        self._track_fold(key, manifold)
+        return manifold
+
+    def _track_fold(self, key: str, manifold: Manifold) -> None:
+        folds = self._probe_folds.setdefault(key, weakref.WeakValueDictionary())
+        folds[id(manifold)] = manifold
 
     # --------------------------------------------------------- mutations
 
@@ -187,37 +234,56 @@ class ArtifactRegistry:
         """Move every in-memory consumer of a freshly fitted artifact to it.
 
         Loaded manifolds that read the same tensor family are replaced by the
-        promoted fit, folded profiles are re-folded (or dropped when the fit
-        no longer folds to one direction), and ``on_swap`` listeners refresh
-        whatever held the old objects.
+        promoted fit, folded profiles and tracked probe folds are re-folded
+        (or dropped when the fit no longer folds to one direction), and
+        ``on_swap`` listeners refresh whatever held the old objects.  Every
+        replacement is built before the first mutation, so a failed fold
+        leaves the registry as it was.
         """
-        from drowse.fit.capture import folded_directions, is_foldable_vector_manifold
-
         path = Path(folder)
         ns, name = path.parent.name, path.name
         feature = manifold.feature_space
+        b = self._binding
         keys = [
             key for key in self._manifolds
             if artifact_key_matches(key, ns, name, feature)
         ]
-        old_ids = {id(self._manifolds[key]) for key in keys}
-        promoted: Manifold | None = None
-        if keys:
-            promoted = manifold.to(device=self._binding.device, dtype=torch.float32)
-            for key in keys:
-                self._manifolds[key] = promoted
         profile_keys = [
             key for key in self._profiles
             if artifact_key_matches(key, ns, name, feature)
         ]
-        if profile_keys and is_foldable_vector_manifold(manifold):
-            folded = self.promote(folded_directions(manifold))
+        fold_keys = self._matching_fold_keys(ns, name, feature)
+        directions = (
+            folded_directions(manifold)
+            if (profile_keys or fold_keys) and is_foldable_vector_manifold(manifold)
+            else None
+        )
+        promoted = (
+            manifold.to(device=b.device, dtype=torch.float32) if keys else None
+        )
+        refolds: dict[str, Manifold | None] = {key: None for key in fold_keys}
+        if directions is not None and fold_keys:
+            if self._probe_folder is None:
+                raise RuntimeError("ArtifactRegistry.adopt_fitted: no probe folder installed")
+            fp32 = {L: t.to(b.device, torch.float32) for L, t in directions.items()}
+            refolds = {key: self._probe_folder(key, fp32) for key in fold_keys}
+
+        swaps: dict[int, Manifold | None] = {}
+        for key in keys:
+            swaps[id(self._manifolds[key])] = promoted
+            self._manifolds[key] = promoted  # type: ignore[assignment]
+        if directions is not None:
+            folded = self.promote(directions)
             for key in profile_keys:
                 self._profiles[key] = dict(folded)
         else:
             for key in profile_keys:
                 del self._profiles[key]
-        self._swapped(old_ids, promoted)
+        for key, refold in refolds.items():
+            swaps.update((id(old), refold) for old in self._probe_folds.pop(key).values())
+            if refold is not None:
+                self._track_fold(key, refold)
+        self._swapped(swaps)
         self._changed()
 
     def evict_artifact(
@@ -233,19 +299,24 @@ class ArtifactRegistry:
             key for key in self._manifolds
             if artifact_key_matches(key, namespace, name, feature)
         ]
-        old_ids = {id(self._manifolds.pop(key)) for key in keys}
+        swaps: dict[int, Manifold | None] = {
+            id(self._manifolds.pop(key)): None for key in keys
+        }
         for key in [
             key for key in self._profiles
             if artifact_key_matches(key, namespace, name, feature)
         ]:
             del self._profiles[key]
-        self._swapped(old_ids, None)
+        for key in self._matching_fold_keys(namespace, name, feature):
+            swaps.update((id(old), None) for old in self._probe_folds.pop(key).values())
+        self._swapped(swaps)
         self._changed()
 
     def clear(self) -> None:
         """Drop everything (session teardown)."""
         self._profiles.clear()
         self._manifolds.clear()
+        self._probe_folds.clear()
         self._changed()
 
     # ---------------------------------------------------------- analytics
@@ -513,7 +584,6 @@ class ArtifactRegistry:
                 f"No profile registered for {role} '{name}' "
                 f"({miss.args[0] if miss.args else miss})"
             ) from miss
-        from drowse.fit.capture import folded_directions
         try:
             return folded_directions(manifold)
         except Exception as e:

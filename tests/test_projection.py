@@ -21,7 +21,7 @@ from drowse.errors import WhitenerError
 from drowse.errors import ProfileNotRegisteredError
 from drowse.steering.grammar import parse_expr
 from drowse.steering.triggers import Trigger
-from drowse.fit.capture import project_profile
+from drowse.geometry.fold import project_profile
 from tests._whitener import synthetic_whitener
 from tests.support.stubs import wire_stub_steering
 

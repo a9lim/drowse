@@ -9,7 +9,7 @@ import torch
 
 from drowse.model.fingerprint import loaded_model_fingerprint
 from drowse.session.registry import ArtifactRegistry, ModelBinding
-from drowse.fit.capture import fold_directions_to_subspace
+from drowse.geometry.fold import fold_directions_to_subspace
 from drowse.store.manifold_schema import ManifoldFormatError
 from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
 from drowse.store.manifold_lifecycle import transfer_manifold

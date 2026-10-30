@@ -2067,7 +2067,7 @@ def test_auto_curved_partial_topup_reuses_durable_rows_without_recapture(
 
 
 def _fold_test_direction(name: str, direction: torch.Tensor):
-    from drowse.fit.capture import fold_directions_to_subspace
+    from drowse.geometry.fold import fold_directions_to_subspace
 
     whitener = synthetic_whitener([0], int(direction.numel()))
     return fold_directions_to_subspace(
@@ -2165,7 +2165,7 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
     attached = session._monitor.probes["mood-probe"]
     assert attached.manifold is live
     assert attached.top_n == 4
-    from drowse.fit.capture import folded_directions
+    from drowse.geometry.fold import folded_directions
 
     assert torch.allclose(
         session._registry.profiles["local/mood"][0], folded_directions(new)[0],
