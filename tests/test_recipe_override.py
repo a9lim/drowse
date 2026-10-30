@@ -573,3 +573,29 @@ def test_with_probe_hashes_drops_unhashable_probes():
     stamped = recipe.with_probe_hashes(lambda name: "h" if name == "calm" else None)
     assert stamped.probe_hashes == {"calm": "h"}
     assert recipe.probe_hashes == {}
+
+
+def test_inverted_steering_negates_every_term_kind() -> None:
+    """``invert_steering`` flips projected / ablation coefficients and the
+    coefficient of a triggered entry, keeping the trigger."""
+    from drowse.steering.grammar import AblationTerm, ProjectedTerm, parse_expr
+
+    inverted = Recipe(steering="0.3 a|b + 0.5 !c + 0.4 d@response").invert_steering()
+    assert inverted.steering is not None
+    alphas = parse_expr(inverted.steering).alphas
+    projected = alphas["a|b"]
+    ablation = alphas["!c"]
+    assert isinstance(projected, ProjectedTerm) and projected.coeff == -0.3
+    assert isinstance(ablation, AblationTerm) and ablation.coeff == -0.5
+    coeff, trigger = alphas["d"]
+    assert coeff == -0.4
+    assert trigger.prompt is False
+
+
+def test_recipe_from_dict_rejects_a_non_string_system_prompt() -> None:
+    from drowse.loom.errors import LoomTreeError
+
+    data = Recipe(steering="0.3 a", system_prompt="hi").to_dict()
+    data["system_prompt"] = 5
+    with pytest.raises(LoomTreeError, match="system_prompt must be a string or null"):
+        Recipe.from_dict(data)
