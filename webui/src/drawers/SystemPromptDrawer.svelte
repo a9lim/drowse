@@ -14,11 +14,6 @@
   import { ApiError } from "../lib/runtime/services";
   import { userFacingError } from "../lib/runtime/userFacingError";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => {
-    void _drawerProps.params;
-  });
-
   let value = $state(sessionState.info?.config.system_prompt ?? "");
   let busy = $state(false);
   let errorMsg: string | null = $state(null);

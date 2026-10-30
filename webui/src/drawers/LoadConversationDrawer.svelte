@@ -29,9 +29,6 @@
   import { userFacingError } from "../lib/runtime/userFacingError";
   import { pushToast } from "../lib/stores/toasts.svelte";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => void _drawerProps.params);
-
   let fileInput: HTMLInputElement | null = $state(null);
   let conversations: SavedConversationSummary[] = $state([]);
   let issues: SavedConversationIssue[] = $state([]);

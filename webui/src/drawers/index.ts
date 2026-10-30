@@ -32,8 +32,11 @@ import { drawerAvailability } from "../lib/runtime/ui-capabilities";
 
 
 /** Each drawer owns its params; responsive drawers can consume the host's
- *  presentation and dismissal props. */
-export type DrawerComponent = Component<{ params: unknown; mobile?: boolean; onclose?: () => void }>;
+ *  presentation and dismissal props.  A drawer that needs none of them
+ *  declares no props (the host's are ignored). */
+export type DrawerComponent =
+  | Component<{ params: unknown; mobile?: boolean; onclose?: () => void }>
+  | Component<Record<string, never>>;
 
 /** Palette group keys.  Typing ``launcher.group`` as this union means a
  *  typo can't strand a tool in a group that never renders. */

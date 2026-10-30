@@ -29,9 +29,6 @@
   import type { ManifoldInfo } from "../lib/types";
   import { isDiscoverFit } from "../lib/manifolds/fitKind";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => { void _drawerProps.params; });
-
   function rowKey(m: ManifoldInfo): string {
     return `${m.namespace}/${m.name}`;
   }

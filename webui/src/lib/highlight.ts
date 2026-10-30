@@ -22,17 +22,6 @@ import {
 } from "./tokens";
 import type { TokenScore } from "./types";
 
-/** The deepest recorded layer, for the explicitly layer-labeled tooltip. */
-export function latestLayerScores(
-  t: TokenScore,
-): Record<string, number> | undefined {
-  const pls = t.perLayerScores;
-  if (!pls) return undefined;
-  const layers = Object.keys(pls).sort((a, b) => Number(a) - Number(b));
-  const last = layers[layers.length - 1];
-  return last === undefined ? undefined : pls[last];
-}
-
 /** Score lookup for one token against one highlight target.
  *
  *  ``SURPRISE_TARGET`` routes to the logit-pass surprise value.  A real

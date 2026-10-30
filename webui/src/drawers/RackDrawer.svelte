@@ -170,7 +170,7 @@
   }
 
   function selectorOptions(m: ManifoldInfo): ManifoldSelectorOption[] {
-    return manifoldSelectorOptions(m, sessionState.info?.model_id ?? null, browserMode);
+    return manifoldSelectorOptions(m, sessionState.info?.model_id ?? null);
   }
 
   function selectorChoice(m: ManifoldInfo): ManifoldSelectorOption | null {

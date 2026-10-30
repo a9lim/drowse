@@ -118,8 +118,6 @@ export interface SaeTokenReadoutJSON {
 // ``per_layer_scores`` / ``probe_readings`` / ``lens_readout`` /
 // ``lens_aggregate`` / ``sae_readout``); see drowse.readout.measurements.
 
-export type TokenReadoutProvenance = "captured" | "replayed";
-
 /** Either family's reading shape, as it arrives inside the envelope. */
 export type AnyReadingJSON = ProbeReadingJSON | ScalarReadingJSON;
 
@@ -1036,15 +1034,6 @@ export interface PendingAction {
   awaitsGen: boolean;
   rebuild: ((newText: string) => PendingAction) | null;
   createdAt: number;
-  /** Predicted active-node role after this action drains.  Drives the
-   *  input box's role-aware placeholder + send-button label: a queued
-   *  ``commit_user`` (this field = ``true``) flips the next message into
-   *  prefill / commit-assistant mode even though the live active node
-   *  hasn't moved yet.  ``null`` for actions that don't change the
-   *  active node (rack mutations, sampling tweaks).  ``false`` for
-   *  actions that land an assistant or root active node (send, prefill,
-   *  commit_assistant, regen, /clear). */
-  endsOnUserNode?: boolean | null;
   /** Coalesce tag for fold-into-tail batching.  When a fresh action
    *  carries the same ``coalesceKey`` as the *current queue tail*, its
    *  ``apply`` is chained onto that tail item instead of appending a

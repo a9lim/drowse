@@ -48,11 +48,6 @@
   } from "../lib/pointerGesture";
   import type { ProbeGeometryResponse, ProbeLayerGeometry } from "../lib/types";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => {
-    void _drawerProps.params;
-  });
-
   const params = $derived(drawerState.params as { name?: string } | null);
   const probeName = $derived(params?.name ?? "");
   const displayName = $derived(probeName.split("/").pop() ?? probeName);

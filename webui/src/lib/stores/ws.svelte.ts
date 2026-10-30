@@ -875,12 +875,6 @@ function buildSubmitPending(
       : (newText: string) =>
           buildSubmitPending(newText, authoredRole, generatedRole, opts),
     createdAt: Date.now(),
-    endsOnUserNode:
-      (generatedRole ?? authoredRole) === "user"
-        ? true
-        : (generatedRole ?? authoredRole) === "assistant"
-          ? false
-          : null,
   };
 }
 
@@ -917,7 +911,6 @@ export async function sendSubmit(
         apply: item.apply,
         awaitsGen: item.awaitsGen,
         rebuild: item.rebuild,
-        endsOnUserNode: item.endsOnUserNode,
       },
       { replaceSlot: replaceSlot ?? null },
     );

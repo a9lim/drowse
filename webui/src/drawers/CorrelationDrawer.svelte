@@ -25,11 +25,6 @@
   import { omittedAnalyticsProbes } from "../lib/profileAnalytics";
   import { userFacingError } from "../lib/runtime/userFacingError";
 
-  // Drawer host forwards { params } — unused here, but the prop must
-  // exist so the host's switch can pass it uniformly.
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => { void _drawerProps.params; });
-
   // Lazy-fetch on mount when no snapshot exists; reopens reuse the
   // cached matrix so the drawer lands instantly.
   let loading = $state(false);

@@ -114,7 +114,6 @@
   const activePathSet = $derived(new Set(loomTree.activePath));
   const selectionSet = $derived(new Set(nodeSelection.ids));
   const collapsedIds = new SvelteSet<string>();
-  const sentenceBranchAvailable = true;
 
   // --------------------------------------- compare bar (active node) --
   //
@@ -2286,7 +2285,7 @@
               onbranch={(ev) => branchFromNode(row.node, ev.currentTarget as HTMLElement)}
               onselecttoken={(tokenIndex) => void inspectLoomToken(row.node, tokenIndex)}
               onbranchsentence={(tokenIndex) => void branchAfterToken(row.node, tokenIndex)}
-              sentenceBranchAvailable={sentenceBranchAvailable && !genStatus.active}
+              sentenceBranchAvailable={!genStatus.active}
               ontogglechildren={() => toggleChildren(row.node.id)}
             />
             {/if}
@@ -2309,8 +2308,7 @@
       <div class="path-stream" role="list" aria-label="Current conversation path">
         {#each pathSnippets as snippet, index (snippet.key)}
           {@const boundary = snippet.end >= 0 ? snippet.node.tokens?.[snippet.end] : null}
-          {@const canBranch = snippet.sentenceIndex !== null && sentenceBranchAvailable &&
-            !genStatus.active && boundary?.raw_index != null && boundary?.token_id != null}
+          {@const canBranch = snippet.sentenceIndex !== null && !genStatus.active && boundary?.raw_index != null && boundary?.token_id != null}
           <article
             class="path-snippet"
             class:current-snippet={loomTree.active_node_id === snippet.node.id && index === pathSnippets.length - 1}

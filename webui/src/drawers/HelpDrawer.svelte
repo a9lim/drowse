@@ -5,11 +5,6 @@
   import { getRuntimeManifoldFitMaxIntrinsicDim } from "../lib/runtime/registry";
   import { CONTACT_ADDRESS } from "../lib/contact";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => {
-    void _drawerProps.params;
-  });
-
   // Pre-derive the platform-appropriate modifier label so the shortcut
   // hints don't lie on Linux or Windows.  ``navigator`` may be undefined
   // in non-browser test environments — fall back to ``Cmd`` to match the

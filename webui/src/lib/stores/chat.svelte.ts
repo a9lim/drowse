@@ -90,10 +90,6 @@ export function clearChat(): void {
       apply: resetChatToRoot,
       awaitsGen: false,
       rebuild: null,
-      // /clear navigates to the synthetic root (system role) — not a
-      // user node, so the next submission goes through "message" mode
-      // and lands a fresh user branch off root.
-      endsOnUserNode: false,
     });
   } else {
     void resetChatToRoot();
