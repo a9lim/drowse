@@ -1,11 +1,11 @@
 """CPU tests for hidden-state round-trip scoring.
 
-Covers Monitor.score_stack and DrowseSession.score_hidden using a synthetic
-monitor and a mock DrowseSession built without a real model.
+Covers Monitor.score_stack and ReadPlane.score_hidden over a synthetic
+monitor, plus the ``return_hidden`` round trip on a real tiny CPU session.
 
 Mahalanobis-only (4.0 collapse): probe scoring *requires* a whitener covering
 every probed layer — there is no Euclidean path — so every monitor here is
-built with a synthetic covering whitener (``tests/_whitener.py``).
+built with a synthetic covering whitener (``tests/support/whitener.py``).
 
 Post-unification (the read side is the unified ``Monitor``): a probe is a
 :class:`~drowse.geometry.manifold.Manifold`, and a single steering direction is
@@ -146,11 +146,13 @@ def test_score_probes_without_whitener_raises():
 # ReadPlane.score_hidden (DrowseSession.score_hidden delegates here)
 # ---------------------------------------------------------------------------
 
+from drowse import SamplingConfig  # noqa: E402
 from drowse.errors import DrowseError  # noqa: E402
 from tests.support.read_plane import ReadRig  # noqa: E402
+from tests.support.sessions import TinySessionFactory, register_vectors  # noqa: E402
 
 
-def _mock_session() -> Any:
+def _plane_with_probe() -> Any:
     """The read plane over a monitor with one probe; ``score_hidden`` must
     not touch a model or a capture."""
     return ReadRig(monitor=_monitor_with_probe()).plane
@@ -164,8 +166,54 @@ def test_session_score_hidden_delegates_to_the_read_plane(tiny_session: Any) -> 
         tiny_session.score_hidden({})
 
 
+def test_return_hidden_round_trips_through_score_hidden(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    """``return_hidden=True`` hands back every layer as a CPU ``(T, D)`` stack,
+    and re-scoring it reproduces the per-token scores the generation computed
+    inline."""
+    session, _script = make_tiny_session.scripted("One, two, three.")
+    register_vectors(session, "mood")
+    session.add_probe("mood")
+    hidden_dim = int(session.model_info["hidden_dim"])
+
+    result = session.generate(
+        "Count to three.",
+        sampling=SamplingConfig(max_tokens=16, temperature=0.0, return_hidden=True),
+    ).first
+
+    assert result.hidden_states is not None
+    assert set(result.hidden_states) == set(range(len(session.layers)))
+    n_tokens = len(result.tokens)
+    assert n_tokens > 1
+    for layer, rows in result.hidden_states.items():
+        assert rows.shape == (n_tokens, hidden_dim), layer
+        assert rows.device.type == "cpu"
+
+    inline = session.last_per_token_scores
+    assert inline is not None and set(inline) == {"mood"}
+    _, per_token = session.score_hidden(result.hidden_states, per_token=True)
+    assert set(per_token) == {"mood"}
+    assert len(per_token["mood"]) == len(inline["mood"]) == n_tokens
+    assert per_token["mood"] == pytest.approx(inline["mood"], abs=1e-4)
+
+
+def test_hidden_states_stay_none_unless_requested(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    session, _script = make_tiny_session.scripted("Hello.")
+    register_vectors(session, "mood")
+    session.add_probe("mood")
+    result = session.generate(
+        "Hello.", sampling=SamplingConfig(max_tokens=4, temperature=0.0),
+    ).first
+    assert result.tokens
+    assert set(result.probe_readings) == {"mood"}
+    assert result.hidden_states is None
+
+
 def test_score_hidden_single_state_returns_probe_dict():
-    s = _mock_session()
+    s = _plane_with_probe()
     h = {0: torch.tensor([1.0, 0.0, 0.0, 0.0]) + _MEANS0[0]}
     scores = s.score_hidden(h)
     assert set(scores.keys()) == {"x"}
@@ -174,7 +222,7 @@ def test_score_hidden_single_state_returns_probe_dict():
 
 
 def test_score_hidden_stack_aggregate_only():
-    s = _mock_session()
+    s = _plane_with_probe()
     stack = torch.stack([
         torch.tensor([1.0, 0.0, 0.0, 0.0]) + _MEANS0[0],
         torch.tensor([0.0, 1.0, 0.0, 0.0]) + _MEANS0[0],
@@ -187,7 +235,7 @@ def test_score_hidden_stack_aggregate_only():
 
 
 def test_score_hidden_stack_per_token_returns_tuple():
-    s = _mock_session()
+    s = _plane_with_probe()
     stack = torch.stack([
         torch.tensor([1.0, 0.0, 0.0, 0.0]) + _MEANS0[0],
         torch.tensor([-1.0, 0.0, 0.0, 0.0]) + _MEANS0[0],
@@ -201,13 +249,13 @@ def test_score_hidden_stack_per_token_returns_tuple():
 
 
 def test_score_hidden_empty_dict_raises():
-    s = _mock_session()
+    s = _plane_with_probe()
     with pytest.raises(DrowseError, match="no layers"):
         s.score_hidden({})
 
 
 def test_score_hidden_mixed_shapes_raises():
-    s = _mock_session()
+    s = _plane_with_probe()
     bad = {
         0: torch.tensor([1.0, 0.0, 0.0, 0.0]),        # [D]
         1: torch.tensor([[1.0, 0.0, 0.0, 0.0]]),      # [T, D]
@@ -217,7 +265,7 @@ def test_score_hidden_mixed_shapes_raises():
 
 
 def test_score_hidden_uneven_T_raises():
-    s = _mock_session()
+    s = _plane_with_probe()
     bad = {
         0: torch.zeros(3, 4),
         1: torch.zeros(2, 4),
@@ -231,7 +279,7 @@ def test_score_hidden_uneven_T_raises():
 
 def test_score_hidden_bad_ndim_raises():
     """ndim=3 and beyond are not [D] or [T, D]; must raise DrowseError."""
-    s = _mock_session()
+    s = _plane_with_probe()
     bad = {0: torch.zeros(2, 3, 4)}
     with pytest.raises(DrowseError, match="expected \\[D\\] or \\[T, D\\]"):
         s.score_hidden(bad)
@@ -240,7 +288,7 @@ def test_score_hidden_bad_ndim_raises():
 def test_score_hidden_dim_mismatch_raises():
     """A tensor with wrong hidden_dim must raise DrowseError, not leak
     a raw torch RuntimeError from the scoring matmul."""
-    s = _mock_session()
+    s = _plane_with_probe()
     # Monitor probe is dim=4 at layer 0; pass dim=8 input.
     bad = {0: torch.zeros(2, 8)}
     with pytest.raises(DrowseError, match="dim mismatch"):

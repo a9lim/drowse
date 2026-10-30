@@ -548,6 +548,20 @@ class TestExtract:
             "honest.deceptive:role-pirate", profile,
         )
 
+    def test_extract_rejects_unknown_fields(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        resp = client.post(
+            "/drowse/v1/sessions/default/extract",
+            json={
+                "concept": "custom",
+                "source": {"positive": ["yes"], "negative": ["no"]},
+                "register": False,
+            },
+        )
+        assert resp.status_code == 400
+        assert "Extra inputs are not permitted" in resp.text
+        session.extract.assert_not_called()
+
 
 # ---- WebSocket token+probe co-stream ------------------------------------
 
