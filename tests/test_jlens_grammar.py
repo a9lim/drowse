@@ -331,6 +331,7 @@ def test_composer_detects_gates_on_pinned_lens_probes(make_tiny_session: Any) ->
 def test_lens_gate_scalar_scores_only_referenced_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import drowse.lens.instrument as instrument_module
     import drowse.lens.jlens as jlens_module
 
     session = LensHarness()
@@ -357,9 +358,10 @@ def test_lens_gate_scalar_scores_only_referenced_probe(
     def _fail_full_probabilities(_logits: torch.Tensor) -> torch.Tensor:
         raise AssertionError("gate-only lens scalar scoring should be column-only")
 
-    monkeypatch.setattr(
-        jlens_module, "readout_probabilities", _fail_full_probabilities,
-    )
+    # The instrument binds ``readout_probabilities`` at import, so patch the
+    # name it calls as well as the lens module's own callers.
+    for module in (instrument_module, jlens_module):
+        monkeypatch.setattr(module, "readout_probabilities", _fail_full_probabilities)
 
     scalars = session.lens.gate_scalars({"jlens/g"})
 
