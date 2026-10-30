@@ -41,7 +41,7 @@ from drowse.lens.store import (
     load_lens_checkpoint,
     save_lens_checkpoint,
 )
-from tests._jlens_toys import CharTokenizer
+from tests.support.jlens_toys import CharTokenizer
 from tests.support.lens import LENS_PROMPTS as _PROMPTS
 from tests.support.lens import TOY_MODEL_ID as _MODEL_ID
 from tests.support.lens import LensHarness

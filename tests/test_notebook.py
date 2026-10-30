@@ -223,7 +223,7 @@ class TestPlotProbeCorrelation:
         assert list(fig.data[0].y) == ["alpha", "beta", "gamma"]  # pyright: ignore[reportAttributeAccessIssue]
 
     def test_symmetric_off_diagonal(self) -> None:
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
         profiles = {
             "a": _make_profile({0: [1.0, 0.0]}),
             "b": _make_profile({0: [0.5, 0.5]}),

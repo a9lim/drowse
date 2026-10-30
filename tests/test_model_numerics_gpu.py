@@ -13,7 +13,7 @@ from drowse.lens.jlens import JacobianLens, transport_rows
 from drowse.model.arch import get_layers
 from drowse.model.load import load_model
 from drowse.model.readout import LogitReadout
-from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
+from tests.support.gpu import gpu_model_id, load_or_skip_inaccessible
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(
     not (torch.cuda.is_available() or torch.backends.mps.is_available()), reason="GPU unavailable",

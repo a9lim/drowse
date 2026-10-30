@@ -17,7 +17,7 @@ from typing import Any
 
 import torch
 
-from tests._jlens_toys import CharTokenizer, frozen_toy
+from tests.support.jlens_toys import CharTokenizer, frozen_toy
 
 __all__ = ["PROMPT_RENDER", "ReplayRig", "unwired_replay"]
 

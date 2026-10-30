@@ -28,7 +28,7 @@ from drowse.geometry.topology import (
     select_topology,
 )
 from drowse.geometry.whitener import LayerWhitener
-from tests._whitener import isotropic_whitener, rogue_whitener
+from tests.support.whitener import isotropic_whitener, rogue_whitener
 
 _LAYERS = list(range(6))
 _D = 48

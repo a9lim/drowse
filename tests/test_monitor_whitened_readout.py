@@ -18,7 +18,7 @@ from drowse.geometry.subspace import LayerSubspace
 from drowse.geometry.manifold import Manifold
 from drowse.geometry.subspace import fit_curved_subspace
 from drowse.readout.monitor import Monitor, _layer_geometry
-from tests._whitener import isotropic_whitener
+from tests.support.whitener import isotropic_whitener
 
 
 

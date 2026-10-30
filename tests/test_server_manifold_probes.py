@@ -36,7 +36,7 @@ from drowse.generation.results import (
 )
 from drowse.readout.types import ProbeReading
 from tests.support.server import mock_session
-from tests._generation_stream import TestGenerationStream
+from tests.support.streams import FakeGenerationStream
 from tests.support.tokens import emit_token
 
 
@@ -649,7 +649,7 @@ class TestOpenAIProbeExtension:
         def _mock_stream(*args: Any, **kwargs: Any) -> Any:
             assert kwargs.get("live_scores") is False
             assert kwargs.get("live_readouts") is False
-            return TestGenerationStream([
+            return FakeGenerationStream([
                 TokenEvent(text="Hi", token_id=1, index=0),
                 TokenEvent(text=" there", token_id=2, index=1),
             ], result)
@@ -741,7 +741,7 @@ class TestOllamaProbeExtension:
         def _mock_stream(*args: Any, **kwargs: Any) -> Any:
             assert kwargs.get("live_scores") is False
             assert kwargs.get("live_readouts") is False
-            return TestGenerationStream([
+            return FakeGenerationStream([
                 TokenEvent(text="Hi", token_id=1, index=0),
             ], result)
 
@@ -1180,7 +1180,7 @@ def _fitted_discover_manifold(model_id: str, name: str = "heap") -> Any:
     from drowse.store.manifold_folder import ManifoldFolder
     from drowse.store.manifold_authoring import create_discover_manifold_folder
     from drowse.base.paths import tensor_filename
-    from tests._whitener import isotropic_whitener
+    from tests.support.whitener import isotropic_whitener
 
     folder = create_discover_manifold_folder(
         "local", name, "a heap",

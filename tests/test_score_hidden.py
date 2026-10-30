@@ -27,7 +27,7 @@ from typing import Any
 from drowse.geometry.manifold import Manifold
 from drowse.readout.monitor import Monitor
 from drowse.geometry.fold import fold_directions_to_subspace
-from tests._whitener import synthetic_means, synthetic_whitener
+from tests.support.whitener import synthetic_means, synthetic_whitener
 
 # A probe along axis 0, layer 0, dim 4 — easy to reason about.  The fold
 # anchors the ray on the neutral mean (the whitener's own neutral mean), so

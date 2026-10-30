@@ -123,7 +123,7 @@ def test_repr_contains_layer_info():
 # the orthogonal case is rewritten against *Mahalanobis* orthogonality.
 
 def _cov_whitener(layers: Any, dim: int):
-    from tests._whitener import synthetic_whitener, synthetic_means
+    from tests.support.whitener import synthetic_whitener, synthetic_means
     return synthetic_whitener(
         layers, dim, means=synthetic_means(layers, dim, seed=0),
     )

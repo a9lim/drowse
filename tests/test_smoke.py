@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 import torch
 
-from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
+from tests.support.gpu import gpu_model_id, load_or_skip_inaccessible
 
 # Skip entire module if no GPU backend is available.
 _HAS_GPU = torch.cuda.is_available() or torch.backends.mps.is_available()
@@ -88,7 +88,7 @@ def _extract_profile(model: Any, tokenizer: Any, concept: str, layers: Any) -> A
         L: (pos[L].to(torch.float32) - neg[L].to(torch.float32))
         for L in pos if L in neg
     }
-    from tests._whitener import isotropic_whitener
+    from tests.support.whitener import isotropic_whitener
     neutral_means = {L: neg[L].to(torch.float32) for L in directions}
     dim = int(next(iter(directions.values())).numel())
     mfld = fold_directions_to_subspace(
@@ -145,7 +145,7 @@ def _steer_plan(*pairs: Any) -> Any:
             coord_dirs[L] = torch.tensor([n], device=v.device)
             neutral_means.setdefault(L, torch.zeros_like(v))
         push.append((basis_dirs, coord_dirs, alpha))
-    from tests._whitener import isotropic_whitener
+    from tests.support.whitener import isotropic_whitener
     dim = int(next(iter(neutral_means.values())).numel())
     synth = synthesize_subspace(
         push, [], neutral_means=neutral_means,
@@ -280,7 +280,7 @@ class TestMonitor:
         from drowse.readout.monitor import Monitor
         from drowse.geometry.fold import fold_directions_to_subspace
         from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
 
         model, tokenizer = model_and_tokenizer
         device = next(model.parameters()).device

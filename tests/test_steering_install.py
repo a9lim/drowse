@@ -24,7 +24,7 @@ from drowse.steering.grammar import ManifoldTerm
 from drowse.steering.hooks import SteeringManager, install_persistent_offset_hooks
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
-from tests._whitener import isotropic_whitener
+from tests.support.whitener import isotropic_whitener
 from tests.support.manifolds import loop_manifold as _manifold
 from tests.support.composer import SteeringRig
 

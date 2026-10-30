@@ -26,7 +26,12 @@ test modules; a helper two modules share lives here.
 - :mod:`~tests.support.decode` — fake decode-loop models and tokenizers.
 - :mod:`~tests.support.server` — the route tests' ``mock_session`` and
   ``StubSession``.
+- :mod:`~tests.support.whitener` — synthetic covering whiteners and means.
+- :mod:`~tests.support.jlens_toys` — the frozen toy model behind lens tests.
+- :mod:`~tests.support.cli` — the fake session the CLI runner tests install.
+- :mod:`~tests.support.streams` — ``FakeGenerationStream``.
+- :mod:`~tests.support.gpu` — the GPU test model id and its skip helper.
 - :mod:`~tests.support.chat_templates`, :mod:`~tests.support.manifolds`,
   :mod:`~tests.support.artifacts`, :mod:`~tests.support.tokens` — shared
-  fixtures data and builders.
+  fixture data and builders.
 """

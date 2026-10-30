@@ -113,7 +113,7 @@ class StubHandle:
         layer_means: Mapping[int, torch.Tensor] | None = None,
         model_id: str = "stub-model",
     ) -> None:
-        from tests._whitener import synthetic_means, synthetic_whitener
+        from tests.support.whitener import synthetic_means, synthetic_whitener
 
         self.model_id = model_id
         # A real nn.Module so the protocol's ``model: nn.Module`` is met.

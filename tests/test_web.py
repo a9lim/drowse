@@ -314,7 +314,7 @@ class TestPerLayerScores:
         from drowse.readout.monitor import Monitor
         from drowse.geometry.fold import fold_directions_to_subspace
 
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
         means = {0: torch.zeros(4)}
         whit = isotropic_whitener([0], 4)
         # Mahalanobis-only: an isotropic whitener reproduces the Euclidean
@@ -346,7 +346,7 @@ class TestPerLayerScores:
     def test_empty_input_returns_empty(self) -> None:
         from drowse.readout.monitor import Monitor
         from drowse.geometry.fold import fold_directions_to_subspace
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}
         whit = isotropic_whitener([0], 4)
@@ -360,7 +360,7 @@ class TestPerLayerScores:
     def test_layers_outside_probe_cache_omitted(self) -> None:
         from drowse.readout.monitor import Monitor
         from drowse.geometry.fold import fold_directions_to_subspace
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}
         whit = isotropic_whitener([0], 4)

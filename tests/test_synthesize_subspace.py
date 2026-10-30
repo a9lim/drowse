@@ -38,7 +38,7 @@ def synthesize_subspace(
 ) -> SynthesizedSubspace:
     """Current-shape test adapter: every synthesis owns a covering metric."""
     if whitener is None and neutral_means:
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
         first = next(iter(neutral_means.values()))
         whitener = isotropic_whitener(list(neutral_means), int(first.numel()))
     assert whitener is not None

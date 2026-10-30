@@ -24,7 +24,7 @@ from drowse.geometry.domains import CustomDomain
 from drowse.geometry.subspace import LayerSubspace
 from drowse.geometry.inject import subspace_inject, synthesize_subspace
 from drowse.steering.triggers import Trigger, TriggerContext
-from tests._whitener import isotropic_whitener
+from tests.support.whitener import isotropic_whitener
 
 
 _DIM = 16

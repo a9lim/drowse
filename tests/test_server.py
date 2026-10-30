@@ -13,7 +13,7 @@ from drowse.readout.types import (
 from fastapi.testclient import TestClient
 
 from drowse.generation.results import GenerationResult, RunSet, TokenEvent
-from tests._generation_stream import TestGenerationStream
+from tests.support.streams import FakeGenerationStream
 from tests.support.server import mock_session
 from drowse.errors import ConcurrentGenerationError, ProfileNotRegisteredError
 
@@ -131,7 +131,7 @@ class TestChatCompletions:
             text="Hello world", tokens=[1, 2], token_count=2,
             tok_per_sec=5.0, elapsed=0.4, finish_reason="stop",
         )
-        session.generate_stream.return_value = TestGenerationStream([
+        session.generate_stream.return_value = FakeGenerationStream([
             TokenEvent(text="Hello", token_id=1, index=0),
             TokenEvent(text=" world", token_id=2, index=1),
         ], result)
@@ -159,7 +159,7 @@ class TestChatCompletions:
     def test_streaming_drowse_error_is_sent_in_band(self, session_and_client: Any) -> None:
         session, client = session_and_client
 
-        session.generate_stream.return_value = TestGenerationStream(
+        session.generate_stream.return_value = FakeGenerationStream(
             [], None,
             error=ProfileNotRegisteredError("No profile registered for 'missing'"),
         )
@@ -190,7 +190,7 @@ class TestChatCompletions:
         self, session_and_client: Any,
     ) -> None:
         session, client = session_and_client
-        session.generate_stream.return_value = TestGenerationStream(
+        session.generate_stream.return_value = FakeGenerationStream(
             [], None, error=ConcurrentGenerationError("busy"),
         )
         resp = client.post("/v1/chat/completions", json={
@@ -221,7 +221,7 @@ class TestChatCompletions:
             yield
 
         monkeypatch.setattr(compat_module, "session_lock", _never_acquires)
-        session.generate_stream.return_value = TestGenerationStream([], None)
+        session.generate_stream.return_value = FakeGenerationStream([], None)
 
         resp = client.post("/v1/chat/completions", json={
             "messages": [{"role": "user", "content": "Hi"}],
@@ -318,7 +318,7 @@ class TestCompletions:
             text="42", tokens=[1], token_count=1,
             tok_per_sec=5.0, elapsed=0.2,
         )
-        session.generate_stream.return_value = TestGenerationStream([
+        session.generate_stream.return_value = FakeGenerationStream([
             TokenEvent(text="42", token_id=1, index=0),
         ], session.last_result)
 
@@ -621,7 +621,7 @@ class TestOllamaApi:
             text="Hello world", tokens=[1, 2], token_count=2, prompt_tokens=3,
             tok_per_sec=5.0, elapsed=0.4,
         )
-        session.generate_stream.return_value = TestGenerationStream([
+        session.generate_stream.return_value = FakeGenerationStream([
             TokenEvent(text="Hello", token_id=1, index=0),
             TokenEvent(text=" world", token_id=2, index=1),
         ], result)
@@ -650,7 +650,7 @@ class TestOllamaApi:
     def test_chat_streaming_materialization_error_is_ndjson(self, session_and_client: Any) -> None:
         session, client = session_and_client
 
-        session.generate_stream.return_value = TestGenerationStream(
+        session.generate_stream.return_value = FakeGenerationStream(
             [], None,
             error=ProfileNotRegisteredError("No profile registered for 'missing'"),
         )

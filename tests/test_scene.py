@@ -80,7 +80,7 @@ def test_round_trip_validation(template: str, model_type: str):
 def test_real_smollm2_tokenizer_passes_the_autopsy():
     """The default GPU test model gets scene mode (its cached tokenizer only)."""
     transformers = pytest.importorskip("transformers")
-    from tests._gpu_model import DEFAULT_GPU_MODEL_ID
+    from tests.support.gpu import DEFAULT_GPU_MODEL_ID
 
     try:
         tok = transformers.AutoTokenizer.from_pretrained(

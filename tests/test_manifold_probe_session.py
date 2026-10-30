@@ -28,7 +28,7 @@ from drowse.generation.results import (
 from drowse.readout.types import ProbeReading
 from drowse.generation.decode import GenerationState
 from drowse.readout.planner import CaptureMode, CaptureState, ReadDemand
-from tests._whitener import isotropic_whitener
+from tests.support.whitener import isotropic_whitener
 from tests.support.read_plane import ReadRig, gate_refs
 
 
@@ -761,7 +761,7 @@ def test_gating_callback_empty_capture_returns_empty():
 def test_score_aggregate_called_with_correct_captures():
     """Verify ``score_aggregate`` is called on the unified monitor when
     probes are attached and gen produced tokens."""
-    from tests._whitener import isotropic_whitener
+    from tests.support.whitener import isotropic_whitener
     m = _toy_manifold()
     mon = Monitor(whitener=isotropic_whitener(list(m.layers), 8))
     mon.add_probe("toy", m)

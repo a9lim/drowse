@@ -33,7 +33,7 @@ def _p_basis(vec: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
 
 
 def _whitener(layers: list[int], dim: int):
-    from tests._whitener import isotropic_whitener
+    from tests.support.whitener import isotropic_whitener
     return isotropic_whitener(layers, dim)
 
 

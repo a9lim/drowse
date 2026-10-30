@@ -31,7 +31,7 @@ from tests.support.sae import MockSaeBackend
 from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.base.paths import tensor_filename
-from tests._whitener import synthetic_whitener
+from tests.support.whitener import synthetic_whitener
 from tests.support.extraction import make_extraction
 
 _LABELS = ["calm", "uneasy", "afraid", "frantic", "numb"]

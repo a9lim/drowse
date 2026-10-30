@@ -101,7 +101,7 @@ def gpu_session() -> Iterator[Any]:
     if not (torch.cuda.is_available() or torch.backends.mps.is_available()):
         pytest.skip("No GPU backend available (neither CUDA nor MPS)")
     from drowse.session.session import DrowseSession
-    from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
+    from tests.support.gpu import gpu_model_id, load_or_skip_inaccessible
 
     model_id = gpu_model_id()
     session = load_or_skip_inaccessible(

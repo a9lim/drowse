@@ -64,7 +64,7 @@ def _publish_noble(session: Any, tmp_path: Path) -> tuple[Path, Any]:
     from drowse.base.paths import tensor_filename
 
     dirs = {0: torch.tensor([1.0, 0.0, 0.0, 0.0]), 5: torch.tensor([0.0, 2.0, 0.0, 0.0])}
-    from tests._whitener import isotropic_whitener
+    from tests.support.whitener import isotropic_whitener
     means = {layer: torch.zeros_like(direction) for layer, direction in dirs.items()}
     manifold = fold_directions_to_subspace(
         "noble", dirs, means,

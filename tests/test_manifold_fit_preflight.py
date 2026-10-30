@@ -34,7 +34,7 @@ from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_schema import ManifoldSidecar
 from drowse.fit.preflight import preflight_manifold_fit_noop
 from drowse.base.paths import tensor_filename
-from tests._whitener import synthetic_means, synthetic_whitener
+from tests.support.whitener import synthetic_means, synthetic_whitener
 from tests.support.capture import CaptureTokenizer, install_capture, label_encoder_batch
 
 _MODEL_ID = "stub/model"
@@ -391,7 +391,7 @@ def _run_cli(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> list[str]:
     the load and stops there with ``RuntimeError``.
     """
     from drowse.cli.main import main
-    from tests._cli_fakes import poison_session
+    from tests.support.cli import poison_session
 
     attempts = poison_session(monkeypatch)
     try:

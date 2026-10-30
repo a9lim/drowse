@@ -434,7 +434,7 @@ def test_closed_stream_does_not_cancel_a_later_generation(tiny_session: Any) -> 
 
 def test_serve_default_is_loopback_and_remote_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
     from drowse.cli.main import main, parse_args
-    from tests._cli_fakes import poison_session
+    from tests.support.cli import poison_session
 
     assert parse_args(["serve", "model"]).host == "127.0.0.1"
     monkeypatch.delenv("DROWSE_API_KEY", raising=False)
@@ -553,7 +553,7 @@ def test_remote_serve_honors_key_precedence_and_transport_limit(monkeypatch: pyt
     import uvicorn
     from drowse.cli.main import main
     from drowse.server.ws_stream import MAX_WS_MESSAGE_BYTES
-    from tests._cli_fakes import install_fake_session
+    from tests.support.cli import install_fake_session
 
     captured: dict[str, Any] = {}
     monkeypatch.setenv("DROWSE_API_KEY", "env-secret")

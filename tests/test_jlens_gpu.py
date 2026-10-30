@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from drowse import SamplingConfig
-from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
+from tests.support.gpu import gpu_model_id, load_or_skip_inaccessible
 
 pytestmark = [
     pytest.mark.gpu,

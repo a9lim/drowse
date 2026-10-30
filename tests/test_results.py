@@ -380,7 +380,7 @@ class TestMonitorScoring:
     def _make_monitor(cls):
         from drowse.readout.monitor import Monitor
         from drowse.geometry.fold import fold_directions_to_subspace
-        from tests._whitener import synthetic_whitener
+        from tests.support.whitener import synthetic_whitener
         probe_vec = torch.zeros(cls._DIM)
         probe_vec[0] = 1.0  # unit vector along dim 0
         whitener = synthetic_whitener([0], cls._DIM, means=cls._MEANS)

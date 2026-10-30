@@ -10,7 +10,7 @@ import pytest
 import torch
 from drowse.geometry.profile import Profile
 from drowse.generation.results import GenerationResult, RunSet, TokenEvent
-from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
+from tests.support.gpu import gpu_model_id, load_or_skip_inaccessible
 
 if TYPE_CHECKING:
     from drowse.session.session import DrowseSession

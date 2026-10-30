@@ -15,7 +15,7 @@ from drowse.cli.context import CliError, effective_config, open_session
 from drowse.cli.main import main, parse_args
 from drowse.readout.types import LensLiveState, SaeLiveState
 from drowse.store.selectors import SelectorError
-from tests._cli_fakes import FakeSession, install_fake_session, poison_session
+from tests.support.cli import FakeSession, install_fake_session, poison_session
 
 
 @pytest.fixture(autouse=True)

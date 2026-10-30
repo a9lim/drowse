@@ -251,7 +251,7 @@ class TestProbes:
         import torch
 
         from drowse.geometry.fold import fold_directions_to_subspace
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
 
         session, client = session_and_client
         # Unified attach: body-carried selector → session.add_probe, 201 + info.
@@ -963,7 +963,7 @@ class TestScoreSingleToken:
         from drowse.readout.types import ProbeReading
         from drowse.geometry.fold import fold_directions_to_subspace
 
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
         dim = 16
         probe_vec = torch.randn(dim)
         means = {0: torch.zeros(dim)}

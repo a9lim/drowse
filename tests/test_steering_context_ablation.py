@@ -15,7 +15,7 @@ from drowse.errors import ProfileNotRegisteredError
 from drowse.steering.grammar import AblationTerm
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
-from tests._whitener import isotropic_whitener
+from tests.support.whitener import isotropic_whitener
 from tests.support.composer import SteeringRig
 from tests.support.sessions import forward_logits, register_vectors
 

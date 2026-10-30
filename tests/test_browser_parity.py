@@ -50,7 +50,7 @@ from drowse.sae.backend import LocalSaeBackend
 from drowse.steering.grammar import SteeringExprError, parse_expr, referenced_selectors
 from drowse.steering.hooks import _lower_affine_subspaces
 from drowse.steering.triggers import TriggerContext
-from tests._whitener import isotropic_whitener
+from tests.support.whitener import isotropic_whitener
 from tests.support.sae import make_resident, sae_instrument
 
 GOLDENS = Path(__file__).parent / "fixtures" / "browser"

@@ -44,7 +44,7 @@ from drowse.model.arch import TESTED_ARCHS, get_layers
 from drowse.readout.capture_buffer import HiddenCapture
 from drowse.steering.hooks import SteeringManager, SteeringPlan
 from drowse.geometry.inject import synthesize_subspace
-from tests._whitener import isotropic_whitener
+from tests.support.whitener import isotropic_whitener
 from drowse.steering.triggers import Trigger
 
 

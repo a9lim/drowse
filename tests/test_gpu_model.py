@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._gpu_model import _is_access_error, load_or_skip_inaccessible
+from tests.support.gpu import _is_access_error, load_or_skip_inaccessible
 
 
 @pytest.mark.parametrize(
