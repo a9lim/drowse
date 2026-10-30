@@ -12,12 +12,12 @@ with both OpenAI and Ollama.
 
 ## Quick start
 
-The PyPI distribution name is `drowse.ai`; the Python import and CLI remain
-`drowse`. Until the renamed package is published, install from this source
-checkout in a virtual environment; the upstream repository URL is unchanged.
+The PyPI distribution name is `drowse.ai`; the Python import and CLI are
+`drowse`. Releases through 5.3.0 were published as `saklas`, and drowse still
+reads an existing `~/.saklas`.
 
 ```bash
-uv pip install -e .
+pip install drowse.ai
 drowse serve google/gemma-3-4b-it
 ```
 
@@ -29,7 +29,7 @@ can take a while; they get stored in `~/.drowse/` for future launches.
 For NVIDIA CUDA:
 
 ```bash
-uv pip install -e ".[cuda,flash]"
+pip install "drowse.ai[cuda,flash]"
 drowse serve google/gemma-3-4b-it --device cuda
 ```
 
@@ -197,12 +197,12 @@ Drowse can either use a published SAELens release or train a local SAE.
 
 ## Installation
 
-Drowse requires Python 3.11 or newer and PyTorch 2.2 or newer. CUDA or Apple
+Drowse requires Python 3.11 or newer and PyTorch 2.13 or newer. CUDA or Apple
 Silicon MPS is strongly recommended for interactive use; CPU is supported for
 smaller models and non-GPU workflows.
 
 ```bash
-uv pip install -e .
+pip install drowse.ai
 ```
 
 The base package includes the HTTP server, the prebuilt Svelte WebUI, and SAELens.
@@ -222,9 +222,9 @@ Optional extras add specialized workflows:
 Extras can be combined:
 
 ```bash
-uv pip install -e ".[cuda,flash]"       # full tested NVIDIA path
-uv pip install -e ".[hf,research]"      # dataset-backed research workflows
-uv pip install -e ".[notebook]"         # interactive figures
+pip install "drowse.ai[cuda,flash]"     # full tested NVIDIA path
+pip install "drowse.ai[hf,research]"    # dataset-backed research workflows
+pip install "drowse.ai[notebook]"       # interactive figures
 ```
 
 `cuda` and `flash` are Linux/NVIDIA CUDA extras. FlashAttention is selected
