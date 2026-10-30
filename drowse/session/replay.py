@@ -8,8 +8,9 @@ position.  The family's own read runs inside the exclusive-GPU section
 through ``read``, so device work never races a generation.
 
 The SAE instrument reads through this (the session wires it in as an explicit
-dependency).  The lens and geometry replays still carry their own copies on
-the session until the read plane's replays are unified.
+dependency).  The lens replay (``LensInstrument._replay_readout``) and the
+geometry replay (``DrowseSession.geometry_token_readout``) still carry their
+own copies until the read plane's replays are unified.
 """
 
 from __future__ import annotations

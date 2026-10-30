@@ -1575,7 +1575,7 @@ class DrowseSession:
                 )
             else:
                 # Continue-mode rebuild — seat-general, mirrors
-                # ``jlens_token_readout``.
+                # :func:`drowse.session.replay.replay_token`.
                 prompt_ids = self._prepare_input(
                     None,
                     thinking=use_thinking,
@@ -3249,11 +3249,7 @@ class DrowseSession:
         # (no whitener requirement — the softmax is the calibration).
         if selector.startswith("jlens/"):
             name = self._lens_instrument.attach(selector, as_name=as_name)
-            self._invalidate_prefix_cache()
-            self._probe_hash_cache.pop(name, None)
-            self._registry.invalidate_analytics()
-            return name
-        if selector.startswith("sae/"):
+        elif selector.startswith("sae/"):
             name = self._sae_instrument.attach(selector, as_name=as_name)
         else:
             # Geometry (Monitor) probes attach through their instrument like
