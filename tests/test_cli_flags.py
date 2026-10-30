@@ -454,16 +454,22 @@ def test_serve_live_sae_prefers_prepared_sources(
 ) -> None:
     from drowse.cli.verbs.serve import enable_live_sae
 
-    class _Session:
-        model_id = "google/gemma-3-4b-it"
-        sae_info = None
+    class _Sae:
+        info = None
         loaded: str | None = None
-        sae = SimpleNamespace(set_live=lambda enabled, **_k: SaeLiveState(enabled=enabled, layer=22))
+        load_kwargs: dict[str, Any] | None = None
 
-        def load_sae(self, release: str, **kwargs: Any) -> dict[str, Any]:
+        def set_live(self, enabled: bool, **_k: Any) -> SaeLiveState:
+            return SaeLiveState(enabled=enabled, layer=22)
+
+        def load(self, release: str, **kwargs: Any) -> dict[str, Any]:
             self.loaded = release
             self.load_kwargs = kwargs
             return {"release": release}
+
+    class _Session:
+        model_id = "google/gemma-3-4b-it"
+        sae = _Sae()
 
     monkeypatch.setattr("drowse.sae.sources.list_sae_sources", lambda _m: cached)
     monkeypatch.setattr(
@@ -473,7 +479,7 @@ def test_serve_live_sae_prefers_prepared_sources(
     )
     session = _Session()
     assert enable_live_sae(session)
-    assert session.loaded == expected and session.load_kwargs == load_kwargs
+    assert session.sae.loaded == expected and session.sae.load_kwargs == load_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -494,10 +500,12 @@ class _ReadoutLens:
 class _ReadoutSession(FakeSession):
     layers = [object()] * 8
     lens = _ReadoutLens()
-
-    def train_sae(self, name: str, _docs: list[str], **kw: Any) -> dict[str, Any]:
-        return {"source": f"local:{name}", "artifact": "x", "layer": kw["layer"],
-                "metrics": {"d_sae": 64, "tokens_trained": 10}}
+    sae = SimpleNamespace(
+        train=lambda name, _docs, **kw: {
+            "source": f"local:{name}", "artifact": "x", "layer": kw["layer"],
+            "metrics": {"d_sae": 64, "tokens_trained": 10},
+        },
+    )
 
 
 @pytest.mark.parametrize("argv", [

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from drowse.generation.results import GenerationResult, ProbeReading
+from tests.support.sae import make_resident
 from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
 if TYPE_CHECKING:
@@ -207,7 +208,6 @@ def _fast_batch_session():
     s._lens_instrument.live = None
     s._lens_instrument.probes = {}
     s._sae_instrument.probes = {}
-    s._sae_layer = None
     s._active_gen_reservation = None
     s._last_token_probe_payload = None
     s._capture_state = CaptureState()
@@ -422,7 +422,7 @@ class TestGenerateBatch:
         # nothing.
         s, model = _fast_batch_session()
         cast(Any, s)._sae_instrument.probes = {"sae/17": {"feature_id": 17}}
-        cast(Any, s)._sae_layer = None
+        assert s.sae.runtime.layer is None
         capture: list[Any] = []
         _stub_generate_core(s, capture=capture)
 
@@ -473,14 +473,15 @@ class TestGenerateBatch:
         assert cast(Any, s._monitor).scored == []
 
     def test_sae_readout_probe_batch_fast_path_scores_per_row_aggregate(self) -> None:
-        from drowse.sae.backend import MockSaeBackend
+        from tests.support.sae import MockSaeBackend
 
         s, model = _probe_fast_batch_session()
         cast(Any, s)._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
-        s._sae_backend = MockSaeBackend(layers=frozenset({0}), d_model=1, d_feature=1)
-        s._sae_layer = 0
-        s._sae_width = 1
-        s._sae_feature_meta = {}
+        make_resident(
+            s.sae.runtime,
+            MockSaeBackend(layers=frozenset({0}), d_model=1, d_feature=1),
+            layer=0,
+        )
         s._sae_instrument.probes = {
             "sae/0": {
                 "feature_id": 0,
@@ -509,7 +510,7 @@ class TestGenerateBatch:
 
         s, model = _probe_fast_batch_session()
         cast(Any, s)._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
-        s._sae_layer = 0
+        make_resident(s.sae.runtime, layer=0)
         s._sae_instrument.probes = {
             "sae/0": {
                 "feature_id": 0,

@@ -45,7 +45,8 @@ def test_errors_preserve_stdlib_mro():
 
 
 def test_sae_backend_protocol_shape():
-    from drowse.sae.backend import SaeBackend, MockSaeBackend
+    from drowse.sae.backend import SaeBackend
+    from tests.support.sae import MockSaeBackend
     # Structural conformance — downstream code type-hints `SaeBackend | None`
     # and we want the mock to pass isinstance checks at runtime.
     assert hasattr(SaeBackend, "encode_layer")
@@ -61,7 +62,7 @@ def test_mock_sae_backend_roundtrip():
     needing sae_lens or real SAE weights.
     """
     import torch
-    from drowse.sae.backend import MockSaeBackend
+    from tests.support.sae import MockSaeBackend
 
     backend = MockSaeBackend(
         layers=frozenset({4, 8, 12}),
@@ -85,7 +86,7 @@ def test_mock_sae_backend_roundtrip():
 def test_mock_sae_backend_custom_encode_decode():
     """MockSaeBackend lets tests inject per-layer transforms for non-identity cases."""
     import torch
-    from drowse.sae.backend import MockSaeBackend
+    from tests.support.sae import MockSaeBackend
 
     backend = MockSaeBackend(
         layers=frozenset({3}),
@@ -104,7 +105,7 @@ def test_mock_sae_backend_custom_encode_decode():
 def test_mock_sae_backend_passes_layer_idx_to_overrides():
     """Per-layer fns receive the layer index so tests can verify dispatch."""
     import torch
-    from drowse.sae.backend import MockSaeBackend
+    from tests.support.sae import MockSaeBackend
 
     seen: list[int] = []
     backend = MockSaeBackend(
@@ -210,7 +211,7 @@ def test_provider_backend_records_the_resolved_hub_commit(
     """A default provider fetch must persist the commit it actually pinned.
 
     The UI passes no explicit revision.  Returning that input ``None`` from the
-    backend made ``session.load_sae`` reject its own otherwise-valid runtime
+    backend made ``session.sae.load`` reject its own otherwise-valid runtime
     metadata after the SAE had already downloaded and materialized.
     """
     import sys
@@ -306,7 +307,8 @@ def test_loaded_attention_hook_is_rejected_before_use() -> None:
 
 def test_residual_width_must_match_model_hidden_size() -> None:
     from drowse.errors import SaeCoverageError
-    from drowse.sae.backend import MockSaeBackend, validate_residual_width
+    from drowse.sae.backend import validate_residual_width
+    from tests.support.sae import MockSaeBackend
 
     backend = MockSaeBackend(layers=frozenset({2}), d_model=3)
     with pytest.raises(SaeCoverageError, match="model residual stream has width 4"):

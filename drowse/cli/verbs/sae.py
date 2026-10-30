@@ -48,7 +48,7 @@ def run_train(args: argparse.Namespace) -> None:
     with open_session(args) as session:
         n_layers = len(session.layers)
         layer = select_runtime_layer(frozenset(range(n_layers)), n_layers, args.layer)
-        result = session.train_sae(
+        result = session.sae.train(
             args.name, docs, layer=layer, corpus_spec=spec,
             tokens=args.tokens, seq_len=args.seq_len, batch_size=args.batch_size,
             d_sae=args.width, expansion=args.expansion,
@@ -72,9 +72,7 @@ def run_fetch(args: argparse.Namespace) -> None:
     base model: compatibility comes from the release entry, layer coverage
     and decoder width from the published config."""
     from drowse.model.arch import config_model_shape
-    from drowse.sae.backend import (
-        load_sae_backend, sae_binding, select_runtime_layer, validate_residual_width,
-    )
+    from drowse.sae.backend import resolve_sae_backend
     from drowse.sae.sources import save_sae_metadata
 
     ref = _sae_source(args.model, args.source)
@@ -85,21 +83,16 @@ def run_fetch(args: argparse.Namespace) -> None:
         n_layers, hidden_dim = config_model_shape(args.model)
     # Announce before the provider download (silent with progress bars off).
     note(f"Fetching {args.source} into the Hugging Face cache...")
-    backend = load_sae_backend(
-        release, revision=args.revision, model_id=args.model,
-        device="cpu", dtype=None, warn_on_multiple=False,
+    resolved = resolve_sae_backend(
+        release, model_id=args.model, n_layers=n_layers, hidden_dim=hidden_dim,
+        layer=args.layer, revision=args.revision,
     )
-    covered = frozenset(idx for idx in backend.layers if 0 <= idx < n_layers)
-    layer = select_runtime_layer(covered, n_layers, args.layer)
-    width = int(backend.feature_count(layer))  # materializes the weights
-    if width <= 0:
-        raise CliError(f"release {release!r} has no features", exit_code=1)
-    validate_residual_width(backend, layer, hidden_dim)
-    save_sae_metadata(args.model, release, sae_binding(backend, layer, width))
+    layer, width, binding = resolved.layer, resolved.width, resolved.binding
+    save_sae_metadata(args.model, release, binding)
     if args.json_output:
         emit_json({
             "model": args.model, "source": args.source, "layer": layer,
-            "width": width, "revision": backend.revision, "repo_id": backend.repo_id,
+            "width": width, "revision": binding["revision"], "repo_id": binding["repo_id"],
         })
         return
     print(f"Fetched {args.source} for {args.model}: L{layer}, {width} features")

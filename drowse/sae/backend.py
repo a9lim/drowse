@@ -2,8 +2,8 @@
 
 The protocol is tiny on purpose: contrastive extraction needs only per-layer
 encode/decode and the set of covered layers. The ``SaeLensBackend`` adapter
-imports ``sae_lens`` lazily, inside its factory function, so protocol, mock,
-and local-artifact paths avoid provider initialization.
+imports ``sae_lens`` lazily, inside its factory function, so the protocol and
+local-artifact paths avoid provider initialization.
 """
 from __future__ import annotations
 
@@ -90,77 +90,6 @@ class SaeBackend(Protocol):
     def feature_direction(self, idx: int, feature_id: int) -> torch.Tensor:
         """Decoder row for one sparse feature, in model residual space."""
         ...
-
-
-# --- test helper ----------------------------------------------------------
-
-@dataclass
-class MockSaeBackend:
-    """In-memory SAE backend for CPU-only tests.
-
-    Default is identity encode/decode with ``d_feature == d_model``. Pass
-    ``encode_fn`` / ``decode_fn`` for non-trivial layer-level transforms.
-    """
-    layers: frozenset[int]
-    d_model: int
-    d_feature: int | None = None
-    release: str = "mock-release"
-    revision: str | None = None
-    fingerprint: str | None = None
-    encode_fn: Callable[[int, torch.Tensor], torch.Tensor] | None = None
-    decode_fn: Callable[[int, torch.Tensor], torch.Tensor] | None = None
-    sae_ids_by_layer: dict[str, str] = field(default_factory=dict)
-    repo_id: str | None = None
-    neuronpedia_id: str | None = None
-    neuronpedia_ids_by_layer: dict[str, str] = field(default_factory=dict)
-
-    def __post_init__(self):
-        if self.d_feature is None:
-            self.d_feature = self.d_model
-        if not self.sae_ids_by_layer:
-            self.sae_ids_by_layer = {
-                str(layer): f"mock-layer-{layer}" for layer in self.layers
-            }
-        if (
-            self.fingerprint is None
-            and self.encode_fn is None
-            and self.decode_fn is None
-        ):
-            import hashlib
-            import json
-
-            self.fingerprint = hashlib.sha256(json.dumps({
-                "backend": "mock-identity",
-                "release": self.release,
-                "revision": self.revision,
-                "layers": sorted(self.layers),
-                "d_model": self.d_model,
-                "d_feature": self.d_feature,
-            }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-
-    def encode_layer(self, idx: int, h: torch.Tensor) -> torch.Tensor:
-        if self.encode_fn is not None:
-            return self.encode_fn(idx, h)
-        return h
-
-    def decode_layer(self, idx: int, f: torch.Tensor) -> torch.Tensor:
-        if self.decode_fn is not None:
-            return self.decode_fn(idx, f)
-        return f
-
-    def feature_count(self, idx: int) -> int:
-        if idx not in self.layers:
-            raise KeyError(idx)
-        assert self.d_feature is not None
-        return int(self.d_feature)
-
-    def feature_direction(self, idx: int, feature_id: int) -> torch.Tensor:
-        width = self.feature_count(idx)
-        if not 0 <= feature_id < width:
-            raise IndexError(feature_id)
-        one_hot = torch.zeros(width)
-        one_hot[feature_id] = 1
-        return self.decode_layer(idx, one_hot)
 
 
 # --- SAELens-backed concrete adapter --------------------------------------
@@ -432,7 +361,7 @@ def _entry_value(entry: Any, name: str, default: Any = None) -> Any:
 def sae_binding(backend: Any, layer: int, width: int) -> dict[str, Any]:
     """The runtime binding of one resident layer of ``backend``.
 
-    The one shape behind a provider binding file, ``session.sae_info``, and
+    The one shape behind a provider binding file, ``session.sae.info``, and
     the feature-metadata cache key.
     """
     return {
@@ -527,6 +456,66 @@ def validate_residual_width(
             f"width {sae_width}, but the model residual stream has width "
             f"{model_width}; choose a residual-post/block-output SAE release"
         )
+
+
+@dataclass(frozen=True)
+class ResolvedSae:
+    """A release resolved to one validated hook layer of a lazy backend."""
+
+    backend: SaeBackend
+    layer: int
+    width: int
+
+    @property
+    def binding(self) -> dict[str, Any]:
+        return sae_binding(self.backend, self.layer, self.width)
+
+
+def resolve_sae_backend(
+    release: str,
+    *,
+    model_id: str,
+    n_layers: int,
+    hidden_dim: int,
+    layer: int | None = None,
+    revision: str | None = None,
+    device: str | torch.device = "cpu",
+    dtype: torch.dtype | None = None,
+    model_fingerprint: Callable[[], str] | None = None,
+) -> ResolvedSae:
+    """Resolve ``release`` to one covered, residual-width hook layer.
+
+    The one path behind ``sae fetch`` (pure IO, CPU, no base model) and the
+    session runtime's load: resolve the backend, pick the hook layer
+    (:func:`select_runtime_layer`), materialize that layer's weights to read
+    its width, and check that a decoder row lives in the residual stream.
+    ``model_fingerprint`` (the loaded weights' identity, computed on demand)
+    rejects a local artifact trained against other weights before its weights
+    load.  Persisting the binding is the caller's job.
+    """
+    from drowse.errors import SaeCoverageError
+
+    backend = load_sae_backend(
+        release, revision=revision, model_id=model_id,
+        device=device, dtype=dtype, warn_on_multiple=False,
+    )
+    if (
+        model_fingerprint is not None
+        and isinstance(backend, LocalSaeBackend)
+        and backend.model_fingerprint is not None
+        and backend.model_fingerprint != model_fingerprint()
+    ):
+        raise ValueError(
+            f"local SAE {release!r} was trained against different "
+            "loaded model weights"
+        )
+    covered = frozenset(idx for idx in backend.layers if 0 <= idx < n_layers)
+    selected = select_runtime_layer(covered, n_layers, layer)
+    width = int(backend.feature_count(selected))  # materializes the weights
+    if width <= 0:
+        raise SaeCoverageError(f"SAE release {release!r} has no features")
+    validate_residual_width(backend, selected, hidden_dim)
+    return ResolvedSae(backend=backend, layer=selected, width=width)
 
 
 def sae_device_str(device: str | torch.device) -> str:

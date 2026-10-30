@@ -414,7 +414,7 @@ class _MockSession:
         from types import MethodType, SimpleNamespace
 
         from drowse.readout.geometry import GeometryInstrument
-        from drowse.sae.instrument import SaeInstrument
+        from tests.support.sae import stub_sae_instrument
         from drowse.readout.types import ReadRequest
         from drowse.session.session import DrowseSession
 
@@ -441,7 +441,7 @@ class _MockSession:
         self._compose_gen_config = lambda _sampling: self.config
         self._geometry_instrument = GeometryInstrument(self)  # type: ignore[arg-type]
         self._lens_instrument = stub_lens_instrument(self)
-        self._sae_instrument = SaeInstrument(self)  # type: ignore[arg-type]
+        self._sae_instrument = stub_sae_instrument(self)
 
         def _bind_all(*_args: Any, **_kwargs: Any) -> bool:
             request = ReadRequest(final_aggregate=False)

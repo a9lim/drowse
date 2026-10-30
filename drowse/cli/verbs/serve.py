@@ -157,7 +157,7 @@ def best_sae_release(rows: Sequence[dict[str, Any]]) -> str | None:
 def enable_live_sae(session: Any) -> bool:
     """Attach the active / a prepared / the best provider SAE and go live."""
     try:
-        info = session.sae_info
+        info = session.sae.info
         if info is None:
             from drowse.sae.sources import SAE_SOURCES, list_sae_sources, sae_release
 
@@ -173,7 +173,7 @@ def enable_live_sae(session: Any) -> bool:
                 if not isinstance(source, str) or not source:
                     continue
                 try:
-                    info = session.load_sae(
+                    info = session.sae.load(
                         sae_release(SAE_SOURCES.parse(source)),
                         layer=row.get("layer"), revision=row.get("revision"),
                     )
@@ -186,7 +186,7 @@ def enable_live_sae(session: Any) -> bool:
             release = best_sae_release(list_sae_releases(session.model_id))
             if release is None:
                 return False
-            info = session.load_sae(release)
+            info = session.sae.load(release)
         state = session.sae.set_live(True)
         note(f"Live SAE readout: on ({info.get('release', 'active')} at L{state.layer})")
         return True

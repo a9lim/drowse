@@ -417,7 +417,7 @@ def register_instrument_routes(app: FastAPI) -> None:
 
     async def sae_fetch_body(body: SaeFetchRequest, source: str, release: str) -> None:
         async with session_lock(app):
-            info = await run_in_thread(session.load_sae, release, layer=body.layer)
+            info = await run_in_thread(session.sae.load, release, layer=body.layer)
             await run_in_thread(session.sae.set_live, True)
         sae_fetch.state["info"] = info
         sae_fetch.report(
@@ -425,11 +425,14 @@ def register_instrument_routes(app: FastAPI) -> None:
         )
 
     def start_sae_fetch(fields: dict[str, Any]) -> None:
+        from drowse.sae.sources import SAE_SOURCES, sae_release
+
         body = SaeFetchRequest(**fields)
         source = body.release.strip()
-        release = source.removeprefix("saelens:")
-        if not release:
-            raise HTTPException(400, "SAE source must not be empty")
+        try:
+            release = sae_release(SAE_SOURCES.parse(source))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         sae_fetch.start(
             lambda: sae_fetch_body(body, source, release),
             message=f"loading {source}", release=source, info=None,
@@ -442,7 +445,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         sae_train.report(f"streaming {n_docs:,} corpus documents…")
         docs, spec = await run_in_thread(stream_lens_corpus, n_docs)
         result = await run_in_thread(
-            session.train_sae, body.name, docs,
+            session.sae.train, body.name, docs,
             layer=layer, corpus_spec=spec, tokens=body.tokens, seq_len=body.seq_len,
             batch_size=body.batch_size, d_sae=body.width, expansion=body.expansion,
             learning_rate=body.learning_rate, l1_coefficient=body.l1,
@@ -455,11 +458,16 @@ def register_instrument_routes(app: FastAPI) -> None:
         await enable_live_after(sae_train, lambda: run_in_thread(session.sae.set_live, True))
 
     def start_sae_train(fields: dict[str, Any]) -> None:
+        from drowse.sae.backend import select_runtime_layer
+
         body = SaeTrainRequest(**fields)
         n_layers = len(session.layers)
-        layer = body.layer if body.layer is not None else round(0.65 * max(n_layers - 1, 0))
-        if not 0 <= layer < n_layers:
-            raise HTTPException(400, f"SAE layer {layer} is outside model layers 0..{n_layers - 1}")
+        try:
+            layer = select_runtime_layer(frozenset(range(n_layers)), n_layers, body.layer)
+        except ValueError:
+            raise HTTPException(
+                400, f"SAE layer {body.layer} is outside model layers 0..{n_layers - 1}",
+            ) from None
         sae_train.start(
             lambda: sae_train_body(body, layer),
             message="starting…", name=body.name, current=0, total=body.tokens, info=None,
@@ -504,7 +512,7 @@ def register_instrument_routes(app: FastAPI) -> None:
             sae_train.request_cancel()
         else:
             async with session_lock(app):
-                session.unload_sae()
+                session.sae.unload()
         return cast(PreparationStatusJSON, group.status())
 
     # -- token readout ----------------------------------------------------------
@@ -544,7 +552,7 @@ def register_instrument_routes(app: FastAPI) -> None:
 
     @router.post("/instruments/sae/features/validate")
     def sae_feature_validate(body: SaeFeatureRequest) -> SaeFeatureValidationJSON:
-        return session.validate_sae_feature(body.id)
+        return session.sae.validate_feature(body.id)
 
     @router.post("/instruments/sae/features/metadata")
     async def sae_features_metadata(body: SaeFeatureMetaRequest) -> SaeFeatureMetaResponse:
@@ -552,6 +560,6 @@ def register_instrument_routes(app: FastAPI) -> None:
         cache only, so it takes no session lock."""
         if any(feature_id < 0 for feature_id in body.ids):
             raise HTTPException(400, "feature ids must be non-negative")
-        return {"features": await run_in_thread(session.fetch_sae_feature_meta, body.ids)}
+        return {"features": await run_in_thread(session.sae.fetch_meta, body.ids)}
 
     app.include_router(router)

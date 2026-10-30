@@ -34,8 +34,8 @@ def attach_stub_instruments(stub: Any) -> Any:
     ``_model`` / ``_tokenizer`` / ``_layers`` first when a test needs them.
     """
     from drowse.readout.geometry import GeometryInstrument
-    from drowse.sae.instrument import SaeInstrument
     from tests.support.lens import stub_lens_instrument
+    from tests.support.sae import stub_sae_instrument
 
     d = stub.__dict__
     if "_geometry_instrument" not in d:
@@ -43,7 +43,7 @@ def attach_stub_instruments(stub: Any) -> Any:
     if "_lens_instrument" not in d:
         stub._lens_instrument = stub_lens_instrument(stub)
     if "_sae_instrument" not in d:
-        stub._sae_instrument = SaeInstrument(stub)
+        stub._sae_instrument = stub_sae_instrument(stub)
     return stub
 
 
@@ -94,8 +94,7 @@ def wire_stub_steering(
     ))
     registry.on_change(lambda: getattr(stub, "_invalidate_prefix_cache", lambda: None)())
     registry.set_atom_resolver("jlens", lambda atom: stub.lens.register_direction(atom))
-    if hasattr(stub, "register_sae_direction"):
-        registry.set_atom_resolver("sae", lambda atom: stub.register_sae_direction(atom))
+    registry.set_atom_resolver("sae", lambda atom: stub.sae.register_direction(atom))
     if hasattr(stub, "_fold_profile_probe"):
         registry.set_probe_folder(lambda key, tensors: stub._fold_profile_probe(key, tensors))
     for name, tensors in (profiles or {}).items():
@@ -138,8 +137,8 @@ def wire_stub_steering(
             lens_gate_scalars=lambda keys, *, step_id: stub.lens.current_run.gate_scalars(
                 step_id, None, keys,
             ),
-            sae_gate_scalars=lambda keys, *, step_id: stub._score_sae_gate_scalars(
-                keys, step_id=step_id,
+            sae_gate_scalars=lambda keys, *, step_id: stub.sae.current_run.gate_scalars(
+                step_id, None, keys,
             ),
         ),
     )

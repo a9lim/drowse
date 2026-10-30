@@ -30,6 +30,7 @@ from drowse.session.session import (
 from drowse.steering.terms import Steering
 from drowse.generation.token_payloads import TokenProbePayload
 from tests.conftest import FakeLogitsModel
+from tests.support.sae import make_resident
 from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
 
@@ -1072,7 +1073,7 @@ def test_token_tap_skips_unconsumed_live_readout_helpers_and_empty_payload(
     session._lens_instrument.live_readout_step = lambda **_kwargs: (
         (_ for _ in ()).throw(AssertionError("lens readout not consumed"))
     )
-    session._live_sae_readout_step = lambda **_kwargs: (
+    session._sae_instrument.live_readout_step = lambda **_kwargs: (
         (_ for _ in ()).throw(AssertionError("sae readout not consumed"))
     )
     session._lens_instrument.last_step_readings = None
@@ -1438,7 +1439,7 @@ def test_finalize_reuses_one_aggregate_pool_for_monitor_lens_and_sae() -> None:
     session._aggregate_forward_index = lambda _ids: 1
     session._score_aggregate_only = score_aggregate_only
     session._lens_instrument.score_aggregate = score_lens
-    session._score_sae_probes_aggregate = score_sae
+    session._sae_instrument.score_aggregate = score_sae
     session._last_result = None
     session._last_per_token_scores = None
     session.events = SimpleNamespace(emit=lambda _event: None)
@@ -1541,26 +1542,15 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
 
 
 @pytest.mark.parametrize(
-    ("expr", "family", "score_attr", "expected"),
+    ("expr", "family", "expected"),
     [
-        (
-            "0.3 jlens/g@when:jlens/g>0.4",
-            "lens",
-            "lens",
-            {"jlens/g": 0.7},
-        ),
-        (
-            "0.3 sae/2@when:sae/2>0.4",
-            "sae",
-            "sae",
-            {"sae/2": 0.8},
-        ),
+        ("0.3 jlens/g@when:jlens/g>0.4", "lens", {"jlens/g": 0.7}),
+        ("0.3 sae/2@when:sae/2>0.4", "sae", {"sae/2": 0.8}),
     ],
 )
 def test_readout_only_gates_skip_monitor_probe_scoring(
     expr: str,
     family: str,
-    score_attr: str,
     expected: dict[str, float],
 ) -> None:
     from drowse.steering.grammar import parse_expr
@@ -1594,14 +1584,15 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
             **{f"{family}_names": (next(iter(expected)),)},
         ),
     )
-    # The lens gate scalars ride the lens run; the SAE's the session forwarder.
-    lens_scores = dict(expected) if score_attr == "lens" else {}
+    # The lens and SAE gate scalars ride each family's current run.
+    lens_scores = expected if family == "lens" else {}
+    sae_scores = expected if family == "sae" else {}
     session.lens = SimpleNamespace(current_run=SimpleNamespace(
         gate_scalars=lambda _step, _hidden, _keys: dict(lens_scores),
     ))
-    session._score_sae_gate_scalars = (
-        lambda _keys, *, step_id=-1: dict(expected) if score_attr == "sae" else {}
-    )
+    session.sae = SimpleNamespace(current_run=SimpleNamespace(
+        gate_scalars=lambda _step, _hidden, _keys: dict(sae_scores),
+    ))
     composer = wire_stub_steering(session)
     composer._stack.append(cast(Any, dict(parse_expr(expr).alphas)))
 
@@ -1653,7 +1644,9 @@ def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
         lens=SimpleNamespace(current_run=SimpleNamespace(
             gate_scalars=lambda _step, _hidden, _keys: {"jlens/g": 0.7},
         )),
-        _score_sae_gate_scalars=lambda _keys, *, step_id=-1: {},
+        sae=SimpleNamespace(current_run=SimpleNamespace(
+            gate_scalars=lambda _step, _hidden, _keys: {},
+        )),
         _geometry_instrument=SimpleNamespace(
             current_run=SimpleNamespace(observe=lambda _step, _hidden: {}),
         ),
@@ -1731,7 +1724,7 @@ def test_return_probe_readings_false_skips_probe_finalization() -> None:
     session._lens_instrument.score_aggregate = lambda *_args, **_kwargs: (
         (_ for _ in ()).throw(AssertionError("lens finalization disabled"))
     )
-    session._score_sae_probes_aggregate = lambda _ids: (
+    session._sae_instrument.score_aggregate = lambda _ids: (
         (_ for _ in ()).throw(AssertionError("sae finalization disabled"))
     )
 
@@ -1980,7 +1973,7 @@ def test_dormant_sae_probe_without_final_aggregate_does_not_attach_capture() -> 
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
     session._sae_instrument.probes = {"sae/0": {"feature_id": 0}}
-    session._sae_layer = 5
+    make_resident(session._sae_instrument.runtime, layer=5)
 
     _complete_capture_session(session)
     attached = DrowseSession._begin_capture(
@@ -2032,7 +2025,7 @@ def test_sae_gate_without_final_aggregate_attaches_sae_layer() -> None:
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
     session._sae_instrument.probes = {"sae/0": {"feature_id": 0}}
-    session._sae_layer = 5
+    make_resident(session._sae_instrument.runtime, layer=5)
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
@@ -2077,7 +2070,6 @@ def test_monitor_probe_without_final_aggregate_and_no_per_token_skips_capture() 
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
     session._sae_instrument.probes = {}
-    session._sae_layer = None
 
     _complete_capture_session(session)
     attached = DrowseSession._begin_capture(
@@ -2258,7 +2250,6 @@ def test_monitor_probe_final_aggregate_still_attaches_capture() -> None:
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
     session._sae_instrument.probes = {}
-    session._sae_layer = None
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
@@ -2429,7 +2420,6 @@ def test_gate_only_capture_reuses_preplanned_gate_scalars() -> None:
     session._lens_instrument.probes = {}
     session._sae_instrument.live = None
     session._sae_instrument.probes = {}
-    session._sae_layer = None
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)
@@ -2499,7 +2489,7 @@ def test_full_incremental_capture_deep_tail_only_for_readout_aggregate_layers() 
     session._lens_instrument.probe_layers = lambda _names=None: {3}
     session._sae_instrument.live = None
     session._sae_instrument.probes = {"sae/5": {"feature_id": 5}}
-    session._sae_layer = 5
+    make_resident(session._sae_instrument.runtime, layer=5)
     session._steering = SimpleNamespace(all_fast_path=lambda: True)
 
     _complete_capture_session(session)

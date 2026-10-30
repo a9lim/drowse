@@ -56,7 +56,6 @@ def _mock_session():
     session.tree.get.return_value.mean_surprise = None
     session.is_base_model = False
     session.lens.has_compatible.return_value = False
-    session.sae_info = None
     session.scene_grammar = None
     session.joint_logprob_cache = {}
     session.token_probe_payload = {}

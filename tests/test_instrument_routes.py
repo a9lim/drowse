@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -17,6 +18,7 @@ from drowse.lens.jlens import resolve_token_atom
 from tests.support.lens import stub_lens_kwargs
 from drowse.sae.instrument import SaeInstrument
 from drowse.server.instrument_routes import instrument_families
+from tests.support.sae import MockSaeBackend, make_resident, stub_sae_instrument
 
 _SID = "default"
 _BASE = f"/drowse/v1/sessions/{_SID}/instruments"
@@ -67,10 +69,8 @@ class _FakeLens(LensInstrument):
 class _FakeSae(SaeInstrument):
     """The real SAE instrument with residency faked."""
 
-    def __init__(self, session: Any) -> None:
-        super().__init__(session)
-        self.layer = 14
-        self.source: "str | None" = None
+    layer = 14
+    source: "str | None" = None
 
     def enable_live(self) -> dict[str, Any]:
         self.live = {"layer": self.layer, "source": self.source}
@@ -104,16 +104,29 @@ def _mock_session() -> Any:
     session._monitor.probe_names = []
     geometry = GeometryInstrument(session)
     lens = _FakeLens(session)
-    sae = _FakeSae(session)
+    # The SAE lifecycle the routes drive is mocked on the instrument; the
+    # token replay is the session's replay primitive (``session.sae_replay``).
+    session.sae_replay = MagicMock()
+    sae = stub_sae_instrument(session, cls=_FakeSae, replay=session.sae_replay)
+    for name in ("load", "unload", "train", "validate_feature", "fetch_meta"):
+        setattr(sae, name, MagicMock(name=f"sae.{name}"))
     session.instruments = {
         "geometry": geometry, "lens": lens, "sae": sae,
     }
     session.geometry = geometry
     session.lens = lens
     session.sae = sae
-    session.sae_info = None
 
     return session
+
+
+def _wait_idle(client: Any, family: str, timeout: float = 2.0) -> None:
+    """Let a background preparation's worker finish."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if client.get(f"{_BASE}/{family}/preparations").json()["state"] != "running":
+            return
+        time.sleep(0.01)
 
 
 @pytest.fixture
@@ -585,7 +598,7 @@ class TestPreparations:
         self, session_and_client: Any, monkeypatch: Any,
     ) -> None:
         session, client = session_and_client
-        session.train_sae.return_value = {
+        session.sae.train.return_value = {
             "runtime": {}, "metrics": {"tokens_trained": 100}, "source": "local:s",
         }
         monkeypatch.setattr(
@@ -613,7 +626,7 @@ class TestPreparations:
         self, session_and_client: Any,
     ) -> None:
         session, client = session_and_client
-        session.load_sae.return_value = {"layer": 14, "width": 4096}
+        session.sae.load.return_value = {"layer": 14, "width": 4096}
         resp = client.post(
             f"{_BASE}/sae/preparations",
             json={"operation": "fetch", "release": "saelens:scope"},
@@ -627,7 +640,75 @@ class TestPreparations:
             if st["state"] != "running":
                 break
             time.sleep(0.01)
-        session.load_sae.assert_called_once_with("scope", layer=None)
+        session.sae.load.assert_called_once_with("scope", layer=None)
+
+    @pytest.mark.parametrize(
+        ("source", "release"),
+        [("saelens:scope", "scope"), ("local:mine", "local:mine")],
+    )
+    def test_sae_fetch_parses_the_public_source_grammar(
+        self, session_and_client: Any, source: str, release: str,
+    ) -> None:
+        session, client = session_and_client
+        session.sae.load.return_value = {"layer": 14, "width": 4096}
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "fetch", "release": f"  {source} "},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "sae")
+        session.sae.load.assert_called_once_with(release, layer=None)
+
+    @pytest.mark.parametrize("source", ["scope", "saelens:", "local:Bad Name"])
+    def test_sae_fetch_rejects_a_malformed_source(
+        self, session_and_client: Any, source: str,
+    ) -> None:
+        """The public grammar is ``local:NAME`` / ``saelens:RELEASE``; the
+        route used to strip ``saelens:`` by hand and load anything else
+        verbatim."""
+        session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "fetch", "release": source},
+        )
+        assert resp.status_code == 400
+        assert "SAE source must be" in resp.json()["detail"]
+        session.sae.load.assert_not_called()
+
+    def test_sae_train_default_layer_matches_the_cli(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        """The default hook layer is ``select_runtime_layer`` over every
+        model layer, as ``drowse sae train`` picks it (a 31-layer model's
+        65% depth is the 19/20 tie, which the CLI breaks low)."""
+        from drowse.sae.backend import select_runtime_layer
+
+        session, client = session_and_client
+        session.layers = [MagicMock() for _ in range(31)]
+        session.sae.train.return_value = {
+            "runtime": {}, "metrics": {"tokens_trained": 1}, "source": "local:s",
+        }
+        monkeypatch.setattr(
+            "drowse.lens.corpus.stream_lens_corpus",
+            lambda _n, **_k: (["p"], "spec"),
+        )
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "train", "name": "mine", "tokens": 1000},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "sae")
+        layer = session.sae.train.call_args.kwargs["layer"]
+        assert layer == select_runtime_layer(frozenset(range(31)), 31) == 19
+
+        session.sae.train.reset_mock()
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "train", "name": "mine", "layer": 31},
+        )
+        assert resp.status_code == 400
+        assert "outside model layers 0..30" in resp.json()["detail"]
+        session.sae.train.assert_not_called()
 
     def test_sae_delete_unloads_when_no_train(
         self, session_and_client: Any,
@@ -635,7 +716,7 @@ class TestPreparations:
         session, client = session_and_client
         resp = client.delete(f"{_BASE}/sae/preparations")
         assert resp.status_code == 200
-        session.unload_sae.assert_called_once()
+        session.sae.unload.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -790,13 +871,15 @@ class TestTokenReadout:
     def test_sae_replay_envelope(self, session_and_client: Any) -> None:
         session, client = session_and_client
         session.sae.source = "saelens:scope"
-        session.sae_token_readout.return_value = {
-            "node_id": "n1", "raw_index": 2, "token_id": 7, "token_text": "x",
-            "steering": None, "layer": 14,
-            "features": [{
-                "id": 42, "activation": 3.5, "label": "fruit", "max_act": 121.1,
-            }],
-        }
+        make_resident(
+            session.sae.runtime,
+            MockSaeBackend(layers=frozenset({14}), d_model=64),
+            layer=14,
+            feature_meta={"42": {"label": "fruit", "max_act": 121.1}},
+        )
+        session.sae_replay.return_value = (
+            SimpleNamespace(steering=None), [(42, 3.5)],
+        )
         resp = client.get(
             f"{_BASE}/sae/token-readout",
             params={"node_id": "n1", "raw_index": 2},
@@ -806,6 +889,10 @@ class TestTokenReadout:
         assert sae["binding"]["source"] == "saelens:scope"
         assert sae["binding"]["layer"] == 14
         assert sae["readout"]["features"][0]["id"] == 42
+        assert sae["readout"]["features"][0]["label"] == "fruit"
+        args, kwargs = session.sae_replay.call_args
+        assert args == ("n1", 2)
+        assert kwargs["layers"] == [14]
 
 
 # ---------------------------------------------------------------------------
@@ -853,7 +940,7 @@ class TestExtras:
         # The double emits the full contract ``SaeFeatureValidationJSON`` —
         # ``max_act`` is the strength unit and rides every real response, so a
         # double that omits it would test a shape the server cannot produce.
-        session.validate_sae_feature.return_value = {
+        session.sae.validate_feature.return_value = {
             "id": 42, "label": "fruit", "layer": 14, "max_act": None,
         }
         resp = client.post(
@@ -863,11 +950,11 @@ class TestExtras:
         assert resp.json() == {
             "id": 42, "label": "fruit", "layer": 14, "max_act": None,
         }
-        session.validate_sae_feature.assert_called_once_with(42)
+        session.sae.validate_feature.assert_called_once_with(42)
 
     def test_sae_features_metadata(self, session_and_client: Any) -> None:
         session, client = session_and_client
-        session.fetch_sae_feature_meta.return_value = {
+        session.sae.fetch_meta.return_value = {
             "42": {"label": "fruit", "max_act": 121.1},
         }
         resp = client.post(
@@ -877,7 +964,7 @@ class TestExtras:
         assert resp.json() == {
             "features": {"42": {"label": "fruit", "max_act": 121.1}},
         }
-        session.fetch_sae_feature_meta.assert_called_once_with([42, 42, 7])
+        session.sae.fetch_meta.assert_called_once_with([42, 42, 7])
 
     def test_sae_features_metadata_oversized_400(
         self, session_and_client: Any,
