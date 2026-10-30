@@ -792,7 +792,7 @@ def compute_neutral_activations(
     single per-model neutral artifact: the Mahalanobis whitener's covariance is
     built from the stack and the probe-centering means are its per-layer
     ``X.mean(0)`` (:func:`drowse.store.bundled_probes.bootstrap_layer_means`).
-    Used by cross-model alignment (:func:`drowse.store.alignment.fit_alignment`)
+    Used by cross-model alignment (:func:`drowse.geometry.procrustes.fit_alignment`)
     which needs paired observations to fit Procrustes; the means alone (N=1)
     are degenerate for that fit.
 
@@ -803,7 +803,7 @@ def compute_neutral_activations(
 
     Storage cost: ~90 · n_layers · hidden_dim · 4B in fp32 (≈ 56MB on
     a 4096-dim, 80-layer model).  Callers persist this through
-    :func:`drowse.store.alignment.load_or_compute_neutral_activations`.
+    :func:`drowse.store.neutral.load_or_compute_neutral_activations`.
     """
     if device is None:
         device = next(model.parameters()).device

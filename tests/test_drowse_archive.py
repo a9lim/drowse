@@ -30,17 +30,12 @@ from drowse.base.paths import manifold_dir, drowse_home, tensor_filename
 from drowse.store.archive import (
     DROWSE_ARCHIVE_FORMAT_VERSION,
     DrowseArchiveError,
-    _begin_transaction,
-    _promote_transaction,
     _tensor_shapes_and_finiteness,
-    _transaction_backup_path,
-    _transaction_stage_path,
     _validate_member_path,
     _validate_zip_infos,
     export_drowse_archive,
-    install_drowse_archive,
-    recover_drowse_archive_transactions,
 )
+from drowse.store.install import install_manifold
 from drowse.store.templates import (
     TemplateFolder,
     create_template_folder,
@@ -203,7 +198,7 @@ def test_round_trip_preserves_manifold_and_exact_manifest(tmp_path: Path) -> Non
     assert "manifolds/local/demo/manifold.json" in names
 
     shutil.rmtree(folder)
-    installed = install_drowse_archive(output)
+    installed = install_manifold(output)
     assert installed == manifold_dir("local", "demo")
     assert ManifoldFolder.load(installed).node_labels == ["calm", "alert"]
 
@@ -255,7 +250,7 @@ def test_monopolar_discover_fit_exports_and_installs(tmp_path: Path) -> None:
     output = tmp_path / "monopolar.drowse"
     export_drowse_archive("local", "monopolar", output=output)
     shutil.rmtree(folder)
-    installed = install_drowse_archive(output)
+    installed = install_manifold(output)
 
     sidecar = ManifoldFolder.load(installed).sidecar(tensor.stem)
     assert sidecar.method == "manifold_monopolar"
@@ -285,7 +280,7 @@ def test_install_rejects_duplicate_keys_in_inner_json(tmp_path: Path) -> None:
     _rewrite_manifest(valid, invalid, mutate)
 
     with pytest.raises(DrowseArchiveError, match="duplicate key 'name'"):
-        install_drowse_archive(invalid)
+        install_manifold(invalid)
 
 
 def test_template_closure_installs_transactionally(tmp_path: Path) -> None:
@@ -299,7 +294,7 @@ def test_template_closure_installs_transactionally(tmp_path: Path) -> None:
 
     shutil.rmtree(folder)
     shutil.rmtree(template)
-    install_drowse_archive(output)
+    install_manifold(output)
     assert ManifoldFolder.load(manifold_dir("local", "days")).template_ref == (
         "local/weekday"
     )
@@ -337,7 +332,7 @@ def test_different_existing_template_blocks_whole_install(tmp_path: Path) -> Non
     )
 
     with pytest.raises(RuntimeError, match="different referenced template"):
-        install_drowse_archive(output)
+        install_manifold(output)
     assert not manifold_dir("local", "days").exists()
     assert TemplateFolder.load(template_dir("local", "weekday")).values == (
         "Friday", "Saturday",
@@ -357,7 +352,7 @@ def test_matching_template_symlink_is_never_reused(tmp_path: Path) -> None:
     (template / "template.json").symlink_to(external)
 
     with pytest.raises(DrowseArchiveError, match="not a regular file"):
-        install_drowse_archive(output)
+        install_manifold(output)
     assert not manifold_dir("local", "days").exists()
 
 
@@ -371,7 +366,7 @@ def test_matching_template_with_unexpected_entries_is_never_reused(
     (template / "unexpected.txt").write_text("unowned")
 
     with pytest.raises(DrowseArchiveError, match="exact template closure"):
-        install_drowse_archive(output)
+        install_manifold(output)
     assert not manifold_dir("local", "days").exists()
 
 
@@ -392,7 +387,7 @@ def test_force_replaces_template_and_manifold_together(tmp_path: Path) -> None:
         }],
     )
 
-    install_drowse_archive(output, force=True)
+    install_manifold(output, force=True)
     assert ManifoldFolder.load(manifold_dir("local", "days")).name == "days"
     assert TemplateFolder.load(template_dir("local", "weekday")).values == (
         "Monday", "Tuesday",
@@ -426,7 +421,7 @@ def test_force_refuses_to_replace_template_shared_by_another_manifold(
     )
 
     with pytest.raises(RuntimeError, match="cannot replace shared template"):
-        install_drowse_archive(output, force=True)
+        install_manifold(output, force=True)
 
     assert not manifold_dir("local", "days").exists()
     assert TemplateFolder.load(template_dir("local", "weekday")).values == (
@@ -441,7 +436,7 @@ def test_as_rewrites_manifold_and_fitted_sidecar_identity(tmp_path: Path) -> Non
     export_drowse_archive("local", "demo", output=output)
     shutil.rmtree(folder)
 
-    installed = install_drowse_archive(output, as_="shared/renamed")
+    installed = install_manifold(output, as_="shared/renamed")
     loaded = ManifoldFolder.load(installed)
     assert installed == manifold_dir("shared", "renamed")
     assert loaded.name == "renamed"
@@ -461,8 +456,8 @@ def test_install_rejects_reserved_destination_namespace(
     export_drowse_archive("local", "demo", output=output)
     shutil.rmtree(folder)
 
-    with pytest.raises(DrowseArchiveError, match="reserved"):
-        install_drowse_archive(output, as_=f"{namespace}/renamed")
+    with pytest.raises(ValueError, match="reserved"):
+        install_manifold(output, as_=f"{namespace}/renamed")
 
 
 def test_install_rejects_reserved_source_namespace(tmp_path: Path) -> None:
@@ -483,10 +478,10 @@ def test_install_rejects_reserved_source_namespace(tmp_path: Path) -> None:
     _rewrite_manifest(valid, bad, mutate)
 
     with pytest.raises(DrowseArchiveError, match="reserved"):
-        install_drowse_archive(bad)
+        install_manifold(bad)
 
 
-def test_install_resets_imported_fit_transaction_ownership(tmp_path: Path) -> None:
+def test_fit_transaction_ownership_never_travels(tmp_path: Path) -> None:
     folder = _discover()
     manifest_path = folder / "manifold.json"
     manifest = json.loads(manifest_path.read_text())
@@ -499,11 +494,22 @@ def test_install_resets_imported_fit_transaction_ownership(tmp_path: Path) -> No
         archived = json.loads(
             archive.read("manifolds/local/demo/manifold.json")
         )
-    assert archived["artifact_id"] == "publisher-owned"
-    assert archived["fit_epochs"] == {"*:all": 91}
+    assert "artifact_id" not in archived
+    assert "fit_epochs" not in archived
 
+    # An archive authored elsewhere (the browser allows the keys) is reset on
+    # install as well.
+    foreign = tmp_path / "foreign.drowse"
+
+    def carry_ownership(pack: dict[str, Any], entries: dict[str, bytes]) -> None:
+        _replace_manifested_json(
+            pack, entries, "manifolds/local/demo/manifold.json",
+            {**archived, "artifact_id": "publisher-owned", "fit_epochs": {"*:all": 91}},
+        )
+
+    _rewrite_manifest(output, foreign, carry_ownership)
     shutil.rmtree(folder)
-    installed = install_drowse_archive(output)
+    installed = install_manifold(foreign)
     local_manifest = json.loads((installed / "manifold.json").read_text())
     assert "artifact_id" not in local_manifest
     assert "fit_epochs" not in local_manifest
@@ -809,7 +815,7 @@ def test_rejects_payload_hash_mismatch(tmp_path: Path) -> None:
 
     shutil.rmtree(manifold_dir("local", "demo"))
     with pytest.raises(DrowseArchiveError, match="SHA-256"):
-        install_drowse_archive(bad)
+        install_manifold(bad)
 
 
 @pytest.mark.parametrize("as_", [None, "shared/renamed"])
@@ -830,7 +836,7 @@ def test_rejects_primary_identity_mismatch_before_optional_rewrite(
     _rewrite_manifest(valid, bad, mutate)
     shutil.rmtree(manifold_dir("local", "demo"))
     with pytest.raises(DrowseArchiveError, match="contains manifold identity"):
-        install_drowse_archive(bad, as_=as_)
+        install_manifold(bad, as_=as_)
 
 
 def test_rejects_template_path_identity_mismatch(tmp_path: Path) -> None:
@@ -849,7 +855,7 @@ def test_rejects_template_path_identity_mismatch(tmp_path: Path) -> None:
     shutil.rmtree(folder)
     shutil.rmtree(template)
     with pytest.raises(DrowseArchiveError, match="contains identity 'weekend'"):
-        install_drowse_archive(bad)
+        install_manifold(bad)
 
 
 def test_rejects_pack_source_that_contradicts_manifold(tmp_path: Path) -> None:
@@ -866,7 +872,7 @@ def test_rejects_pack_source_that_contradicts_manifold(tmp_path: Path) -> None:
     _rewrite_manifest(valid, bad, mutate)
     shutil.rmtree(folder)
     with pytest.raises(DrowseArchiveError, match="does not match manifold.json"):
-        install_drowse_archive(bad)
+        install_manifold(bad)
 
 
 def test_rejects_unpinned_hugging_face_provenance(tmp_path: Path) -> None:
@@ -885,7 +891,7 @@ def test_rejects_unpinned_hugging_face_provenance(tmp_path: Path) -> None:
     _rewrite_manifest(valid, bad, mutate)
     shutil.rmtree(folder)
     with pytest.raises(DrowseArchiveError, match="immutable revision"):
-        install_drowse_archive(bad)
+        install_manifold(bad)
 
 
 def test_rejects_mutable_hugging_face_revision_provenance(tmp_path: Path) -> None:
@@ -909,7 +915,7 @@ def test_rejects_mutable_hugging_face_revision_provenance(tmp_path: Path) -> Non
     _rewrite_manifest(valid, bad, mutate)
 
     with pytest.raises(DrowseArchiveError, match="commit SHA"):
-        install_drowse_archive(bad)
+        install_manifold(bad)
 
 
 def test_accepts_immutable_hugging_face_commit_provenance(tmp_path: Path) -> None:
@@ -950,7 +956,7 @@ def test_rejects_unknown_root_even_when_manifested(tmp_path: Path) -> None:
     _rewrite_manifest(valid, bad, mutate)
     shutil.rmtree(manifold_dir("local", "demo"))
     with pytest.raises(DrowseArchiveError, match="outside its closure"):
-        install_drowse_archive(bad)
+        install_manifold(bad)
 
 
 def test_rejects_missing_template_closure(tmp_path: Path) -> None:
@@ -968,223 +974,29 @@ def test_rejects_missing_template_closure(tmp_path: Path) -> None:
     _rewrite_manifest(valid, bad, mutate)
     shutil.rmtree(folder)
     with pytest.raises(DrowseArchiveError, match="missing its template closure"):
-        install_drowse_archive(bad)
+        install_manifold(bad)
 
 
-def test_promote_transaction_rolls_back_both_targets(
+def test_install_leaves_no_stage_when_validation_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    token = "a" * 32
-    target_a = tmp_path / "manifolds" / "local" / "a"
-    target_b = tmp_path / "templates" / "local" / "b"
-    stage_a = _transaction_stage_path(tmp_path, token, "manifold")
-    stage_b = _transaction_stage_path(tmp_path, token, "template")
-    for path, value in ((target_a, "old-a"), (target_b, "old-b")):
-        path.mkdir(parents=True)
-        (path / "value").write_text(value)
-    _begin_transaction(
-        [(stage_a, target_a), (stage_b, target_b)], token=token, root=tmp_path,
-    )
-    for path, value in ((stage_a, "new-a"), (stage_b, "new-b")):
-        path.mkdir(parents=True)
-        (path / "value").write_text(value)
-    original_rename = Path.rename
-
-    def fail_second_stage(self: Path, target: Path) -> Path:
-        if self == stage_b and target == target_b:
-            raise OSError("injected")
-        return original_rename(self, target)
-
-    monkeypatch.setattr(Path, "rename", fail_second_stage)
-    with pytest.raises(DrowseArchiveError, match="promote"):
-        _promote_transaction(
-            [(stage_a, target_a), (stage_b, target_b)],
-            token=token,
-            journal_root=tmp_path,
-            transaction_locked=True,
-        )
-    assert (target_a / "value").read_text() == "old-a"
-    assert (target_b / "value").read_text() == "old-b"
-    assert not list((tmp_path / ".drowse-transactions").glob("*.json"))
-
-
-def test_promote_transaction_rolls_back_python_exception(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    token = "b" * 32
-    target = tmp_path / "manifolds" / "local" / "a"
-    stage = _transaction_stage_path(tmp_path, token, "manifold")
-    target.mkdir(parents=True)
-    (target / "value").write_text("old")
-    _begin_transaction([(stage, target)], token=token, root=tmp_path)
-    stage.mkdir(parents=True)
-    (stage / "value").write_text("new")
-    original_rename = Path.rename
-
-    def fail_stage(self: Path, destination: Path) -> Path:
-        if self == stage and destination == target:
-            raise RuntimeError("injected")
-        return original_rename(self, destination)
-
-    monkeypatch.setattr(Path, "rename", fail_stage)
-    with pytest.raises(RuntimeError, match="injected"):
-        _promote_transaction(
-            [(stage, target)], token=token, journal_root=tmp_path,
-            transaction_locked=True,
-        )
-    assert (target / "value").read_text() == "old"
-    assert not list((tmp_path / ".drowse-transactions").glob("*.json"))
-
-
-def test_recover_crash_left_two_target_transaction(tmp_path: Path) -> None:
-    token = "c" * 32
-    target_a = tmp_path / "manifolds" / "local" / "a"
-    target_b = tmp_path / "templates" / "local" / "b"
-    stage_a = _transaction_stage_path(tmp_path, token, "manifold")
-    stage_b = _transaction_stage_path(tmp_path, token, "template")
-    backup_a = _transaction_backup_path(tmp_path, token, "manifold")
-    backup_b = _transaction_backup_path(tmp_path, token, "template")
-    for path, value in (
-        (target_a, "old-a"), (target_b, "old-b"),
-        (stage_a, "new-a"), (stage_b, "new-b"),
-    ):
-        path.mkdir(parents=True)
-        (path / "value").write_text(value)
-    target_a.rename(backup_a)
-    target_b.rename(backup_b)
-    stage_a.rename(target_a)
-    journal_dir = tmp_path / ".drowse-transactions"
-    journal_dir.mkdir(exist_ok=True)
-    journal = {
-        "format_version": 1,
-        "token": token,
-        "phase": "backed_up",
-        "items": [
-            {
-                "kind": "manifold",
-                "stage": stage_a.relative_to(tmp_path).as_posix(),
-                "target": target_a.relative_to(tmp_path).as_posix(),
-                "backup": backup_a.relative_to(tmp_path).as_posix(),
-                "had_existing": True,
-            },
-            {
-                "kind": "template",
-                "stage": stage_b.relative_to(tmp_path).as_posix(),
-                "target": target_b.relative_to(tmp_path).as_posix(),
-                "backup": backup_b.relative_to(tmp_path).as_posix(),
-                "had_existing": True,
-            },
-        ],
-    }
-    (journal_dir / f"{token}.json").write_text(json.dumps(journal))
-
-    recover_drowse_archive_transactions(tmp_path)
-
-    assert (target_a / "value").read_text() == "old-a"
-    assert (target_b / "value").read_text() == "old-b"
-    assert not stage_a.exists()
-    assert not stage_b.exists()
-    assert not backup_a.exists()
-    assert not backup_b.exists()
-    assert not (journal_dir / f"{token}.json").exists()
-
-
-def test_staging_journal_precedes_copy_and_stage_is_not_discoverable() -> None:
-    source = _discover()
-    root = drowse_home()
-    target = manifold_dir("local", "installed")
-    token = "d" * 32
-    stage = _transaction_stage_path(root, token, "manifold")
-
-    journal = _begin_transaction([(stage, target)], token=token, root=root)
-    assert journal.is_file()
-    shutil.copytree(source, stage)
-    assert stage.parent == root / ".drowse-transactions"
-    assert [name for name, _folder in iter_manifold_folders()] == ["local"]
-
-    recover_drowse_archive_transactions(root)
-    assert not stage.exists()
-    assert not journal.exists()
-    assert not target.exists()
-
-
-def test_install_cleans_stage_when_copy_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import drowse.store.archive as module
+    import drowse.store.install as module
 
     folder = _discover()
     archive = tmp_path / "demo.drowse"
     export_drowse_archive("local", "demo", output=archive)
     shutil.rmtree(folder)
-    original_copy = module._copy_tree
 
-    def fail_after_copy(source: Path, destination: Path) -> None:
-        original_copy(source, destination)
-        raise RuntimeError("injected copy failure")
+    def fail_rewrite(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("injected stage failure")
 
-    monkeypatch.setattr(module, "_copy_tree", fail_after_copy)
-    with pytest.raises(RuntimeError, match="copy failure"):
-        install_drowse_archive(archive)
+    monkeypatch.setattr(module, "_rewrite_identity", fail_rewrite)
+    with pytest.raises(RuntimeError, match="stage failure"):
+        install_manifold(archive)
 
-    transactions = drowse_home() / ".drowse-transactions"
-    assert not list(transactions.glob("*.json"))
-    assert not list(transactions.glob("*.stage"))
+    assert not any((drowse_home() / ".staging").glob("*/manifolds"))
     assert not manifold_dir("local", "demo").exists()
-
-
-def test_recovery_sweeps_legacy_stage_before_discovery() -> None:
-    source = _discover()
-    token = "e" * 32
-    legacy = source.with_name(f"demo.drowse-stage-{token}")
-    shutil.copytree(source, legacy)
-    # Discovery never counts a folder not named after its manifest.
-    assert len(list(iter_manifold_folders())) == 1
-
-    recover_drowse_archive_transactions()
-
-    assert not legacy.exists()
-    assert len(list(iter_manifold_folders())) == 1
-
-
-@pytest.mark.parametrize(
-    "relative",
-    [Path(".drowse-transactions"), Path("manifolds"), Path("templates")],
-)
-def test_recovery_rejects_symlinked_owned_roots(
-    tmp_path: Path,
-    relative: Path,
-) -> None:
-    root = tmp_path / "root"
-    external = tmp_path / "external"
-    root.mkdir()
-    external.mkdir()
-    marker = external / "keep"
-    marker.write_text("external")
-    (root / relative).parent.mkdir(parents=True, exist_ok=True)
-    (root / relative).symlink_to(external, target_is_directory=True)
-
-    with pytest.raises(DrowseArchiveError, match="symbolic link"):
-        recover_drowse_archive_transactions(root)
-
-    assert marker.read_text() == "external"
-
-
-def test_bootstrap_recovers_pending_staging_transaction() -> None:
-    from drowse.store.bundled import materialize_bundled_artifacts
-
-    source = _discover()
-    root = drowse_home()
-    target = manifold_dir("local", "installed")
-    token = "f" * 32
-    stage = _transaction_stage_path(root, token, "manifold")
-    journal = _begin_transaction([(stage, target)], token=token, root=root)
-    shutil.copytree(source, stage)
-
-    materialize_bundled_artifacts()
-
-    assert not stage.exists()
-    assert not journal.exists()
+    assert list(iter_manifold_folders()) == []
 
 
 def test_cli_export_drowse_archive(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1198,8 +1010,6 @@ def test_cli_export_drowse_archive(tmp_path: Path, capsys: pytest.CaptureFixture
 
 
 def test_install_manifold_routes_local_archive(tmp_path: Path) -> None:
-    from drowse.store.hub import install_manifold
-
     folder = _discover()
     output = tmp_path / "demo.drowse"
     export_drowse_archive("local", "demo", output=output)
@@ -1208,8 +1018,6 @@ def test_install_manifold_routes_local_archive(tmp_path: Path) -> None:
 
 
 def test_install_manifold_rejects_missing_local_archive(tmp_path: Path) -> None:
-    from drowse.store.hub import install_manifold
-
     missing = tmp_path / "missing.drowse"
     with pytest.raises(FileNotFoundError, match="Drowse archive not found"):
         install_manifold(str(missing))

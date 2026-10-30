@@ -39,11 +39,9 @@ from drowse.cli.runners.shared import (
     _warmup_session,
 )
 
-# The transfer-alignment single-flight orchestration now lives beside the
-# alignment primitives it wraps; re-exported under its historical private name
-# so ``drowse.cli.runners._load_or_fit_transfer_alignment`` still resolves and
-# stays monkeypatchable at the package level.
-from drowse.store.alignment import (
+# The transfer-alignment orchestration lives in ``drowse.fit.transfer``; the
+# runner calls it through this package object so tests can monkeypatch it.
+from drowse.fit.transfer import (
     load_or_fit_transfer_alignment as _load_or_fit_transfer_alignment,
 )
 

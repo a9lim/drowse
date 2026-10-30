@@ -14,12 +14,14 @@ from pathlib import Path
 import pytest
 import torch
 
-from drowse.store.alignment import (
+from drowse.geometry.procrustes import (
     AlignmentError,
     LayerAlignment,
-    alignment_cache_path,
     alignment_quality,
     fit_alignment,
+)
+from drowse.store.alignment import (
+    _alignment_anchor_paths,
     load_alignment_map,
     save_alignment_map,
 )
@@ -195,7 +197,9 @@ class TestAlignmentCache:
         from drowse.base.paths import safe_model_id
 
         monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-        ts, sc = alignment_cache_path("google/gemma-3-4b-it", "Qwen/Qwen2.5-7B-Instruct")
+        ts, sc = _alignment_anchor_paths(
+            "google/gemma-3-4b-it", "Qwen/Qwen2.5-7B-Instruct",
+        )
         # Layout: under the *target* model's dir.
         assert safe_model_id("Qwen/Qwen2.5-7B-Instruct") in str(ts)
         assert "alignments" in str(ts)
@@ -304,21 +308,18 @@ class TestAlignmentCache:
         anchor, _ = alignment_mod._alignment_anchor_paths("a/b", "c/d")
         anchor.parent.mkdir(parents=True, exist_ok=True)
         anchor.write_bytes(b"legacy-v3")
-        monkeypatch.setattr(
-            alignment_mod, "hash_file",
-            lambda *_a, **_k: (_ for _ in ()).throw(
-                AssertionError("alignment save reread a written shard")
-            ),
-        )
-        saved = save_alignment_map(
+        save_alignment_map(
             _alignments({0: torch.eye(4), 5: torch.eye(4)}), "a/b", "c/d",
             source_identity=self._SRC_ID, target_identity=self._TGT_ID,
         )
-        assert saved.exists()
         assert not anchor.exists()
         sidecar = json.loads(anchor.with_suffix(".json").read_text())
         assert set(sidecar["tensor_files"]) == {"0", "5"}
         assert len(set(sidecar["tensor_files"].values())) == 2
+        assert all(
+            (anchor.parent / name).is_file()
+            for name in sidecar["tensor_files"].values()
+        )
 
     def test_selective_load_reads_only_requested_factor_shard(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -539,3 +540,31 @@ class TestAlignmentCache:
         )
         assert loaded is not None and set(loaded[0]) == {0, 5}
         assert torch.equal(loaded[0][5].to_dense(), 2 * torch.eye(4))
+
+
+def test_transfer_without_shared_layers_raises_instead_of_exiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the transfer orchestrator called ``sys.exit(1)`` from
+    library code; it now raises :class:`AlignmentError` for the caller."""
+    import drowse.fit.transfer as transfer
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+
+    def sidecar(model_id: str) -> dict[str, object]:
+        layer = 0 if model_id == "src/model" else 1
+        return {
+            "method": "neutral_activations", "format_version": 4,
+            "capture_version": 1, "model_fingerprint": f"fp:{model_id}",
+            "model_source_fingerprint": f"source:{model_id}",
+            "capture_sha256": model_id, "tensor_sha256": {str(layer): "0" * 64},
+            "tensor_files": {str(layer): "x.safetensors"}, "layers": [layer],
+            "tensor_schema": {
+                str(layer): {"shape": [3, 2], "dtype": "torch.float32"},
+            },
+            "n_prompts": 3,
+        }
+
+    monkeypatch.setattr(transfer, "_proven_sidecar", sidecar)
+    with pytest.raises(AlignmentError, match="no requested shared layers"):
+        transfer.load_or_fit_transfer_alignment("src/model", "tgt/model")

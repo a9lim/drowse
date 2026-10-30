@@ -118,7 +118,7 @@ def test_transfer_variant_cold_loads_for_target_identity(
     )
     folder = _publish(manifold, source_id, source_fp)
     from drowse.geometry.whitener import LayerWhitener
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     acts = {0: torch.randn(32, 4)}
     whitener = LayerWhitener.from_neutral_activations(

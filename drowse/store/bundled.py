@@ -67,11 +67,9 @@ def materialize_bundled_artifacts() -> None:
         return
     _materialized_home = home
 
-    from drowse.store.archive import recover_drowse_archive_transactions
     from drowse.store.selectors import invalidate as invalidate_selector_index
 
     home.mkdir(parents=True, exist_ok=True)
-    recover_drowse_archive_transactions()
     _materialize_templates()
     for name in bundled_manifold_names():
         _materialize_manifold(name, force=False)

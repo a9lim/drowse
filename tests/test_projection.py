@@ -386,7 +386,7 @@ class TestLayerMeansLazy:
     ) -> None:
         """Whitener bootstrap shares one neutral-cache read with mean derivation."""
         from drowse.session.session import DrowseSession
-        from drowse.store import alignment as alignment_mod
+        from drowse.store import neutral as alignment_mod
         s = _Stub({"a": _profile_a()})
         s._model = object()  # pyright: ignore[reportAttributeAccessIssue]
         s._tokenizer = object()  # pyright: ignore[reportAttributeAccessIssue]

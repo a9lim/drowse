@@ -25,9 +25,9 @@ def test_roundtrip_preserves_tensors(tmp_path: Path):
     assert sorted(loaded.keys()) == [0, 3, 14]
     for k in profile:
         assert torch.allclose(profile[k].float(), loaded[k].float(), atol=1e-6)
-    assert meta["method"] == "gguf_import"
-    assert meta["model_hint"] == "llama"
-    assert "drowse_version" in meta
+    assert meta == {
+        "method": "profile", "source_format": "gguf", "model_hint": "llama",
+    }
 
 
 def test_roundtrip_preserves_layer_indices_out_of_order(tmp_path: Path):
@@ -93,4 +93,25 @@ def test_load_profile_dispatches_on_extension(tmp_path: Path):
     write_gguf_profile(profile, path, model_hint="llama")
     loaded, meta = load_profile(str(path))
     assert sorted(loaded.keys()) == [0, 5]
-    assert meta["method"] == "gguf_import"
+    assert meta["method"] == "profile"
+
+
+def test_gguf_profile_saves_back_to_safetensors(tmp_path: Path):
+    """Regression: ``Profile.load(x.gguf).save(y)`` raised on the GGUF-only
+    ``gguf_import`` method; the load now round-trips through ``save``."""
+    from drowse.geometry.profile import Profile
+
+    original = {0: torch.randn(8), 5: torch.randn(8)}
+    gguf_path = tmp_path / "v.gguf"
+    write_gguf_profile(original, gguf_path, model_hint="gemma3")
+
+    target = tmp_path / "v.safetensors"
+    Profile.load(gguf_path).save(target)
+    reloaded = Profile.load(target)
+
+    assert sorted(reloaded.layers) == [0, 5]
+    for layer, tensor in original.items():
+        assert torch.allclose(reloaded[layer], tensor.float())
+    assert reloaded.metadata["method"] == "profile"
+    assert reloaded.metadata["source_format"] == "gguf"
+    assert reloaded.metadata["model_hint"] == "gemma3"

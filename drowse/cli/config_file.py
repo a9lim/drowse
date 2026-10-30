@@ -329,7 +329,7 @@ def ensure_vectors_installed(config: ConfigFile, *, strict: bool) -> list[str]:
             missing.append(coord)
             continue
         try:
-            from drowse.store.hub import install_manifold
+            from drowse.store.install import install_manifold
             install_manifold(coord, force=False)
         except Exception as e:
             msg = f"vector {coord!r}: install failed ({e})"

@@ -63,7 +63,7 @@ from drowse.errors import (
 
 if TYPE_CHECKING:
     from drowse.geometry.whitener import LayerWhitener
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
     # The activation-row spool + the manifold tensor codec live in the io
     # layer (``store.manifold_tensors``) now; the fit-capture math here still
     # produces/consumes the spool, so it's a forward-referenced type +
@@ -3675,8 +3675,8 @@ def transfer_manifold_subspaces(
     read/write orchestration stays in :func:`drowse.store.manifold_lifecycle.
     transfer_manifold`).  Takes the already-loaded **source** ``Manifold``, a
     per-layer affine alignment map (the compact factorized
-    :class:`drowse.store.alignment.LayerAlignment` returned by
-    :func:`drowse.store.alignment.fit_alignment`), and the **target** model's
+    :class:`drowse.geometry.procrustes.LayerAlignment` returned by
+    :func:`drowse.geometry.procrustes.fit_alignment`), and the **target** model's
     whitener, and returns a new
     ``Manifold`` whose subspaces live in target space.
 

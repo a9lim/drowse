@@ -31,7 +31,7 @@ from drowse.session.session import (
     ProfileNotRegisteredError,
 )
 from drowse.steering.grammar import SteeringExprError
-from drowse.store.hub import ManifoldInstallConflict
+from drowse.store.install import ManifoldInstallConflict
 from drowse.store.gguf import GGUFNotInstalled
 from drowse.base.hf import HFError
 from drowse.fit.bake import MergeError
@@ -77,7 +77,7 @@ _OVERRIDES: list[tuple[type[DrowseError], int]] = [
     (ConfigFileError, 400),
     # base/hf.py
     (HFError, 502),
-    # store/hub.py
+    # store/install.py
     (ManifoldInstallConflict, 409),
     # store/gguf.py
     (GGUFNotInstalled, 400),

@@ -40,7 +40,7 @@ def bootstrap_layer_means(
     """Per-layer neutral mean activation for probe centering.
 
     Derived as ``X.mean(0)`` from the per-model neutral-activation cache
-    (:func:`drowse.store.alignment.load_or_compute_neutral_activations`).  The
+    (:func:`drowse.store.neutral.load_or_compute_neutral_activations`).  The
     neutral mean *is* the probe-centering baseline — same corpus, same
     last-content-token fp32 pooling the whitener's covariance is built from —
     so there is no separate ``layer_means`` forward pass or disk cache.  The
@@ -50,7 +50,7 @@ def bootstrap_layer_means(
     two.  Stale on ``neutral_statements.json`` drift via the neutral cache's
     own sha256 key.
     """
-    from drowse.store.alignment import load_or_compute_neutral_activations
+    from drowse.store.neutral import load_or_compute_neutral_activations
 
     model_id = model_info.get("model_id", "unknown")
     acts = load_or_compute_neutral_activations(

@@ -192,7 +192,7 @@ def _run_pack_show(args: argparse.Namespace) -> None:
 
 
 def _run_pack_install(args: argparse.Namespace) -> None:
-    from drowse.store.hub import install_manifold
+    from drowse.store.install import install_manifold
 
     # Announce before the network call — hub progress bars are suppressed
     # off-TTY, so without the preamble plus the per-stage callback the verb is

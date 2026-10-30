@@ -45,10 +45,10 @@ def _proven_neutral_loaded_fingerprint(
     ``model_fingerprint`` that load produced, so matching the source half
     establishes the loaded half without a second load.
     """
-    from drowse.store.alignment import validate_neutral_cache_metadata
+    from drowse.store.neutral import validate_neutral_cache_metadata
 
     try:
-        sidecar = validate_neutral_cache_metadata(model_id, verify_payload=False)
+        sidecar = validate_neutral_cache_metadata(model_id)
     except (OSError, RuntimeError, ValueError, TypeError, KeyError):
         return None
     if sidecar.get("model_source_fingerprint") != source_fingerprint:

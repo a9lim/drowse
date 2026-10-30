@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from drowse import cli
+from drowse.fit.transfer import TransferAlignment
 
 
 def _cross_process_alignment_worker(
@@ -35,8 +36,7 @@ def _cross_process_alignment_worker(
     import torch
 
     import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
+    import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
     patch = pytest.MonkeyPatch()
@@ -82,8 +82,8 @@ def _cross_process_alignment_worker(
             self.tokenizer = object()
             self.layers = [object()]
 
-        def __enter__(self) -> "Session":
-            return self
+        def __enter__(self) -> tuple[object, object, object]:
+            return self.model, self.tokenizer, self.layers
 
         def __exit__(self, *_args: object) -> None:
             return None
@@ -107,10 +107,7 @@ def _cross_process_alignment_worker(
         model_mod, "model_source_fingerprint",
         lambda model_id: f"source:{model_id}",
     )
-    patch.setattr(
-        session_mod.DrowseSession, "from_pretrained",
-        staticmethod(lambda model_id, **_kwargs: Session(model_id)),
-    )
+    patch.setattr(alignment_mod, "_loaded_model", lambda model_id, **_kwargs: Session(model_id))
     patch.setattr(
         alignment_mod, "load_alignment_map",
         lambda *_args, **_kwargs: (
@@ -121,7 +118,7 @@ def _cross_process_alignment_worker(
     try:
         start.wait(timeout=120)
         runners._load_or_fit_transfer_alignment(
-            "shared/source", target, force=False, label="test",
+            "shared/source", target, force=False,
             requested_layers=[0],
         )
     except BaseException as exc:
@@ -403,7 +400,7 @@ def test_run_manifold_install_calls_backend(monkeypatch: pytest.MonkeyPatch, cap
         calls.append((target, as_, force))
         return Path("/home/.drowse/manifolds/local/circumplex")
 
-    monkeypatch.setattr("drowse.store.hub.install_manifold", fake_install)
+    monkeypatch.setattr("drowse.store.install.install_manifold", fake_install)
     cli.main(["pack", "install", "alice/circumplex", "-a", "local/mood", "-f"])
     assert calls == [("alice/circumplex", "local/mood", True)]
     out = capsys.readouterr().out
@@ -732,8 +729,7 @@ def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
     import torch
 
     import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
+    import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
@@ -745,17 +741,13 @@ def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
             self.tokenizer = object()
             self.layers = [object()]
 
-        def __enter__(self) -> "_SessionContext":
-            return self
+        def __enter__(self) -> tuple[object, object, object]:
+            return self.model, self.tokenizer, self.layers
 
         def __exit__(self, *_args: object) -> None:
             return None
 
-    monkeypatch.setattr(
-        session_mod.DrowseSession,
-        "from_pretrained",
-        staticmethod(lambda model_id, **_kwargs: _SessionContext(model_id)),
-    )
+    monkeypatch.setattr(alignment_mod, "_loaded_model", lambda model_id, **_kwargs: _SessionContext(model_id))
     loaded: list[str] = []
     src_acts = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [2.0, 1.0]])}
     tgt_acts = {0: torch.tensor([[2.0, 1.0], [1.0, 3.0], [4.0, 2.0]])}
@@ -804,11 +796,11 @@ def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
         alignment_mod, "save_alignment_map",
         lambda *_args, **_kwargs: tmp_path / "alignment.safetensors",
     )
-    maps, quality, _path, _src_id, _tgt_id, whitener, layer_means = (
-        runners._load_or_fit_transfer_alignment(
-            "src/model", "tgt/model", force=True, label="test transfer",
-        )
+    result = runners._load_or_fit_transfer_alignment(
+        "src/model", "tgt/model", force=True,
     )
+    maps, quality = result.alignment, result.quality_per_layer
+    whitener, layer_means = result.target_whitener, result.target_layer_means
 
     assert loaded == ["src/model", "tgt/model"]
     assert quality == {0: 1.0}
@@ -826,8 +818,7 @@ def test_cold_narrow_alignment_releases_full_seed_rosters_before_fit(
     import torch
 
     import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
+    import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
     class _SessionContext:
@@ -837,17 +828,13 @@ def test_cold_narrow_alignment_releases_full_seed_rosters_before_fit(
             self.tokenizer = object()
             self.layers = [object() for _ in range(10)]
 
-        def __enter__(self) -> "_SessionContext":
-            return self
+        def __enter__(self) -> tuple[object, object, object]:
+            return self.model, self.tokenizer, self.layers
 
         def __exit__(self, *_args: object) -> None:
             return None
 
-    monkeypatch.setattr(
-        session_mod.DrowseSession,
-        "from_pretrained",
-        staticmethod(lambda model_id, **_kwargs: _SessionContext(model_id)),
-    )
+    monkeypatch.setattr(alignment_mod, "_loaded_model", lambda model_id, **_kwargs: _SessionContext(model_id))
     monkeypatch.setattr(model_mod, "model_source_fingerprint", lambda *_args: None)
     monkeypatch.setattr(
         alignment_mod, "validate_neutral_cache_metadata",
@@ -918,12 +905,12 @@ def test_cold_narrow_alignment_releases_full_seed_rosters_before_fit(
     )
 
     result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=True, label="test transfer",
+        "src/model", "tgt/model", force=True,
         requested_layers=[5],
     )
 
-    assert set(result[0]) == {5}
-    assert result[5].layers == {5}
+    assert set(result.alignment) == {5}
+    assert result.target_whitener.layers == {5}
 
 
 def test_cached_alignment_keeps_model_free_offline_whitener_path(
@@ -933,8 +920,7 @@ def test_cached_alignment_keeps_model_free_offline_whitener_path(
     import torch
 
     import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
+    import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
     def sidecar(model_id: str) -> dict[str, Any]:
@@ -982,25 +968,15 @@ def test_cached_alignment_keeps_model_free_offline_whitener_path(
             {0: torch.eye(2)}, {"quality_per_layer": {"0": 0.75}},
         ),
     )
-    monkeypatch.setattr(
-        alignment_mod, "alignment_cache_path",
-        lambda *_args: (
-            tmp_path / "alignment.safetensors", tmp_path / "alignment.json",
-        ),
-    )
-    monkeypatch.setattr(
-        session_mod.DrowseSession,
-        "from_pretrained",
-        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    monkeypatch.setattr(alignment_mod, "_loaded_model", lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("exact cached repeat loaded a model")
-        )),
-    )
+        ))
     result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=False, label="test transfer",
+        "src/model", "tgt/model", force=False,
     )
 
-    assert result[1] == {0: 0.75}
-    assert result[5].layers == {0}
+    assert result.quality_per_layer == {0: 0.75}
+    assert result.target_whitener.layers == {0}
     assert metadata_calls == ["src/model", "tgt/model", "tgt/model"]
     assert payload_calls == ["tgt/model"]
 
@@ -1012,8 +988,7 @@ def test_missing_cached_alignment_fits_offline_from_proven_neutral_rows(
     import torch
 
     import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
+    import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
     src_acts = {0: torch.tensor([[1.0, 0.0], [0.0, 1.0], [2.0, 1.0]])}
@@ -1084,16 +1059,12 @@ def test_missing_cached_alignment_fits_offline_from_proven_neutral_rows(
         return tmp_path / "alignment.safetensors"
 
     monkeypatch.setattr(alignment_mod, "save_alignment_map", save_offline)
-    monkeypatch.setattr(
-        session_mod.DrowseSession,
-        "from_pretrained",
-        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    monkeypatch.setattr(alignment_mod, "_loaded_model", lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("offline alignment fit loaded model weights")
-        )),
-    )
+        ))
 
     result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=False, label="test transfer",
+        "src/model", "tgt/model", force=False,
     )
 
     assert metadata_calls == [
@@ -1105,10 +1076,10 @@ def test_missing_cached_alignment_fits_offline_from_proven_neutral_rows(
     assert set(fitted[0][1]) == {0}
     assert fitted[0][1][0] is tgt_acts[0]
     assert len(saved) == 1
-    assert saved[0]["source_identity"] == result[3]
-    assert saved[0]["target_identity"] == result[4]
-    assert result[1] == {0: 0.9}
-    assert result[5].layers == {0}
+    assert saved[0]["source_identity"] == result.source_identity
+    assert saved[0]["target_identity"] == result.target_identity
+    assert result.quality_per_layer == {0: 0.9}
+    assert result.target_whitener.layers == {0}
 
 
 def test_force_refits_only_requested_layer_without_loading_models(
@@ -1117,8 +1088,7 @@ def test_force_refits_only_requested_layer_without_loading_models(
     import torch
 
     import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
+    import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
     def sidecar(model_id: str) -> dict[str, Any]:
@@ -1191,15 +1161,12 @@ def test_force_refits_only_requested_layer_without_loading_models(
         alignment_mod, "save_alignment_map",
         lambda *_args, **kwargs: saved.append(kwargs) or tmp_path / "alignment",
     )
-    monkeypatch.setattr(
-        session_mod.DrowseSession, "from_pretrained",
-        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    monkeypatch.setattr(alignment_mod, "_loaded_model", lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("force refit recaptured neutral activations")
-        )),
-    )
+        ))
 
     result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=True, label="test transfer",
+        "src/model", "tgt/model", force=True,
         requested_layers=[5],
     )
     assert requested_map_layers == [set()]
@@ -1208,7 +1175,7 @@ def test_force_refits_only_requested_layer_without_loading_models(
     assert fitted[0][1]["requested_layers"] == {5}
     assert fitted[0][1]["available_shared_layers"] == set(range(10))
     assert saved[0]["extend"] is True
-    assert set(result[0]) == {5} and result[5].layers == {5}
+    assert set(result.alignment) == {5} and result.target_whitener.layers == {5}
 
 
 def test_target_neutral_generation_race_replans_cached_alignment(
@@ -1217,8 +1184,7 @@ def test_target_neutral_generation_race_replans_cached_alignment(
     import torch
 
     import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
+    import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
     target_generation = "old"
@@ -1270,22 +1236,19 @@ def test_target_neutral_generation_race_replans_cached_alignment(
         )
 
     monkeypatch.setattr(alignment_mod, "load_alignment_map", load_map)
-    monkeypatch.setattr(
-        session_mod.DrowseSession, "from_pretrained",
-        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    monkeypatch.setattr(alignment_mod, "_loaded_model", lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("identity replan loaded a model")
-        )),
-    )
+        ))
 
     result = runners._load_or_fit_transfer_alignment(
-        "src/model", "tgt/model", force=False, label="test",
+        "src/model", "tgt/model", force=False,
         requested_layers=[0],
     )
 
     assert map_generations == ["old", "new"]
-    assert torch.equal(result[0][0].to_dense(), 2.0 * torch.eye(2))
-    assert result[1] == {0: 0.8}
-    assert result[4]["capture_sha256"] == "new"
+    assert torch.equal(result.alignment[0].to_dense(), 2.0 * torch.eye(2))
+    assert result.quality_per_layer == {0: 0.8}
+    assert result.target_identity["capture_sha256"] == "new"
 
 
 def test_concurrent_distinct_alignments_single_flight_shared_model_load(
@@ -1294,8 +1257,7 @@ def test_concurrent_distinct_alignments_single_flight_shared_model_load(
     import torch
 
     import drowse.model.loading as model_mod
-    import drowse.session.session as session_mod
-    import drowse.store.alignment as alignment_mod
+    import drowse.fit.transfer as alignment_mod
     from drowse.cli import runners
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
@@ -1338,8 +1300,8 @@ def test_concurrent_distinct_alignments_single_flight_shared_model_load(
             self.tokenizer = object()
             self.layers = [object()]
 
-        def __enter__(self) -> "Session":
-            return self
+        def __enter__(self) -> tuple[object, object, object]:
+            return self.model, self.tokenizer, self.layers
 
         def __exit__(self, *_args: object) -> None:
             return None
@@ -1363,10 +1325,7 @@ def test_concurrent_distinct_alignments_single_flight_shared_model_load(
         model_mod, "model_source_fingerprint",
         lambda model_id: f"source:{model_id}",
     )
-    monkeypatch.setattr(
-        session_mod.DrowseSession, "from_pretrained",
-        staticmethod(lambda model_id, **_kwargs: Session(model_id)),
-    )
+    monkeypatch.setattr(alignment_mod, "_loaded_model", lambda model_id, **_kwargs: Session(model_id))
     monkeypatch.setattr(alignment_mod, "load_alignment_map", lambda *_a, **_k: None)
     monkeypatch.setattr(
         alignment_mod, "fit_alignment",
@@ -1386,7 +1345,7 @@ def test_concurrent_distinct_alignments_single_flight_shared_model_load(
         try:
             barrier.wait()
             runners._load_or_fit_transfer_alignment(
-                "shared/source", target, force=False, label="test",
+                "shared/source", target, force=False,
                 requested_layers=[0],
             )
         except BaseException as exc:
@@ -1476,7 +1435,7 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
     )
 
     import torch
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     fake_M = {
         layer: LayerAlignment(torch.eye(4), torch.eye(4), torch.zeros(4))
@@ -1488,12 +1447,12 @@ def test_run_manifold_transfer_calls_backend(monkeypatch: pytest.MonkeyPatch, tm
 
     def fake_alignment(*_args: Any, **kwargs: Any):
         alignment_calls.append(kwargs)
-        return (
-            fake_M, {14: 0.9, 15: 0.8}, tmp_path / "alignment.safetensors",
-            {"model_fingerprint": "src-fp"},
-            {"model_fingerprint": "tgt-fp"},
-            target_whitener,
-            target_layer_means,
+        return TransferAlignment(
+            alignment=fake_M, quality_per_layer={14: 0.9, 15: 0.8},
+            source_identity={"model_fingerprint": "src-fp"},
+            target_identity={"model_fingerprint": "tgt-fp"},
+            target_whitener=target_whitener,
+            target_layer_means=target_layer_means,
         )
 
     monkeypatch.setattr(
@@ -1556,12 +1515,12 @@ def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     target_whitener = object()
     monkeypatch.setattr(
         "drowse.cli.runners._load_or_fit_transfer_alignment",
-        lambda *args, **kwargs: (
-            {10: torch.eye(2)}, {10: 0.5}, tmp_path / "alignment.safetensors",
-            {"model_fingerprint": "src-fp"},
-            {"model_fingerprint": "tgt-fp"},
-            target_whitener,
-            {10: torch.zeros(2)},
+        lambda *args, **kwargs: TransferAlignment(
+            alignment={10: torch.eye(2)}, quality_per_layer={10: 0.5},
+            source_identity={"model_fingerprint": "src-fp"},
+            target_identity={"model_fingerprint": "tgt-fp"},
+            target_whitener=target_whitener,
+            target_layer_means={10: torch.zeros(2)},
         ),
     )
     monkeypatch.setattr(
@@ -1603,12 +1562,12 @@ def test_run_manifold_transfer_retries_unproven_target(
     target_whitener = object()
     monkeypatch.setattr(
         "drowse.cli.runners._load_or_fit_transfer_alignment",
-        lambda *args, **kwargs: (
-            {0: torch.eye(2)}, {0: 0.5}, tmp_path / "alignment.safetensors",
-            {"model_fingerprint": "src-fp"},
-            {"model_fingerprint": "tgt-fp"},
-            target_whitener,
-            {0: torch.zeros(2)},
+        lambda *args, **kwargs: TransferAlignment(
+            alignment={0: torch.eye(2)}, quality_per_layer={0: 0.5},
+            source_identity={"model_fingerprint": "src-fp"},
+            target_identity={"model_fingerprint": "tgt-fp"},
+            target_whitener=target_whitener,
+            target_layer_means={0: torch.zeros(2)},
         ),
     )
     target = folder / tensor_filename(tgt_model, transferred_from=src_model)

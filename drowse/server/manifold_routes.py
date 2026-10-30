@@ -22,12 +22,9 @@ from pydantic import ConfigDict, Field
 
 from drowse.geometry.manifold import domain_from_spec
 from drowse.session.session import DrowseSession
-from drowse.store.hub import (
-    HFError as ManifoldHFError,
-    ManifoldInstallConflict,
-    install_manifold,
-    search_manifolds,
-)
+from drowse.base.hf import HFError as ManifoldHFError
+from drowse.store.hub import search_manifolds
+from drowse.store.install import ManifoldInstallConflict, install_manifold
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_schema import ManifoldFormatError, domain_label, min_nodes
 from drowse.store.manifold_authoring import (

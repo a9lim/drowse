@@ -55,9 +55,9 @@ def _export(
 
 
 def _install(archive: Path) -> dict[str, Any]:
-    from drowse.store.archive import install_drowse_archive
+    from drowse.store.install import install_manifold
 
-    return _summary(install_drowse_archive(archive))
+    return _summary(install_manifold(archive))
 
 
 def main() -> None:

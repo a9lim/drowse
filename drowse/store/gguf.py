@@ -107,9 +107,9 @@ def write_gguf_profile(
 def read_gguf_profile(path: str | Path) -> tuple[dict[int, torch.Tensor], dict[str, Any]]:
     """Read a GGUF control-vector file.
 
-    Returns (profile, metadata) where metadata has a shape compatible with
-    the safetensors sidecar: at minimum ``method`` and ``drowse_version``
-    keys, plus ``model_hint`` from the GGUF header.
+    Returns ``(profile, metadata)`` in the shape :func:`save_profile` accepts:
+    ``method="profile"`` plus ``source_format``/``model_hint`` provenance from
+    the GGUF header.
 
     Raises:
         GGUFNotInstalled: if the ``gguf`` package isn't installed.
@@ -151,18 +151,15 @@ def read_gguf_profile(path: str | Path) -> tuple[dict[int, torch.Tensor], dict[s
     if not profile:
         raise ValueError(f"{path}: no direction.* tensors found")
 
+    # A GGUF carries no drowse sidecar; it loads as a plain ``profile`` whose
+    # provenance records where it came from, so ``Profile.load(x.gguf)``
+    # saves back to safetensors without a schema error.
     metadata = {
-        "method": "gguf_import",
-        "drowse_version": _gguf_source_version(),
+        "method": "profile",
+        "source_format": "gguf",
         "model_hint": model_hint,
     }
     return profile, metadata
-
-
-def _gguf_source_version() -> str:
-    """Return the drowse version string. Lazy import to avoid circularity."""
-    from drowse import __version__
-    return __version__
 
 
 def _resolve_model_hint(safe_id: str) -> str:
@@ -212,27 +209,26 @@ def export_gguf_manifold(
     Sources each per-model profile by folding the manifold
     (:func:`~drowse.fit.capture.folded_directions`), then writes a
     llama.cpp control-vector GGUF via :func:`write_gguf_profile`.
-    ``model_scope`` restricts to one base model;
-    without it, every fitted ``raw`` tensor is exported (one ``.gguf`` per
-    model).  ``output`` policy:
-      - single-model + ``.gguf`` path → write to exactly that path
-      - single-model + directory → ``<dir>/<safe_model_id>.gguf``
-      - multi-model → must be a directory (or None, meaning in-folder sibling)
-      - None → write alongside the safetensors (rejected for bundled manifolds,
-        whose folder is restored on refresh)
+    ``model_scope`` restricts to one base model; without it, every fitted
+    ``raw`` tensor is exported (one ``.gguf`` per model).
+
+    ``output`` is a ``.gguf`` file path (single model only) or a directory;
+    ``None`` means the current working directory, like ``.drowse`` export.
+    A directory receives ``<name>.gguf`` for one model and
+    ``<name>.<safe_model_id>.gguf`` per model otherwise.  An export is a
+    derived interchange file, never part of the artifact store: a
+    destination inside ``$DROWSE_HOME`` is refused, so the manifold folder
+    and its integrity manifest are never touched.
     """
-    from drowse.store.manifold_folder import ManifoldFolder
     from drowse.base.paths import (
-        manifold_dir, parse_tensor_filename, tensor_filename,
+        drowse_home, manifold_dir, parse_tensor_filename, tensor_filename,
     )
     from drowse.store.manifold_tensors import load_manifold
     from drowse.fit.capture import folded_directions
 
     mdir = manifold_dir(ns, name)
-    # Preflight needs folder identity/source and fitted filenames only.  Each
-    # selected raw tensor is integrity-checked by ``load_manifold`` below; do
-    # not eagerly hash unrelated models, SAE variants, or prior GGUF exports.
-    mf = ManifoldFolder.load(mdir, verify_manifest=False)
+    if not (mdir / "manifold.json").is_file():
+        raise FileNotFoundError(f"manifold {ns}/{name} not found at {mdir}")
 
     raw_models: set[str] = set()
     for tensor in mdir.glob("*.safetensors"):
@@ -254,17 +250,29 @@ def export_gguf_manifold(
                 f"{ns}/{name}: no fitted manifold tensors to export"
             )
 
-    out_path = Path(output) if output else None
-    if out_path is not None and len(targets) > 1 and out_path.suffix == ".gguf":
+    out_path = Path(output).expanduser() if output else Path.cwd()
+    to_file = out_path.suffix == ".gguf"
+    if to_file and len(targets) > 1:
         raise RuntimeError(
             "multi-model export needs a directory or no --output; "
             f"got file path {out_path}"
         )
-    if out_path is None and (mf.source or "").startswith("bundled"):
-        raise RuntimeError(
-            f"{ns}/{name}: bundled manifold — in-place GGUF export would be lost "
-            f"on next refresh. Pass --output <path> to write outside the folder."
+    destinations = {
+        sid: (
+            out_path if to_file
+            else out_path / (
+                f"{name}.gguf" if len(targets) == 1 else f"{name}.{sid}.gguf"
+            )
         )
+        for sid in targets
+    }
+    home = drowse_home().resolve(strict=False)
+    for dest in destinations.values():
+        if dest.resolve(strict=False).is_relative_to(home):
+            raise RuntimeError(
+                f"GGUF export path {dest} is inside the drowse store {home}; "
+                "pass --output <path> outside it"
+            )
 
     written: list[Path] = []
     for sid in targets:
@@ -281,20 +289,7 @@ def export_gguf_manifold(
                 f"direction (not a 2-node affine subspace): {e}"
             ) from e
         hint = model_hint or _resolve_model_hint(sid)
-        if out_path is None:
-            dest = mdir / f"{sid}.gguf"
-        elif out_path.suffix == ".gguf":
-            dest = out_path
-        else:
-            out_path.mkdir(parents=True, exist_ok=True)
-            dest = out_path / f"{sid}.gguf"
-        write_gguf_profile(profile, dest, model_hint=hint)
-        written.append(dest)
-
-    # The export only extends the folder's integrity manifest with the new
-    # ``.gguf`` entries; a manifold's namespace/name/tags/node labels are
-    # untouched, so the selector index stays valid.
-    if any(p.parent == mdir for p in written):
-        mf.update_file_hashes(*(p for p in written if p.parent == mdir))
-
+        written.append(
+            write_gguf_profile(profile, destinations[sid], model_hint=hint)
+        )
     return written

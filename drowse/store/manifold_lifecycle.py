@@ -241,7 +241,8 @@ def refresh_manifold(
       from the corpus; returns ``"scoped"``.
     - ``bundled`` (or ``default/``): re-copy the shipped manifest and corpus,
       keeping fitted pairs; returns ``"bundled"``.
-    - ``hf://<owner>/<name>[@rev]``: re-pull into the same folder; ``"hf"``.
+    - ``hf://<owner>/<name>@<sha>``: re-pull the repo's current revision
+      into the same folder; ``"hf"``.
     - anything else has no upstream; returns ``"skipped"``.
 
     Each tier takes its own locks in the global manifest-then-pairs order;
@@ -266,8 +267,11 @@ def refresh_manifold(
         from drowse.base.hf import split_revision
         from drowse.store.hub import pull_manifold
 
-        coord, revision = split_revision(source[len("hf://"):])
-        pull_manifold(coord, target_folder=folder, force=force, revision=revision)
+        # The install pins ``hf://<repo>@<sha>``; refresh re-pulls the repo's
+        # current default revision.  The install pipeline takes the manifest,
+        # template, and pair locks itself in the global order.
+        coord, _pinned = split_revision(source[len("hf://"):])
+        pull_manifold(coord, as_=f"{namespace}/{name}", force=force)
         return "hf"
     return "skipped"
 

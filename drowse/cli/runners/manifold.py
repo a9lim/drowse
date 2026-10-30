@@ -1009,20 +1009,19 @@ def _run_manifold_transfer(args: argparse.Namespace) -> None:
     # activations already resident for Procrustes; an exact model-free repeat
     # uses the offline cache loader. Either path reads the target neutral
     # artifact once for this operation.
+    from drowse.geometry.procrustes import AlignmentError
     from drowse.geometry.whitener import WhitenerError
 
     try:
-        (
-            M, quality_per_layer, _, source_identity, target_identity,
-            target_whitener, target_layer_means,
-        ) = _pkg._load_or_fit_transfer_alignment(
+        transfer = _pkg._load_or_fit_transfer_alignment(
             args.src_model, args.tgt_model, force=args.force,
-            label="manifold transfer",
             requested_layers=requested_alignment_layers,
         )
-    except WhitenerError as e:
+    except (AlignmentError, WhitenerError) as e:
         print(f"manifold transfer failed: {e}", file=sys.stderr)
         sys.exit(1)
+    M = transfer.alignment
+    quality_per_layer = transfer.quality_per_layer
 
     median_quality = _median(quality_per_layer.values()) if quality_per_layer else None
 
@@ -1033,10 +1032,10 @@ def _run_manifold_transfer(args: argparse.Namespace) -> None:
             to_model=args.tgt_model,
             alignment=M,
             transfer_quality_estimate=median_quality,
-            source_model_fingerprint=source_identity["model_fingerprint"],
-            target_model_fingerprint=target_identity["model_fingerprint"],
-            whitener=target_whitener,
-            target_layer_means=target_layer_means,
+            source_model_fingerprint=transfer.source_identity["model_fingerprint"],
+            target_model_fingerprint=transfer.target_identity["model_fingerprint"],
+            whitener=transfer.target_whitener,
+            target_layer_means=transfer.target_layer_means,
             force=args.force,
             expected_source_proof=source_proof,
         )

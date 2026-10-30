@@ -10,7 +10,7 @@ import pytest
 
 import torch
 
-from drowse.store.alignment import LayerAlignment
+from drowse.geometry.procrustes import LayerAlignment
 from drowse.store.manifold_schema import (
     MANIFOLD_FORMAT_VERSION,
     BakedManifoldError,
@@ -2017,16 +2017,15 @@ def test_refresh_manifold_hf_repulls(tmp_path: Path, monkeypatch: pytest.MonkeyP
     captured: dict[str, Any] = {}
     import drowse.store.hub as hfm
 
-    def fake_pull(coord: str, *, target_folder: Path, force: bool, revision: str | None = None) -> Path:
-        captured.update(coord=coord, target=target_folder,
-                        force=force, revision=revision)
-        return target_folder
+    def fake_pull(coord: str, *, as_: str, force: bool) -> Path:
+        captured.update(coord=coord, as_=as_, force=force)
+        return folder
 
     monkeypatch.setattr(hfm, "pull_manifold", fake_pull)
     assert refresh_manifold("alice", "mood") == "hf"
-    assert captured["coord"] == "alice/mood"
-    assert captured["revision"] == "v1"
-    assert captured["target"] == folder
+    # Refresh re-pulls the repo's current revision into the same folder; the
+    # installed ``@v1`` pin is provenance, not a refresh target.
+    assert captured == {"coord": "alice/mood", "as_": "alice/mood", "force": True}
 
 
 def test_refresh_manifold_model_scope_clears_fit_no_repull(
@@ -2156,7 +2155,7 @@ def test_hf_refresh_holds_no_pair_lock_while_repulling(
     mf.write_metadata()
     pair_free: list[bool] = []
 
-    def fake_pull(coord: str, *, target_folder: Path, force: bool, revision: Any = None) -> Path:
+    def fake_pull(coord: str, *, as_: str, force: bool) -> Path:
         acquired: list[bool] = []
 
         def probe() -> None:
@@ -2167,7 +2166,7 @@ def test_hf_refresh_holds_no_pair_lock_while_repulling(
         thread.start()
         thread.join(timeout=1.0)
         pair_free.append(bool(acquired))
-        return target_folder
+        return folder
 
     monkeypatch.setattr(hfm, "pull_manifold", fake_pull)
     assert refresh_manifold("alice", "mood") == "hf"
@@ -2232,7 +2231,7 @@ def test_rectangular_affine_transfer_preserves_points_frame_and_steering(
         transfer_manifold_subspaces,
     )
     from drowse.store.manifold_tensors import load_manifold, save_manifold
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     basis = torch.tensor([
         [1.0, 0.0, 0.0, 0.0],
@@ -2295,7 +2294,7 @@ def test_monopolar_affine_transfer_rebakes_positive_world_direction_share() -> N
     from drowse.geometry.manifold import (
         CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
     )
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     basis = torch.tensor([[1.0, 0.0, 0.0]])
     real_coord = torch.tensor([[2.5]])
@@ -2330,7 +2329,7 @@ def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
         fit_rbf_interpolant, transfer_manifold_subspaces,
     )
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
     coords = torch.tensor([[0.0], [0.5], [1.0]])
@@ -2371,7 +2370,7 @@ def test_rectangular_curved_transfer_rejects_anisotropic_tube() -> None:
 def test_rectangular_transfer_rejects_collapsed_subspace_rank() -> None:
     import torch
     from drowse.geometry.manifold import CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     source = Manifold(
         name="collapsed", domain=CustomDomain(2), node_labels=["a", "b"],
@@ -2398,7 +2397,7 @@ def test_rectangular_transfer_rejects_oblique_rank_collapse() -> None:
     from drowse.geometry.manifold import (
         CustomDomain, LayerSubspace, Manifold, transfer_manifold_subspaces,
     )
-    from drowse.store.alignment import LayerAlignment
+    from drowse.geometry.procrustes import LayerAlignment
 
     source = Manifold(
         name="oblique-collapse", domain=CustomDomain(3),
