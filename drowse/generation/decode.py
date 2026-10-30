@@ -70,7 +70,8 @@ def _sampler_candidates(
     make the output shape data-dependent and force a device→host sync every
     decode token — on top of the unavoidable ``int(next_token.item())`` one,
     that's two syncs/token.  Callers consume the fixed width and must treat
-    zero-prob entries as the excluded tail (see ``_sampler_logprob_vector``).
+    zero-prob entries as the excluded tail (see
+    ``joint_logprobs._sampler_pool``).
     """
     if config.temperature <= 0:
         token = logits.argmax(dim=-1).reshape(1).to(dtype=torch.long)
@@ -87,33 +88,6 @@ def _sampler_candidates(
     probs.div_(probs.sum(dim=-1, keepdim=True))
 
     return top_idx[0].to(dtype=torch.long), probs[0].to(dtype=torch.float32)
-
-
-def _sampler_logprob_vector(
-    logits: torch.Tensor,
-    config: GenerationConfig,
-    topk_k: int,
-) -> torch.Tensor:
-    """Full-vocab logprob vector for the configured sampler distribution."""
-    ids, probs = _sampler_candidates(logits, config, topk_k)
-    out = torch.full(
-        (logits.shape[-1],),
-        float("-inf"),
-        dtype=torch.float32,
-        device=logits.device,
-    )
-    # ``_sampler_candidates`` now returns the fixed-width top-k pool, so
-    # ``ids`` includes the sub-top-p tail whose ``probs`` are exactly 0.
-    # Those must stay ``-inf`` (outside the sampler's support), so scatter
-    # ``log p`` only where ``p > 0`` — the in-support entries — and leave the
-    # zeroed tail at the initialized ``-inf``.  (Greedy returns a 1-element
-    # ``probs`` of all ones, so the ``where`` is a no-op there.)
-    out[ids] = torch.where(
-        probs > 0,
-        probs.clamp_min(torch.finfo(torch.float32).tiny).log(),
-        torch.full_like(probs, float("-inf")),
-    )
-    return out
 
 
 def _effective_topk(config: GenerationConfig, vocab: int) -> int:
