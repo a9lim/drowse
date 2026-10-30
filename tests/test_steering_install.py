@@ -23,6 +23,7 @@ from torch import nn
 
 from drowse.errors import SteeringCompositionError
 from drowse.events import EventBus
+from drowse.loom.tree import LoomTree
 from drowse.session.session import DrowseSession, GenState
 from drowse.steering.composer import SteeringComposer
 from drowse.steering.grammar import ManifoldTerm
@@ -83,6 +84,7 @@ def _session(*, compiled: bool = True) -> tuple[DrowseSession, dict[int, torch.T
     s._prefix_cache = None
     s._active_role = None
     s.events = EventBus()
+    s.tree = LoomTree()
     return session, buffers
 
 
