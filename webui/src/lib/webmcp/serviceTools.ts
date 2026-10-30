@@ -544,7 +544,7 @@ export async function reconcileServiceJob(id: string, context: ToolContext) {
 function preparationSchemas(): InputSchema[] {
   return [
     objectSchema({ family: choices("lens"), operation: choices("fetch"), source: name, force: flag }, ["family", "operation"]),
-    objectSchema({ family: choices("lens"), operation: choices("fit"), prompts: integer(1, 5000), seq_len: nullable(integer(32, 4096)), prompt_batch: nullable(integer(1, 64)), layers: text("all, workspace, or comma-separated source layers.", 1000), relp: flag, force: flag }, ["family", "operation"]),
+    objectSchema({ family: choices("lens"), operation: choices("fit"), prompts: integer(1, 5000), seq_len: nullable(integer(32, 4096)), prompt_batch: nullable(integer(1, 64)), layers: text("all, workspace, or comma-separated source layers.", 1000), kind: choices("r", "j"), force: flag }, ["family", "operation"]),
     objectSchema({ family: choices("sae"), operation: choices("fetch"), release: name, layer: nullable(integer()) }, ["family", "operation", "release"]),
     objectSchema({ family: choices("sae"), operation: choices("train"), name, layer: nullable(integer()), tokens: integer(1, 100000000), seq_len: integer(8, 4096), batch_size: integer(1, 256), width: nullable(integer(1)), expansion: integer(1, 128), learning_rate: { type: "number", minimum: Number.MIN_VALUE }, l1: { type: "number", minimum: 0 }, dead_threshold: { type: "number", minimum: 0 }, seed: integer(Number.MIN_SAFE_INTEGER), force: flag }, ["family", "operation", "name"]),
   ];

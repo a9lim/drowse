@@ -420,10 +420,16 @@ class TestSourceSwitch:
 # ---------------------------------------------------------------------------
 
 class TestPreparations:
-    def test_lens_fit_request_defaults_to_relp(self) -> None:
+    def test_lens_fit_request_defaults_to_the_r_lens(self) -> None:
+        from pydantic import ValidationError
+
         from drowse.server.instrument_routes import LensFitRequest
 
-        assert LensFitRequest().relp is True
+        assert LensFitRequest().kind == "r"
+        assert LensFitRequest(kind="j").kind == "j"
+        for stale in ({"kind": "k"}, {"relp": True}):
+            with pytest.raises(ValidationError):
+                LensFitRequest(**stale)
 
     def test_geometry_404(self, session_and_client: Any) -> None:
         _session, client = session_and_client
@@ -548,6 +554,7 @@ class TestPreparations:
         assert session.lens.fit.call_args.kwargs["corpus_spec"] == (
             "hf:org/data/cfg@sha"
         )
+        assert session.lens.fit.call_args.kwargs["kind"] == "R"
 
     def test_lens_fit_rejects_a_malformed_hub_corpus(
         self, session_and_client: Any,

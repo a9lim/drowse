@@ -25,7 +25,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException
 from pydantic import Field
@@ -202,9 +202,11 @@ class LensFetchRequest(NativeRequest):
 
 
 class LensFitRequest(NativeRequest):
-    """Defaults mirror CLI ``lens fit``.  A matching partial fit resumes unless
-    ``force``; ``hf_corpus`` lists ``REPO[:CONFIG][@REV][,KEY=VALUE…]``
-    sources (several make a weighted mix), else the default web-text sample."""
+    """Defaults mirror CLI ``lens fit``.  ``kind`` is the estimator (``r`` =
+    the RelP R-lens at ``local:r``, ``j`` = the standard J-lens at
+    ``local:j``).  A matching partial fit resumes unless ``force``;
+    ``hf_corpus`` lists ``REPO[:CONFIG][@REV][,KEY=VALUE…]`` sources (several
+    make a weighted mix), else the default web-text sample."""
 
     prompts: int = Field(default=100, ge=1, le=5000)
     hf_corpus: list[str] | None = Field(default=None, min_length=1, max_length=16)
@@ -212,7 +214,7 @@ class LensFitRequest(NativeRequest):
     prompt_batch: int | None = Field(default=None, ge=1, le=64)
     layers: str = "all"
     force: bool = False
-    relp: bool = True
+    kind: Literal["r", "j"] = "r"
 
 
 class SaeFetchRequest(NativeRequest):
@@ -385,7 +387,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         lens_fit.report("fitting…")
         await run_in_thread(
             session.lens.fit, docs,
-            kind="R" if body.relp else "J",
+            kind=body.kind.upper(),
             corpus_spec=spec, source_layers=source_layers, seq_len=body.seq_len,
             prompt_batch=body.prompt_batch, force=body.force,
             on_progress=lens_fit.report, cancel_event=lens_fit.cancel_event,
