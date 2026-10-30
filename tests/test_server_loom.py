@@ -109,15 +109,9 @@ class _StubSession:
         self._block_until_stop = False
         self._stop_event = threading.Event()
 
-    def clear_history(self) -> None:
-        self.tree.reset()
-
     def restore_tree(self, data: dict[str, Any]):
         from drowse.session.session import DrowseSession
         return DrowseSession.restore_tree(self, data)  # type: ignore[arg-type]
-
-    def rewind(self) -> None:
-        self.tree.rewind()
 
     def probe_hashes(self) -> dict[str, str]:
         return {}
@@ -294,9 +288,6 @@ class _StubSession:
     def set_cast_member(self, label: Any, **kwargs: Any):
         from drowse.session.session import DrowseSession
         return DrowseSession.set_cast_member(self, label, **kwargs)  # type: ignore[arg-type]
-
-    def remove_cast_member(self, label: Any) -> None:
-        self.tree.remove_cast_member(label)
 
 
 @pytest.fixture

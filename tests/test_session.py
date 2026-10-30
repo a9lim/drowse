@@ -155,7 +155,7 @@ class TestGeneration:
         assert len(result.first.text) > 0
 
     def test_generate_appends_to_history(self, session: DrowseSession) -> None:
-        session.clear_history()
+        session.tree.reset()
         session.generate("Say hi.")
         messages = session.tree.messages_for()
         assert len(messages) == 2
@@ -172,13 +172,13 @@ class TestGeneration:
         session.registry.pop_profile(name)
 
     def test_generate_with_probes(self, session: DrowseSession) -> None:
-        session.clear_history()
+        session.tree.reset()
         result = session.generate("Tell me something exciting!").first
         if session.probes:
             assert isinstance(result.probe_readings, dict)
 
     def test_last_result(self, session: DrowseSession) -> None:
-        session.clear_history()
+        session.tree.reset()
         result = session.generate("Hello.")
         assert session.last_result is result.first
 
@@ -188,9 +188,9 @@ class TestGeneration:
             "happy", _corpus("I am happy"), _corpus("I am sad"),
         )
         session.registry.put_profile(name, profile)
-        session.clear_history()
+        session.tree.reset()
         steered = session.generate("Describe a sunset.", steering=f"0.2 {name}").first
-        session.clear_history()
+        session.tree.reset()
         unsteered = session.generate("Describe a sunset.").first
         assert steered.steering_alphas == {name: 0.2}
         assert unsteered.steering_alphas == {}
@@ -238,7 +238,7 @@ class TestCliRoundTrip:
 
 class TestStreamingGeneration:
     def test_generate_stream(self, session: DrowseSession) -> None:
-        session.clear_history()
+        session.tree.reset()
         tokens = []
         for event in session.generate_stream("Say hello."):
             assert isinstance(event, TokenEvent)
@@ -257,7 +257,7 @@ class TestStreamingGeneration:
             "happy", _corpus("I am happy"), _corpus("I am sad"),
         )
         session.registry.put_profile(name, profile)
-        session.clear_history()
+        session.tree.reset()
         tokens = list(session.generate_stream("Hello.", steering=f"0.15 {name}"))
         assert len(tokens) > 0
         assert session.last_result is not None  # generate_stream guarantees last_result is set
@@ -404,7 +404,7 @@ class TestPrefixCache:
     def test_cache_hit_matches_no_cache_output(self, session: DrowseSession) -> None:
         from drowse import SamplingConfig
 
-        session.clear_history()
+        session.tree.reset()
         prefix_ids, full_msg = self._shared_prefix_messages(
             session, "Say the word 'banana' three times.",
         )

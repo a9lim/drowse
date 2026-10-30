@@ -49,7 +49,6 @@ from drowse.loom.recipe import (
     Recipe,
 )
 from drowse.loom.tree import LoomTree
-from drowse.loom.diff import node_diff
 from drowse.loom.joint_logprobs import JointLogprobReplayer, JointLogprobs
 from drowse.loom.ops import (
     append_turn,
@@ -365,15 +364,6 @@ class DrowseSession:
             traits=self._chat, scene=lambda: self.scene_grammar,
             model_type=self._renderer.model_type,
         )
-        self._extraction = Extraction(
-            self, self.events, self._corpus,
-            exclusive=self._model_exclusive,
-            assert_unsteered=self._assert_unsteered_artifact_operation,
-            adopt=self._registry.adopt_fitted,
-            evict=self._registry.evict_artifact,
-            register_profile=self._registry.put_profile,
-            dls=dls,
-        )
         self._steering_composer = SteeringComposer(
             artifacts=self._registry, neutral=self._neutral,
             manager=self._steering, layers=self._layers,
@@ -381,6 +371,15 @@ class DrowseSession:
             lock=self._gen_lock, events=self.events,
             generation_phase=self._mid_generation_phase,
             on_prefill_steering_change=lambda: self._engine.prefix_cache.clear(),
+        )
+        self._extraction = Extraction(
+            self, self.events, self._corpus,
+            exclusive=self._model_exclusive,
+            assert_unsteered=self._steering_composer.assert_unsteered,
+            adopt=self._registry.adopt_fitted,
+            evict=self._registry.evict_artifact,
+            register_profile=self._registry.put_profile,
+            dls=dls,
         )
         # Restricted-choice completion scoring (the logit read of a template).
         self._scorer = ChoiceScorer(
@@ -426,8 +425,8 @@ class DrowseSession:
             ),
             registry=self._registry,
             on_change=lambda names: self._roster.changed(names),
-            resolve_profile=self.ensure_profile_registered,
-            assert_unsteered=self._assert_unsteered_artifact_operation,
+            resolve_profile=self._registry.ensure_profile_registered,
+            assert_unsteered=self._steering_composer.assert_unsteered,
             replay=self._token_replay,
         )
         # The SAE family: resident dictionary + Neuronpedia metadata (the
@@ -438,7 +437,7 @@ class DrowseSession:
             SaeRuntime(
                 self,
                 exclusive=self._model_exclusive,
-                assert_unsteered=self._assert_unsteered_artifact_operation,
+                assert_unsteered=self._steering_composer.assert_unsteered,
             ),
             replay=self._token_replay,
             put_direction=self._registry.put_profile,
@@ -744,23 +743,6 @@ class DrowseSession:
         edits."""
         return self._joint_logprob_cache
 
-    def ensure_manifold_loaded(self, key: str) -> Manifold:
-        """The manifold artifact for registry key ``key``, loading it if absent.
-
-        ``key`` is the grammar's ``[ns/]name[:variant]`` registry key.
-        Raises :class:`ManifoldNotRegisteredError` on a miss."""
-        return self._registry.ensure_manifold_loaded(key)
-
-    def ensure_profile_registered(
-        self, name: str, *, role: str = "vector",
-    ) -> dict[int, torch.Tensor]:
-        """Resolve and register a steering direction for ``name``, returning
-        its per-layer tensors.
-
-        Uses the manifold-first resolution chain: in-memory bake, then a fitted
-        2-node ``pca`` manifold."""
-        return self._registry.ensure_profile_registered(name, role=role)
-
     @property
     def gen_state(self) -> GenState:
         """Lifecycle phase of the current generation (``IDLE`` between gens).
@@ -956,14 +938,6 @@ class DrowseSession:
             yield
         finally:
             self._gen_lock.release()
-
-    def _assert_unsteered_artifact_operation(self) -> None:
-        """Refuse persisted neutral/fit work under active steering hooks."""
-        if self._steering_composer.active:
-            raise ConcurrentExtractionError(
-                "artifact-producing model operations cannot run inside an "
-                "active steering scope; exit session.steering() first"
-            )
 
     def extract(
         self,
@@ -1226,10 +1200,6 @@ class DrowseSession:
         caches results in :attr:`joint_logprob_cache`."""
         return self._joint_logprobs.compute(a_id, b_id)
 
-    def diff_nodes(self, a_id: str, b_id: str) -> Any:
-        """Return a :class:`drowse.loom.diff.NodeDiff` between two nodes."""
-        return node_diff(self.tree, a_id, b_id)
-
     def fork_from_token(
         self,
         node_id: str,
@@ -1314,18 +1284,6 @@ class DrowseSession:
         )
         self.tree.set_cast_member(label, member)
         return member
-
-    def remove_cast_member(self, label: str) -> None:
-        """Drop the cast member under ``label`` (no-op when absent)."""
-        self.tree.remove_cast_member(label)
-
-    def rewind(self) -> None:
-        """Walk the active node back one submission (non-destructive)."""
-        self.tree.rewind()
-
-    def clear_history(self) -> None:
-        """Reset the tree to a fresh root (destructive; refused mid-generation)."""
-        self.tree.reset()
 
     def restore_tree(self, data: dict[str, Any]) -> LoomTree:
         """Atomically replace the live conversation with a validated tree.

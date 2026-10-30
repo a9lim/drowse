@@ -224,20 +224,20 @@ def register_tree_routes(app: FastAPI) -> None:
     @router.delete("/tree/cast/{label}", status_code=204)
     async def tree_cast_delete(label: str):
         """Drop the cast member under ``label`` (no-op when absent)."""
-        session.remove_cast_member(label)
+        session.tree.remove_cast_member(label)
         return None
 
     @router.post("/tree/reset", status_code=204)
     async def tree_reset():
         """Drop the entire tree and rebuild a fresh root.
 
-        Equivalent to ``session.clear_history()``; 409 when a generation
+        Equivalent to ``session.tree.reset()``; 409 when a generation
         is in flight (per the concurrency invariant — ``reset`` cannot
         race the gen path because the gen path owns the streaming target
         in the tree itself).
         """
         async with session_lock(app):
-            session.clear_history()
+            session.tree.reset()
         return Response(status_code=204)
 
     @router.post("/tree/transcript")
@@ -368,9 +368,9 @@ def register_tree_routes(app: FastAPI) -> None:
         parent and a byte-aligned per-token span table (present when both
         nodes carry token rows; ``reading_deltas`` stays empty).
         """
-        from drowse.loom.diff import per_token_diff, steering_delta
+        from drowse.loom.diff import node_diff, per_token_diff, steering_delta
 
-        diff = session.diff_nodes(req.a_id, req.b_id)
+        diff = node_diff(session.tree, req.a_id, req.b_id)
         a_node = session.tree.get(req.a_id)
         b_node = session.tree.get(req.b_id)
 

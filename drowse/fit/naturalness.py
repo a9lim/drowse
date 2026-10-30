@@ -45,16 +45,18 @@ if TYPE_CHECKING:
     from drowse.store.manifold_folder import ManifoldFolder
 
 
-class ProfileSink(Protocol):
-    """Registers an in-memory steering profile under a name."""
+class ArtifactSink(Protocol):
+    """Loads fitted manifolds and registers in-memory steering profiles."""
+
+    def ensure_manifold_loaded(self, key: str) -> "Manifold": ...
 
     def put_profile(self, name: str, tensors: "Profile") -> None: ...
 
 
 class NaturalnessHost(Protocol):
     """The loaded-model surface :func:`evaluate` drives (a ``DrowseSession``
-    satisfies it): the model, manifold fits and loads, steered generation,
-    and profile registration for the linear-chord baseline."""
+    satisfies it): the model, manifold fits, steered generation, and the
+    artifact registry (manifold loads, the linear-chord baseline profile)."""
 
     @property
     def model(self) -> Any: ...
@@ -66,11 +68,9 @@ class NaturalnessHost(Protocol):
     def device(self) -> torch.device: ...
 
     @property
-    def registry(self) -> ProfileSink: ...
+    def registry(self) -> ArtifactSink: ...
 
     def fit(self, folder: Any) -> "Manifold": ...
-
-    def ensure_manifold_loaded(self, key: str) -> "Manifold": ...
 
     def generate(
         self, input: Any, *, steering: str | None = ...,
@@ -439,7 +439,7 @@ def evaluate(
 
     scores = [_score("manifold", steering, steering)]
     if linear_term is not None:
-        act = session.ensure_manifold_loaded(linear_term.manifold)
+        act = session.registry.ensure_manifold_loaded(linear_term.manifold)
         position = act.resolve_position(linear_term.position)
         start = act.node_coords[0]
         chord = {

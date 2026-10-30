@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import torch
 
 from drowse.errors import (
+    ConcurrentExtractionError,
     ConcurrentGenerationError,
     ManifoldArityError,
     RoleBaselineMismatchWarning,
@@ -399,6 +400,16 @@ class SteeringComposer:
     def active(self) -> bool:
         """True while any steering scope is pushed."""
         return bool(self._stack)
+
+    def assert_unsteered(self) -> None:
+        """Refuse artifact-producing model work (neutral capture, fits, lens
+        and SAE training) while a steering scope is open: its hooks would
+        bake the steering into the persisted artifact."""
+        if self._stack:
+            raise ConcurrentExtractionError(
+                "artifact-producing model operations cannot run inside an "
+                "active steering scope; exit session.steering() first"
+            )
 
     @property
     def active_role(self) -> str | None:

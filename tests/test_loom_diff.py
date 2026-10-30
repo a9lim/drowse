@@ -11,7 +11,7 @@ from drowse import (
     steering_delta,
     text_diff,
 )
-from drowse.loom.diff import NodeDiff
+from drowse.loom.diff import NodeDiff, node_diff
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ def test_per_token_diff_unequal_lengths():
 
 
 # ---------------------------------------------------------------------------
-# session.diff_nodes
+# node_diff
 # ---------------------------------------------------------------------------
 
 
@@ -152,20 +152,10 @@ def _seed_tree_with_siblings():
     return t, u, a1, a2
 
 
-def test_session_diff_nodes_via_synthetic_session():
-    """The session method is a thin wrapper; exercise via a small shim."""
-    # Build a minimal stand-in that exposes ``.tree`` so we can call the
-    # method via __get__ binding.  Avoids loading a real model.
-    from drowse.session.session import DrowseSession
-
+def test_node_diff_between_steered_siblings():
+    """The route's diff: text spans plus the readings delta table."""
     tree, u, a1, a2 = _seed_tree_with_siblings()
-
-    class _Stub:
-        def __init__(self, tree: LoomTree) -> None:
-            self.tree = tree
-
-    stub = _Stub(tree)
-    diff = DrowseSession.diff_nodes.__get__(stub, _Stub)(a1, a2)
+    diff = node_diff(tree, a1, a2)
     assert isinstance(diff, NodeDiff)
     assert diff.a_id == a1
     assert diff.b_id == a2

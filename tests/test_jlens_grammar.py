@@ -127,7 +127,7 @@ def test_reserved_but_unsteerable_namespaces_refuse_to_resolve(
     session = make_tiny_session(warm=False)
     for key in ("slens/owl", "neuron/L8n344", "head/L20h17"):
         with pytest.raises(ProfileNotRegisteredError, match="reserved"):
-            session.ensure_profile_registered(key)
+            session.registry.ensure_profile_registered(key)
 
 
 # ---------------------------------------------------------- lazy resolution --
@@ -145,7 +145,7 @@ def test_profile_registration_resolves_jlens_atom(make_tiny_session: Any) -> Non
     session = make_tiny_session(warm=False)
     lens = session.lens.fit(_TINY_PROMPTS)
 
-    dirs = session.ensure_profile_registered("jlens/g")
+    dirs = session.registry.ensure_profile_registered("jlens/g")
     assert "jlens/g" in session.profiles
     assert set(dirs) == set(lens.source_layers)
     assert all(isinstance(v, torch.Tensor) for v in dirs.values())
@@ -166,12 +166,12 @@ def test_token_id_atom_steers_and_probes_the_vocab_id(make_tiny_session: Any) ->
     lens = session.lens.fit(_TINY_PROMPTS)
     gid = resolve_word_token(session.tokenizer, "g")
     (key,) = parse_expr(f"0.3 jlens/#{gid}").alphas
-    by_id = session.ensure_profile_registered(key)
+    by_id = session.registry.ensure_profile_registered(key)
     expected = lens.token_direction(gid, get_unembedding(session.model))
     assert set(by_id) == set(expected)
     for layer, vec in by_id.items():
         assert torch.allclose(vec, expected[layer])
-    by_word = session.ensure_profile_registered("jlens/g")
+    by_word = session.registry.ensure_profile_registered("jlens/g")
     for layer, vec in by_id.items():
         assert torch.allclose(vec, by_word[layer])
 
@@ -192,7 +192,7 @@ def test_token_id_atom_rejects_ids_outside_the_vocab(make_tiny_session: Any) -> 
     session.lens.fit(_TINY_PROMPTS)
     vocab = int(get_unembedding(session.model).shape[0])
     with pytest.raises(InvalidTokenIdError, match="outside this vocabulary"):
-        session.ensure_profile_registered(f"jlens/#{vocab}")
+        session.registry.ensure_profile_registered(f"jlens/#{vocab}")
     with pytest.raises(InvalidTokenIdError):
         session.add_probe(f"jlens/#{vocab}")
     assert not session.lens.probes
@@ -206,7 +206,7 @@ def test_profile_registration_jlens_requires_fitted_lens(make_tiny_session: Any)
 
     session = make_tiny_session(warm=False)
     with pytest.raises(LensNotFittedError, match="drowse lens fit"):
-        session.ensure_profile_registered("jlens/g")
+        session.registry.ensure_profile_registered("jlens/g")
 
 
 def test_add_probe_routes_jlens_to_lens_registry() -> None:
