@@ -5,7 +5,7 @@ Covers:
 - ``Trigger.when`` constructor + ``Trigger.active`` gating logic.
 - ``TriggerContext.probe_scores`` plumbing + reset behavior.
 - Grammar: lex/parse/format round-trip for ``@when:<probe><op><val>``.
-- Session: ``_steering_needs_probe_gating`` walks the active stack.
+- Composer: ``steering_needs_probe_gating`` walks the active stack.
 
 End-to-end gating during ``generate_steered`` is exercised by the
 GPU-required ``test_session.py`` suite — model + monitor wiring is too
@@ -14,15 +14,16 @@ heavy to stub usefully.  These tests cover the moving parts.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pathlib
 from typing import cast
 
 import pytest
 
-from drowse.events import EventBus
-from drowse.session.session import DrowseSession
 from drowse.steering.terms import Steering
 from drowse.steering.composer import SteeringComposer
+from tests.support.stubs import wire_stub_steering
 from drowse.steering.grammar import (
     SteeringExprError, format_expr, parse_expr,
 )
@@ -249,80 +250,67 @@ class TestGrammar:
 
 # ------------------------------------------ session probe-gate detection ---
 
-class _StubSession(DrowseSession):
-    """Stub for ``_steering_needs_probe_gating`` testing.
-
-    Bypasses model load; only the steering stack helpers are exercised.
-    """
-
-    def __init__(self) -> None:
-        self._profiles = {}
-        self._whitener = None
-        self._layer_means = {}
-        self.events = EventBus()
-        self._steering_composer = SteeringComposer(self)
-
-
-def _composer(session: _StubSession) -> SteeringComposer:
-    return session._steering_composer
+def _new_composer() -> SteeringComposer:
+    """A steering composer over an empty registry (no model)."""
+    return wire_stub_steering(SimpleNamespace())
 
 
 class TestSessionProbeGateDetection:
     def test_empty_stack_returns_false(self):
-        s = _StubSession()
-        assert _composer(s).steering_needs_probe_gating() is False
+        composer = _new_composer()
+        assert composer.steering_needs_probe_gating() is False
 
     def test_no_gates_returns_false(self):
-        s = _StubSession()
-        s._steering_composer._stack.append({
+        composer = _new_composer()
+        composer._stack.append({
             "angry.calm": (0.5, Trigger.BOTH),
         })
-        assert _composer(s).steering_needs_probe_gating() is False
+        assert composer.steering_needs_probe_gating() is False
 
     def test_after_thinking_no_gate_returns_false(self):
         # Preset triggers without a gate stay false — ``AFTER_THINKING``
         # has gate=None.
-        s = _StubSession()
-        s._steering_composer._stack.append({
+        composer = _new_composer()
+        composer._stack.append({
             "angry.calm": (0.5, Trigger.AFTER_THINKING),
         })
-        assert _composer(s).steering_needs_probe_gating() is False
+        assert composer.steering_needs_probe_gating() is False
 
     def test_gate_in_first_scope_returns_true(self):
-        s = _StubSession()
+        composer = _new_composer()
         gate_trig = Trigger.when("angry.calm", ">", 0.4)
-        s._steering_composer._stack.append({
+        composer._stack.append({
             "calm": (0.5, gate_trig),
         })
-        assert _composer(s).steering_needs_probe_gating() is True
+        assert composer.steering_needs_probe_gating() is True
 
     def test_gate_in_outer_scope_under_inner(self):
-        s = _StubSession()
+        composer = _new_composer()
         # Outer has gate, inner doesn't — flatten = inner-wins, but the
         # outer scope's "calm" key is still in the head if not shadowed.
         gate_trig = Trigger.when("angry.calm", ">", 0.4)
-        s._steering_composer._stack.append({
+        composer._stack.append({
             "calm": (0.5, gate_trig),
         })
-        s._steering_composer._stack.append({
+        composer._stack.append({
             "happy.sad": (0.3, Trigger.BOTH),
         })
-        assert _composer(s).steering_needs_probe_gating() is True
+        assert composer.steering_needs_probe_gating() is True
 
     def test_inner_overrides_outer_gate(self):
         # Inner shadows the outer's gated entry under the same key, so
         # the active stack head has no gate and detection should be
         # False — important for the "remove gate by re-pushing without
         # one" pattern.
-        s = _StubSession()
+        composer = _new_composer()
         gate_trig = Trigger.when("angry.calm", ">", 0.4)
-        s._steering_composer._stack.append({
+        composer._stack.append({
             "calm": (0.5, gate_trig),
         })
-        s._steering_composer._stack.append({
+        composer._stack.append({
             "calm": (0.5, Trigger.BOTH),
         })
-        assert _composer(s).steering_needs_probe_gating() is False
+        assert composer.steering_needs_probe_gating() is False
 
 
 # -------------------------------------------------- Steering integration ---

@@ -1,4 +1,4 @@
-"""CPU tests for ablation dispatch through _SteeringContext / _rebuild_steering_hooks.
+"""CPU tests for ablation dispatch through a steering scope and the composer rebuild.
 
 Builds a ``DrowseSession`` skeleton by hand (bypassing ``__init__`` via
 ``__new__``) so no model load is required.  Safe because these tests never
@@ -16,12 +16,13 @@ import torch
 from drowse.store import selectors as _sel
 from drowse.events import EventBus
 from drowse.steering.hooks import SteeringManager
-from drowse.session.session import DrowseSession, ProfileNotRegisteredError
+from drowse.session.session import DrowseSession
+from drowse.errors import ProfileNotRegisteredError
 from drowse.steering.terms import Steering
-from drowse.steering.composer import SteeringComposer
 from drowse.steering.grammar import AblationTerm
 from drowse.steering.triggers import Trigger
 from tests._whitener import isotropic_whitener
+from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +42,7 @@ class _NoopModule(torch.nn.Module):
 def _skeleton_session() -> DrowseSession:
     import threading
     session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     session._model = None  # pyright: ignore[reportAttributeAccessIssue]  # skeleton: bypasses __init__, _model accepts None here
     session._tokenizer = None  # pyright: ignore[reportAttributeAccessIssue]  # skeleton: _tokenizer accepts None here
     session._layers = torch.nn.ModuleList(
@@ -48,12 +50,8 @@ def _skeleton_session() -> DrowseSession:
     )
     session._device = torch.device("cpu")
     session._dtype = torch.float32
-    session._profiles = {}
-    session._manifolds = {}
     session._model_info = {"model_id": "stub/model"}
-    session._layer_means = {1: torch.zeros(3)}
     session._steering = SteeringManager()
-    session._steering_composer = SteeringComposer(session)
     # v2.2: _push_steering / _pop_steering acquire _gen_lock; skeleton
     # mode never runs gen so the lock is uncontended, but the ``with
     # self._gen_lock:`` block needs the attribute to exist.
@@ -62,20 +60,22 @@ def _skeleton_session() -> DrowseSession:
     # reentry — skeleton sessions are always idle.
     from drowse.session.session import GenState
     session._gen_phase = GenState.IDLE
-    session._internal_steering_pop = False
-    session._whitener = isotropic_whitener([1], 3)
     session._compiled = False
     session._compiled_clean_eligible = False
     cast(Any, session)._monitor = type("_Monitor", (), {"probe_names": []})()
     session.events = EventBus()
     session._history = []  # pyright: ignore[reportAttributeAccessIssue]  # skeleton: _history is dynamically set
+    wire_stub_steering(
+        session, layer_means={1: torch.zeros(3)},
+        whitener=isotropic_whitener([1], 3),
+    )
     return session
 
 
 def test_session_steering_dispatches_ablation_to_manager():
     session = _skeleton_session()
-    session._profiles["refusal"] = {1: torch.tensor([1.0, 0.0, 0.0])}
-    session._layer_means[1] = torch.tensor([0.5, 0.0, 0.0])
+    session._registry.put_profile("refusal", {1: torch.tensor([1.0, 0.0, 0.0])})
+    session._neutral.means[1] = torch.tensor([0.5, 0.0, 0.0])
 
     steering = Steering(alphas={
         "!refusal": AblationTerm(coeff=1.0, trigger=Trigger.BOTH, target="refusal"),
@@ -111,8 +111,8 @@ def test_session_steering_ablation_missing_profile_raises():
 def test_session_steering_string_with_ablation_end_to_end():
     """session.steering('!refusal') string form parses through to the manager."""
     session = _skeleton_session()
-    session._profiles["refusal"] = {1: torch.tensor([1.0, 0.0, 0.0])}
-    session._layer_means[1] = torch.tensor([0.5, 0.0, 0.0])
+    session._registry.put_profile("refusal", {1: torch.tensor([1.0, 0.0, 0.0])})
+    session._neutral.means[1] = torch.tensor([0.5, 0.0, 0.0])
 
     with session.steering("!refusal"):
         plan = session._steering.plan
@@ -128,7 +128,7 @@ def test_session_steering_string_with_ablation_end_to_end():
 def test_ablation_coefficient_survives_affine_gain(coeff: float) -> None:
     """The shared affine gain must not amplify mean-ablation coefficients."""
     session = _skeleton_session()
-    session._profiles["refusal"] = {1: torch.tensor([1.0, 0.0, 0.0])}
+    session._registry.put_profile("refusal", {1: torch.tensor([1.0, 0.0, 0.0])})
 
     steering = Steering(alphas={
         "!refusal": AblationTerm(
@@ -145,7 +145,7 @@ def test_ablation_coefficient_survives_affine_gain(coeff: float) -> None:
 
 def test_zero_ablation_coefficient_is_a_true_noop() -> None:
     session = _skeleton_session()
-    session._profiles["refusal"] = {1: torch.tensor([1.0, 0.0, 0.0])}
+    session._registry.put_profile("refusal", {1: torch.tensor([1.0, 0.0, 0.0])})
 
     steering = Steering(alphas={
         "!refusal": AblationTerm(

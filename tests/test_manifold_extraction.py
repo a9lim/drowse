@@ -26,6 +26,7 @@ from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.base.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
+from tests.support.stubs import wire_stub_steering
 
 _LABELS = ["calm", "uneasy", "afraid", "frantic", "numb"]
 _DIM = 8
@@ -1611,7 +1612,7 @@ def test_discover_pca_layout_is_neutral_centered(tmp_path: Path) -> None:
     than one toward the centroid.  Re-anchoring is a pure translation, so node-
     exact steering is unchanged: a coord-form push at a node's layout coords
     still reproduces that node's label-form push, layer for layer."""
-    from drowse.session.session import _affine_manifold_push
+    from drowse.steering.composer import affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, fit_mode="pca",
@@ -1628,17 +1629,17 @@ def test_discover_pca_layout_is_neutral_centered(tmp_path: Path) -> None:
     # (b) origin == neutral's projection ⇒ steering toward (0,…,0) displaces less
     #     than steering toward the node centroid, and less than a full node push.
     push_norm = lambda d: max(float(v.norm()) for v in d.values())  # noqa: E731
-    _, at_origin = _affine_manifold_push(m, tuple([0.0] * k))
-    _, at_centroid = _affine_manifold_push(m, tuple(centroid.tolist()))
-    _, at_node = _affine_manifold_push(m, m.node_labels[0])
+    _, at_origin = affine_manifold_push(m, tuple([0.0] * k))
+    _, at_centroid = affine_manifold_push(m, tuple(centroid.tolist()))
+    _, at_node = affine_manifold_push(m, m.node_labels[0])
     assert push_norm(at_origin) < push_norm(at_centroid)
     assert push_norm(at_origin) < push_norm(at_node)
 
     # (c) node-exactness preserved by the shift: coord-form at a node's layout
     #     coords reproduces its label-form push, layer for layer.
     for i in range(len(m.node_labels)):
-        _, by_label = _affine_manifold_push(m, m.node_labels[i])
-        _, by_coord = _affine_manifold_push(m, tuple(m.node_coords[i].tolist()))
+        _, by_label = affine_manifold_push(m, m.node_labels[i])
+        _, by_coord = affine_manifold_push(m, tuple(m.node_coords[i].tolist()))
         assert set(by_label) == set(by_coord)
         for L in by_label:
             assert torch.allclose(by_label[L], by_coord[L], atol=1e-4)
@@ -1832,13 +1833,13 @@ def test_discover_pca_two_node_is_steering_vector(tmp_path: Path) -> None:
 
 def test_two_node_pca_reads_as_affine_pole_push(tmp_path: Path) -> None:
     """A fitted 2-node pca manifold reads through the session's
-    ``_affine_manifold_push`` — the ``name%pole`` steer path — as a rank-1
+    ``affine_manifold_push`` — the ``name%pole`` steer path — as a rank-1
     affine push: per-layer basis + the pole node's real coord.  This closes
     the author→fit→steer loop for "a vector = a 2-node folder": steering
     toward the ``angry`` pole and toward the ``calm`` pole read
     opposite-signed coords (the difference-of-means contrast).
     """
-    from drowse.session.session import _affine_manifold_push
+    from drowse.steering.composer import affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, name="anger", fit_mode="pca",
@@ -1847,14 +1848,14 @@ def test_two_node_pca_reads_as_affine_pole_push(tmp_path: Path) -> None:
     )
     manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
 
-    basis_angry, coord_angry = _affine_manifold_push(manifold, "angry")
+    basis_angry, coord_angry = affine_manifold_push(manifold, "angry")
     assert set(basis_angry) == set(manifold.layers)
     for L, sub in manifold.layers.items():
         assert sub.node_coords is not None
         assert torch.equal(basis_angry[L], sub.basis)        # per-layer basis
         assert torch.equal(coord_angry[L], sub.node_coords[0])  # angry == node 0
 
-    _, coord_calm = _affine_manifold_push(manifold, "calm")
+    _, coord_calm = affine_manifold_push(manifold, "calm")
     for L in manifold.layers:
         # Opposite poles slide to opposite sides of the neutral-anchored origin.
         assert coord_angry[L][0] * coord_calm[L][0] < 0
@@ -1866,7 +1867,7 @@ def test_affine_push_coord_form_equals_label_at_node(tmp_path: Path) -> None:
     (the cardinal RBF weights are ``e_idx`` at node ``idx``).  This is the
     equivalence that makes ``personas%<pirate's coords>`` ≡ ``personas%pirate``.
     """
-    from drowse.session.session import _affine_manifold_push
+    from drowse.steering.composer import affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, name="trio", fit_mode="pca", labels=["a", "b", "c"],
@@ -1876,9 +1877,9 @@ def test_affine_push_coord_form_equals_label_at_node(tmp_path: Path) -> None:
     assert all(sub.is_affine for sub in manifold.layers.values())
 
     for idx, label in enumerate(manifold.node_labels):
-        _, coord_label = _affine_manifold_push(manifold, label)
+        _, coord_label = affine_manifold_push(manifold, label)
         node_coords = tuple(float(c) for c in manifold.node_coords[idx].tolist())
-        _, coord_free = _affine_manifold_push(manifold, node_coords)
+        _, coord_free = affine_manifold_push(manifold, node_coords)
         for L in manifold.layers:
             assert torch.allclose(coord_free[L], coord_label[L], atol=1e-4), (
                 f"layer {L} node {label}: coord form != label form"
@@ -1891,7 +1892,7 @@ def test_affine_push_coord_form_interpolates_between_nodes(tmp_path: Path) -> No
     carry the dominant cardinal weight.
     """
     from drowse.geometry.rbf import rbf_cardinal_weights
-    from drowse.session.session import _affine_manifold_push
+    from drowse.steering.composer import affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, name="trio2", fit_mode="pca", labels=["a", "b", "c"],
@@ -1905,9 +1906,9 @@ def test_affine_push_coord_form_interpolates_between_nodes(tmp_path: Path) -> No
     assert int(torch.argsort(w, descending=True)[0]) in (0, 1)
     assert int(torch.argsort(w, descending=True)[1]) in (0, 1)
 
-    _, coord_mid = _affine_manifold_push(manifold, tuple(float(c) for c in mid))
-    _, coord_a = _affine_manifold_push(manifold, "a")
-    _, coord_b = _affine_manifold_push(manifold, "b")
+    _, coord_mid = affine_manifold_push(manifold, tuple(float(c) for c in mid))
+    _, coord_a = affine_manifold_push(manifold, "a")
+    _, coord_b = affine_manifold_push(manifold, "b")
     for L in manifold.layers:
         assert not torch.allclose(coord_mid[L], coord_a[L], atol=1e-3)
         assert not torch.allclose(coord_mid[L], coord_b[L], atol=1e-3)
@@ -1919,7 +1920,7 @@ def test_affine_push_coord_form_arity_mismatch_raises(tmp_path: Path) -> None:
     curved path.
     """
     from drowse.errors import ManifoldArityError, SteeringCompositionError
-    from drowse.session.session import _affine_manifold_push
+    from drowse.steering.composer import affine_manifold_push
 
     folder = _discover_folder(
         tmp_path, name="trio3", fit_mode="pca", labels=["a", "b", "c"],
@@ -1928,7 +1929,7 @@ def test_affine_push_coord_form_arity_mismatch_raises(tmp_path: Path) -> None:
     manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
     n = manifold.domain.intrinsic_dim
     with pytest.raises(ManifoldArityError) as exc:
-        _affine_manifold_push(manifold, tuple([0.0] * (n + 1)))
+        affine_manifold_push(manifold, tuple([0.0] * (n + 1)))
     assert isinstance(exc.value, SteeringCompositionError)
     assert exc.value.user_message()[0] == 422
 
@@ -2075,12 +2076,55 @@ def _fold_test_direction(name: str, direction: torch.Tensor):
     )
 
 
+def _registry_stub(
+    *, manifolds: Any, profiles: Any, monitor: Any, probe_hashes: dict[str, str],
+) -> Any:
+    """A session skeleton with the real registry, its swap listener and a
+    fake monitor roster."""
+    import types
+
+    from drowse.session.session import DrowseSession
+    from tests.support.stubs import attach_stub_instruments, wire_stub_steering
+
+    session: Any = object.__new__(DrowseSession)
+    attach_stub_instruments(session)
+    session._monitor = monitor
+    session._probe_hash_cache = dict(probe_hashes)
+    session._prefix_cache = object()
+    session._dls = True
+    wire_stub_steering(session, profiles=profiles, manifolds=manifolds)
+    session._registry.on_swap(
+        types.MethodType(DrowseSession._refresh_swapped_probes, session),
+    )
+    session._prefix_cache = object()
+    return session
+
+
+def _analytics_probe(session: Any, name: str) -> Any:
+    """Build (and count) one analytics snapshot of ``name``."""
+    import threading
+
+    def _snapshot() -> Any:
+        return session._registry.analytics_snapshot(
+            name, live=_live, lock=threading.Lock(),
+        )
+
+    def _live() -> dict[int, torch.Tensor]:
+        _snapshot.builds += 1  # type: ignore[attr-defined]
+        return {0: torch.ones(2)}
+
+    _snapshot.builds = 0  # type: ignore[attr-defined]
+    _snapshot()
+    _snapshot()
+    assert _snapshot.builds == 1  # type: ignore[attr-defined]
+    return _snapshot
+
+
 def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
     tmp_path: Path,
 ) -> None:
     from types import SimpleNamespace
 
-    from drowse.session.session import DrowseSession
     old = _fold_test_direction("mood", torch.tensor([1.0, 0.0]))
     other = _fold_test_direction("mood", torch.tensor([0.0, 1.0]))
     new = _fold_test_direction("mood", torch.tensor([0.0, 2.0]))
@@ -2103,26 +2147,20 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
                 manifold=manifold, top_n=top_n,
             )
 
-    session: Any = object.__new__(DrowseSession)
-    session._device = torch.device("cpu")
-    session._dtype = torch.float32
-    session._manifolds = {"local/mood": old, "other/mood": other}
-    session._profiles = {
-        "local/mood": {0: torch.tensor([1.0, 0.0])},
-        "other/mood": {0: torch.tensor([0.0, 1.0])},
-    }
-    session.events = EventBus()
-    session._monitor = _Monitor()
-    session._probe_hash_cache = {
-        "mood-probe": "old", "other-mood-probe": "other",
-    }
-    session._analytics_cpu_cache = {"local/mood": object()}
-    session._prefix_cache = object()
-    session._dls = True
+    session = _registry_stub(
+        manifolds={"local/mood": old, "other/mood": other},
+        profiles={
+            "local/mood": {0: torch.tensor([1.0, 0.0])},
+            "other/mood": {0: torch.tensor([0.0, 1.0])},
+        },
+        monitor=_Monitor(),
+        probe_hashes={"mood-probe": "old", "other-mood-probe": "other"},
+    )
+    snapshots = _analytics_probe(session, "local/mood")
 
-    session._adopt_fitted_manifold(tmp_path / "local" / "mood", new)
+    session._registry.adopt_fitted(tmp_path / "local" / "mood", new)
 
-    live = session._manifolds["local/mood"]
+    live = session._registry.manifolds["local/mood"]
     assert torch.equal(live.layers[0].basis, new.layers[0].basis)
     attached = session._monitor.probes["mood-probe"]
     assert attached.manifold is live
@@ -2130,10 +2168,11 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_profile_and_prefix(
     from drowse.fit.capture import folded_directions
 
     assert torch.allclose(
-        session._profiles["local/mood"][0], folded_directions(new)[0],
+        session._registry.profiles["local/mood"][0], folded_directions(new)[0],
     )
     assert session._prefix_cache is None
-    assert session._analytics_cpu_cache == {}
+    snapshots()
+    assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
     assert "mood-probe" not in session._probe_hash_cache
 
 
@@ -2159,20 +2198,16 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
         def remove_probe(self, name: str) -> None:
             self.probes.pop(name)
 
-    session: Any = object.__new__(DrowseSession)
-    session._manifolds = {"local/mood": old, "other/mood": other}
-    session._profiles = {
-        "local/mood": {0: torch.tensor([1.0, 0.0])},
-        "other/mood": {0: torch.tensor([0.0, 1.0])},
-    }
-    session.events = EventBus()
-    session._monitor = _Monitor()
-    session._probe_hash_cache = {
-        "mood-probe": "old", "other-mood-probe": "other",
-    }
-    session._analytics_cpu_cache = {"local/mood": object()}
-    session._prefix_cache = object()
-    session._dls = True
+    session = _registry_stub(
+        manifolds={"local/mood": old, "other/mood": other},
+        profiles={
+            "local/mood": {0: torch.tensor([1.0, 0.0])},
+            "other/mood": {0: torch.tensor([0.0, 1.0])},
+        },
+        monitor=_Monitor(),
+        probe_hashes={"mood-probe": "old", "other-mood-probe": "other"},
+    )
+    snapshots = _analytics_probe(session, "local/mood")
 
     @contextmanager
     def _exclusive(*_args: Any, **_kwargs: Any):
@@ -2201,12 +2236,13 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
             fit_mode="pca", hyperparams={"max_dim": 1},
         )
 
-    assert session._manifolds == {"other/mood": other}
-    assert set(session._profiles) == {"other/mood"}
+    assert dict(session._registry.manifolds) == {"other/mood": other}
+    assert set(session._registry.profiles) == {"other/mood"}
     assert set(session._monitor.probes) == {"other-mood-probe"}
     assert session._probe_hash_cache == {"other-mood-probe": "other"}
     assert session._prefix_cache is None
-    assert session._analytics_cpu_cache == {}
+    snapshots()
+    assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
 
 
 def test_override_validation_failure_preserves_unchanged_consumers(
@@ -2219,15 +2255,12 @@ def test_override_validation_failure_preserves_unchanged_consumers(
         def attached_probes(self) -> dict[str, Any]:
             return {}
 
-    session: Any = object.__new__(DrowseSession)
-    session._manifolds = {"local/mood": old}
-    session._profiles = {"local/mood": {0: torch.tensor([1.0, 0.0])}}
-    session.events = EventBus()
-    session._monitor = _Monitor()
-    session._probe_hash_cache = {}
-    session._analytics_cpu_cache = {}
-    session._prefix_cache = object()
-    session._dls = True
+    session = _registry_stub(
+        manifolds={"local/mood": old},
+        profiles={"local/mood": {0: torch.tensor([1.0, 0.0])}},
+        monitor=_Monitor(),
+        probe_hashes={},
+    )
     folder = tmp_path / "local" / "mood"
     folder.mkdir(parents=True)
     (folder / "manifold.json").write_text('{"fit_mode":"authored"}')
@@ -2251,8 +2284,8 @@ def test_override_validation_failure_preserves_unchanged_consumers(
     with pytest.raises(ValueError, match="discover-mode only"):
         session.fit(folder, fit_mode="pca")
 
-    assert session._manifolds == {"local/mood": old}
-    assert set(session._profiles) == {"local/mood"}
+    assert dict(session._registry.manifolds) == {"local/mood": old}
+    assert set(session._registry.profiles) == {"local/mood"}
 
 
 def test_dls_false_keeps_every_axis(
@@ -2359,9 +2392,8 @@ def test_session_fit_forwards_its_dls_setting(
     session._dls = dls
     session.events = EventBus()
     session._model_exclusive = _exclusive
-    session._steering_composer = cast(Any, type("_C", (), {"_stack": []})())
-    session._adopt_fitted_manifold = lambda *_a, **_kw: None
-    session._invalidate_analytics_cache = lambda: None
+    wire_stub_steering(session)
+    session._registry.adopt_fitted = lambda *_a, **_kw: None
 
     assert session.fit("folder") is fitted
     assert fit_kwargs["dls"] is dls

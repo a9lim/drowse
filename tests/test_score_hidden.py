@@ -148,6 +148,7 @@ def test_score_probes_without_whitener_raises():
 
 from drowse.errors import DrowseError  # noqa: E402
 from drowse.session.session import DrowseSession  # noqa: E402
+from tests.support.stubs import attach_stub_instruments
 
 
 def _mock_session() -> DrowseSession:
@@ -158,6 +159,7 @@ def _mock_session() -> DrowseSession:
     attribute remains un-set; score_hidden must not touch them.
     """
     s = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(s)
     s._monitor = _monitor_with_probe()
     s._device = torch.device("cpu")
     return s

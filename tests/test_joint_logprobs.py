@@ -11,6 +11,7 @@ forward-pass + cache + reorient path without HF weights.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -409,7 +410,7 @@ class _MockSession:
     former no-op stubs made the bind leak invisible to this suite)."""
 
     def __init__(self):
-        from types import MethodType
+        from types import MethodType, SimpleNamespace
 
         from drowse.readout.geometry import GeometryInstrument
         from drowse.lens.instrument import LensInstrument
@@ -458,8 +459,10 @@ class _MockSession:
         self._close_instrument_runs = MethodType(
             DrowseSession._close_instrument_runs, self,
         )
-        self._steering_needs_probe_gating = lambda: False
-        self._build_gating_score_callback = lambda: None
+        self._steering_composer = SimpleNamespace(
+            steering_needs_probe_gating=lambda: False,
+            build_gating_score_callback=lambda: None,
+        )
         self._resolve_read_demand = lambda **_kwargs: None
         self._resolved_model_type = lambda: None
         self.scene_grammar = None
@@ -475,8 +478,10 @@ class _MockSession:
     def force_stepwise_gated(self, gate: Any = None) -> None:
         """Route replay through the per-step gated path."""
         self._steering.static = False
-        self._steering_needs_probe_gating = lambda: True
-        self._build_gating_score_callback = lambda: gate or (lambda _step: {})
+        self._steering_composer = SimpleNamespace(
+            steering_needs_probe_gating=lambda: True,
+            build_gating_score_callback=lambda: gate or (lambda _step: {}),
+        )
 
     def assert_runs_closed(self) -> None:
         for instrument in (

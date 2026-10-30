@@ -69,6 +69,7 @@ def _stateful_tap_session(tree: LoomTree, node_id: str) -> Any:
     )
     session._steering_composer = SimpleNamespace(
         _stack=[],
+        active=False,
         steering_needs_probe_gating=lambda: False,
         gated_probe_keys=lambda: set(),
         gated_lens_probe_keys=lambda: set(),

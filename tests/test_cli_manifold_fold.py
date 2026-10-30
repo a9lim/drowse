@@ -10,7 +10,7 @@ per-model neutral cache for the Mahalanobis-only compare path.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Generator, cast
+from typing import Any, Generator
 
 import pytest
 import torch
@@ -480,7 +480,6 @@ def test_default_probe_preflight_skips_unrelated_variant_hashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from drowse.store.manifold_tensors import load_manifold
-    from drowse.session.session import DrowseSession
     from drowse.base import integrity
     from drowse.store.manifold_folder import ManifoldFolder
     import drowse.store.bundled as bundled_module
@@ -502,19 +501,12 @@ def test_default_probe_preflight_skips_unrelated_variant_hashes(
         hashed.append(Path(path).name)
         return real_hash(Path(path))
 
-    class StubSession:
-        model_id = _MODEL
-        _manifolds: dict[str, Manifold] = {}
-
-        def ensure_manifold_loaded(self, key: str) -> None:
-            self._manifolds[key] = load_manifold(raw)
-
     monkeypatch.setattr(integrity, "hash_file", track_hash)
     monkeypatch.setattr(probes_module, "load_default_manifolds", lambda: {})
     monkeypatch.setattr(bundled_module, "bundled_manifold_names", lambda: ["probe"])
-    session = StubSession()
-    probes = DrowseSession._bootstrap_manifold_probes(
-        cast(Any, session), [], include_fitted_defaults=True,
+    probes = probes_module.bootstrap_probe_roster(
+        [], model_id=_MODEL, load=lambda _key: load_manifold(raw),
+        fit=lambda _folder, _progress: None, include_fitted_defaults=True,
     )
 
     assert "default/probe" in probes

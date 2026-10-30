@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from drowse.generation.results import GenerationResult, RunSet, TokenEvent
 from tests._generation_stream import TestGenerationStream
-from drowse.session.session import ConcurrentGenerationError, ProfileNotRegisteredError
+from drowse.errors import ConcurrentGenerationError, ProfileNotRegisteredError
 
 
 # ---------------------------------------------------------------------------

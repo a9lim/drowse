@@ -23,6 +23,7 @@ from drowse.readout.capture_buffer import HiddenCapture
 from drowse.steering.hooks import SteeringManager
 from drowse.session.session import DrowseSession
 from drowse.model.scene import SeatWrapper, TurnGrammar
+from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
 
 def tokenizer(swapped: bool = False) -> PreTrainedTokenizerFast:
@@ -152,12 +153,12 @@ def test_large_chat_inputs_are_not_retained_in_the_render_cache() -> None:
 
 def test_session_close_releases_reusable_generation_device_cache() -> None:
     session: Any = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     session._steering = SteeringManager()
     session._capture_handles = []
     session._capture_buffers = {}
     session._capture = HiddenCapture()
-    session._profiles = {}
-    session._manifolds = {}
+    wire_stub_steering(session)
     session._tokenizer = tokenizer()
     tensor = torch.ones(1024)
     reference = weakref.ref(tensor)

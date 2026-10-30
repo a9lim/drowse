@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 class ManifoldAuthoringChangedError(RuntimeError, DrowseError):
     """The authoring inputs changed while a target was being fitted.
 
-    Semantically the conflict :class:`~drowse.session.session.ConcurrentExtractionError`
+    Semantically the conflict :class:`~drowse.errors.ConcurrentExtractionError`
     models, reached from the other direction: the fit is fine, the folder moved
     under it.  Reports 409 so the caller retries against the current revision
     instead of reading it as a server fault.  ``RuntimeError`` stays in the

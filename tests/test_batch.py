@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from drowse.generation.results import GenerationResult, ProbeReading
-from drowse.steering.composer import SteeringComposer
+from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
 if TYPE_CHECKING:
     from drowse.session.session import DrowseSession
@@ -70,15 +70,15 @@ class _NoopSteeringContext:
     def __exit__(self, *args: Any) -> None:
         return None
 
+    def close(self, *, internal: bool = False, swallow: bool = False) -> None:
+        del internal, swallow
+
 
 def _install_noop_steering(session: DrowseSession) -> None:
     session_any = cast(Any, session)
-    session_any._profiles = {"a": {}}
+    wire_stub_steering(session, profiles={"a": {}})
     session_any.steering = lambda value: _NoopSteeringContext()
     session_any._snapshot_steering_alphas = lambda: {"a": 0.0}
-    session_any._exit_internal_steering = (
-        lambda steering_cm, *, swallow: steering_cm.__exit__(None, None, None)
-    )
 
 
 class _BatchTokenizer:
@@ -177,6 +177,7 @@ def _fast_batch_session():
     from drowse.steering.triggers import TriggerContext
 
     s = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(s)
     model = _BatchModel()
     s_any = cast(Any, s)
     s_any._model = model
@@ -188,8 +189,6 @@ def _fast_batch_session():
     s._gen_phase = GenState.IDLE
     s._gen_state = GenerationState()
     s_any._monitor = SimpleNamespace(probe_names=[], set_subspace_coords=lambda _flag: None)
-    s._profiles = {}
-    s._manifolds = {}
     s._default_return_top_k = 0
     s.config = GenerationConfig(
         max_new_tokens=3,
@@ -221,9 +220,7 @@ def _fast_batch_session():
     s._last_per_token_scores = None
     s._last_result = None
     s._readout_long_tensor_cache = {}
-    s._internal_steering_pop = False
-    s._active_role = None
-    s._steering_composer = SteeringComposer(s)
+    wire_stub_steering(s)
 
     def _prepare_input(
         input: Any,
@@ -281,8 +278,10 @@ class TestGenerateBatch:
         from drowse.session.session import DrowseSession
 
         s = DrowseSession.__new__(DrowseSession)
-        s._steering_composer = SteeringComposer(s)
+        attach_stub_instruments(s)
+        wire_stub_steering(s)
         cast(Any, s)._generate_batch_fast = lambda *_a, **_kw: None
+        cast(Any, s)._maybe_cache_batch_prefix = lambda *_a, **_kw: False
         return s
 
     def test_returns_results_in_prompt_order(self) -> None:
@@ -671,8 +670,8 @@ class TestPrefixCacheEligibility:
     def _session(self):
         from drowse.session.session import DrowseSession
         session = DrowseSession.__new__(DrowseSession)
-        session._steering_composer = SteeringComposer(session)
-        session._profiles = {}
+        attach_stub_instruments(session)
+        wire_stub_steering(session)
         return session
 
     @pytest.mark.parametrize(
@@ -692,35 +691,35 @@ class TestPrefixCacheEligibility:
         self, expr: "str | None", expected_inactive: bool,
     ) -> None:
         s = self._session()
-        assert s._steering_value_prefill_inactive(expr) is expected_inactive
+        assert s._steering_composer.steering_value_prefill_inactive(expr) is expected_inactive
 
     def test_mixed_terms_active_if_any_steers_prefill(self) -> None:
         # One response-phase term + one default-BOTH term → prefill IS steered.
         s = self._session()
-        assert s._steering_value_prefill_inactive("0.5 honest@response + 0.3 warm") is False
+        assert s._steering_composer.steering_value_prefill_inactive("0.5 honest@response + 0.3 warm") is False
 
     def test_malformed_expression_treated_as_active(self) -> None:
         # A parse failure is conservatively prefill-active so the caller skips
         # caching and lets the normal path surface the error.
         s = self._session()
-        assert s._steering_value_prefill_inactive("0.5 !nope~bad") is False
+        assert s._steering_composer.steering_value_prefill_inactive("0.5 !nope~bad") is False
 
     def test_active_in_prefill_reads_the_live_stack(self) -> None:
         from drowse.steering.triggers import Trigger
 
         s = self._session()
         s._steering_composer._stack = []
-        assert s._steering_active_in_prefill() is False
+        assert s._steering_composer.steering_active_in_prefill() is False
         # Response-phase entry (prompt=False) → prefill untouched.
         s._steering_composer._stack = [{"honest": (0.5, Trigger.GENERATED_ONLY)}]
-        assert s._steering_active_in_prefill() is False
+        assert s._steering_composer.steering_active_in_prefill() is False
         # Default BOTH entry → prefill steered.
         s._steering_composer._stack = [{"honest": (0.5, Trigger.BOTH)}]
-        assert s._steering_active_in_prefill() is True
+        assert s._steering_composer.steering_active_in_prefill() is True
         # A probe-gated trigger reports inactive during prefill.
         gated = Trigger.when("honest.deceptive", ">", 0.4)
         s._steering_composer._stack = [{"honest": (0.5, gated)}]
-        assert s._steering_active_in_prefill() is False
+        assert s._steering_composer.steering_active_in_prefill() is False
 
     def test_batch_common_prefix_detection_keeps_scalar_walk_on_cpu(self) -> None:
         import torch
@@ -813,9 +812,6 @@ class TestPrefixCacheEligibility:
             ctx=None,
             hooks={},
         )
-        s._steering_active_in_prefill = lambda: False
-        s._steering_needs_probe_gating = lambda: False
-        s_any._build_gating_score_callback = lambda: None
         s._compiled = False
         s._device = torch.device("cpu")
         s_any._model = object()
@@ -949,6 +945,7 @@ class TestGenerateSweep:
         from drowse.session.session import DrowseSession
 
         s = DrowseSession.__new__(DrowseSession)
+        attach_stub_instruments(s)
         from drowse.generation.decode import GenerationConfig
         s.config = GenerationConfig()
         return s

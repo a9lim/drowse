@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 import torch
 
-from drowse.steering.composer import SteeringComposer
 from drowse.steering.grammar import (
     SteeringExprError,
     format_expr,
@@ -122,13 +121,12 @@ def test_token_id_and_reserved_atom_rejections(text: str) -> None:
 
 
 def test_reserved_but_unsteerable_namespaces_refuse_to_resolve() -> None:
-    from drowse.session.session import ProfileNotRegisteredError
+    from drowse.errors import ProfileNotRegisteredError
 
     session = _StubSession()
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
     for key in ("slens/owl", "neuron/L8n344", "head/L20h17"):
         with pytest.raises(ProfileNotRegisteredError, match="reserved"):
-            composer.ensure_profile_registered(key)
+            session._registry.ensure_profile_registered(key)
 
 
 # ---------------------------------------------------------- lazy resolution --
@@ -137,10 +135,9 @@ def test_reserved_but_unsteerable_namespaces_refuse_to_resolve() -> None:
 def test_profile_registration_resolves_jlens_atom() -> None:
     session = _StubSession()
     session.fit_jlens(_PROMPTS)
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
 
-    dirs = composer.ensure_profile_registered("jlens/g")
-    assert "jlens/g" in session._profiles
+    dirs = session._registry.ensure_profile_registered("jlens/g")
+    assert "jlens/g" in session._registry.profiles
     assert set(dirs) == {0, 1}
     assert all(isinstance(v, torch.Tensor) for v in dirs.values())
 
@@ -157,14 +154,14 @@ def test_token_id_atom_steers_and_probes_the_vocab_id() -> None:
 
     session = _StubSession()
     lens = session.fit_jlens(_PROMPTS)
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
+    composer = session._steering_composer
     (key,) = parse_expr("0.3 jlens/#6").alphas
-    by_id = composer.ensure_profile_registered(key)
+    by_id = session._registry.ensure_profile_registered(key)
     expected = lens.token_direction(6, session._model.lm_head.weight)
     assert set(by_id) == set(expected)
     for layer, vec in by_id.items():
         assert torch.allclose(vec, expected[layer])
-    by_word = composer.ensure_profile_registered("jlens/g")
+    by_word = session._registry.ensure_profile_registered("jlens/g")
     for layer, vec in by_id.items():
         assert torch.allclose(vec, by_word[layer])
 
@@ -186,9 +183,8 @@ def test_token_id_atom_rejects_ids_outside_the_vocab() -> None:
 
     session = _StubSession()
     session.fit_jlens(_PROMPTS)
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
     with pytest.raises(InvalidTokenIdError, match="outside this vocabulary"):
-        composer.ensure_profile_registered(f"jlens/#{TOY_VOCAB}")
+        session._registry.ensure_profile_registered(f"jlens/#{TOY_VOCAB}")
     with pytest.raises(InvalidTokenIdError):
         DrowseSession.add_probe(session, f"jlens/#{TOY_VOCAB}")  # type: ignore[arg-type]
     assert not session._lens_instrument.probes
@@ -201,9 +197,8 @@ def test_profile_registration_jlens_requires_fitted_lens() -> None:
     from drowse.lens.jlens import LensNotFittedError
 
     session = _StubSession()
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
     with pytest.raises(LensNotFittedError, match="drowse lens fit"):
-        composer.ensure_profile_registered("jlens/g")
+        session._registry.ensure_profile_registered("jlens/g")
 
 
 def test_add_probe_routes_jlens_to_lens_registry() -> None:
@@ -222,7 +217,7 @@ def test_add_probe_routes_jlens_to_lens_registry() -> None:
     assert spec["layers"] == session.jlens.source_layers
     # No direction fold, no profile registration — the readout channel is
     # computed from lens logits, not a whitened coordinate.
-    assert "jlens/g" not in session._profiles
+    assert "jlens/g" not in session._registry.profiles
 
 
 def test_lens_probe_scores_strength_channel() -> None:
@@ -320,7 +315,7 @@ def test_gated_lens_probe_keys_and_gate_scalars() -> None:
 
     # Composer-side detection: a gate on the pinned lens probe is recognized
     # from the steering stack without monitor attachment.
-    composer = SteeringComposer(session)  # type: ignore[arg-type]
+    composer = session._steering_composer
     steering = parse_expr("0.3 jlens/g@when:jlens/g>0.4")
     composer._stack.append(dict(steering.alphas))  # type: ignore[arg-type]
     session._monitor = type(

@@ -392,7 +392,7 @@ class TestExtract:
         assert "on_progress" in session.extract.call_args.kwargs
         session.extract.assert_called_once()
         assert session.extract.call_args.args == ("angry", "calm")
-        session.steer.assert_called_once_with("angry.calm", profile)
+        session.registry.put_profile.assert_called_once_with("angry.calm", profile)
 
     def test_extract_defaults_kind_to_abstract(self, session_and_client: Any) -> None:
         """The elicitation framing is explicit on the wire, defaulted here."""
@@ -497,7 +497,7 @@ class TestExtract:
     def test_extract_json_maps_a_concurrent_run_to_409(
         self, session_and_client: Any,
     ) -> None:
-        from drowse.session.session import ConcurrentExtractionError
+        from drowse.errors import ConcurrentExtractionError
 
         session, client = session_and_client
         session.extract.side_effect = ConcurrentExtractionError("busy")
@@ -545,7 +545,7 @@ class TestExtract:
 
         assert resp.status_code == 200
         assert resp.json()["canonical"] == "alice/honest.deceptive:role-pirate"
-        session.steer.assert_called_once_with(
+        session.registry.put_profile.assert_called_once_with(
             "alice/honest.deceptive:role-pirate", profile,
         )
 
@@ -631,7 +631,7 @@ class TestExtract:
             body = b"".join(resp.iter_bytes()).decode()
 
         assert '"canonical": "honest.deceptive:role-pirate"' in body
-        session.steer.assert_called_once_with(
+        session.registry.put_profile.assert_called_once_with(
             "honest.deceptive:role-pirate", profile,
         )
 
@@ -1629,14 +1629,18 @@ class TestAnalyticsMultiNodeProbe:
 
         # These stubs feed the *engine's own* analytics methods, bound real
         # below — ``analytics_names`` / ``_live_direction_tensors`` read the
-        # session privates (``self._profiles`` / ``self._monitor``) directly, so
-        # the stub seeds the private backing, not the public alias.  (The public
-        # ``monitor`` / ``profiles`` properties just return these same objects.)
-        session._profiles = {"vx": vx}
+        # session's registry and ``self._monitor`` directly, so the stub seeds
+        # a real registry and the private monitor backing.
+        from drowse.session.registry import ArtifactRegistry, ModelBinding
+
+        session._registry = ArtifactRegistry(ModelBinding(
+            model=None, tokenizer=None, model_id="stub/model",
+            device=torch.device("cpu"), dtype=torch.float32,
+        ))
+        session._registry.put_profile("vx", vx)
         session._monitor.probe_names = ["vp", "fan"]
         session._monitor.manifolds = {"vp": vp, "fan": fan}
-        session.gen_lock = threading.Lock()
-        session._analytics_cpu_cache = {}
+        session._gen_lock = threading.Lock()
         # ``analytics_names`` reads the roster through the geometry
         # instrument's LOCKED ``manifolds()`` snapshot now — a bare MagicMock
         # instrument silently yields an empty roster, so wire the real one

@@ -132,7 +132,7 @@ def register_profile_routes(app: FastAPI) -> None:
                 sae=req.sae, role=req.role, namespace=req.namespace, force=req.force,
             )
             name = extract_registry_name(canonical, req.namespace)
-            session.steer(name, profile)
+            session.registry.put_profile(name, profile)
             return {"done": True, "profile": profile_to_json(name, profile), "canonical": name}
 
         return await run_operation(

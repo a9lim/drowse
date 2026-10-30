@@ -258,3 +258,41 @@ class ManifoldExistsError(FileExistsError, DrowseError):
 
     def user_message(self) -> tuple[int, str]:
         return (409, str(self) or self.__class__.__name__)
+
+
+class ConcurrentGenerationError(RuntimeError, DrowseError):
+    """Raised when a generation call is made while another is in progress."""
+
+    def user_message(self) -> tuple[int, str]:
+        return (409, str(self) or self.__class__.__name__)
+
+
+class ProfileNotRegisteredError(KeyError, DrowseError):
+    """Raised when a steering call references a profile not in the registry."""
+
+    def user_message(self) -> tuple[int, str]:
+        # KeyError str-formats the message as repr; reach into args
+        # so the user sees the original text.
+        msg = self.args[0] if self.args else self.__class__.__name__
+        return (404, str(msg))
+
+
+class ManifoldNotRegisteredError(KeyError, DrowseError):
+    """Raised when manifold steering references an unknown / unfitted manifold."""
+
+    def user_message(self) -> tuple[int, str]:
+        msg = self.args[0] if self.args else self.__class__.__name__
+        return (404, str(msg))
+
+
+class ConcurrentExtractionError(RuntimeError, DrowseError):
+    """Raised when ``session.extract`` is called while a generation is in flight.
+
+    Mirrors :class:`ConcurrentGenerationError` — extraction runs forward
+    passes through the model and would race with an active generation if
+    allowed to overlap.  Also raised for artifact-producing work (neutral
+    baseline, fits) requested inside an active steering scope.
+    """
+
+    def user_message(self) -> tuple[int, str]:
+        return (409, str(self) or self.__class__.__name__)

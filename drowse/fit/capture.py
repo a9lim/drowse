@@ -673,7 +673,7 @@ def compute_neutral_activations(
     tensor per layer (rows = pairs, original order preserved).  This is the
     single per-model neutral artifact: the Mahalanobis whitener's covariance is
     built from the stack and the probe-centering means are its per-layer
-    ``X.mean(0)`` (:func:`drowse.store.bundled_probes.bootstrap_layer_means`).
+    ``X.mean(0)`` (:class:`drowse.session.neutral.NeutralBaseline`).
     Used by cross-model alignment (:func:`drowse.geometry.procrustes.fit_alignment`)
     which needs paired observations to fit Procrustes; the means alone (N=1)
     are degenerate for that fit.

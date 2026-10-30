@@ -110,21 +110,21 @@ class TestMergeVector:
             name, profile = session.bake("noble", "0.3 default/honest + 0.4 default/warm")
         assert name == "noble"
         assert profile.layers == [0, 5]
-        # Confirm we forwarded model + expression + force=True, and that the
-        # loaded-weight fingerprint guard rides along.
+        # Confirm we forwarded model + expression, the non-destructive
+        # ``force=False`` default, and the loaded-weight fingerprint guard.
         kwargs = m.call_args.kwargs
         args = m.call_args.args
         assert args[0] == "noble"
         assert args[1] == "0.3 default/honest + 0.4 default/warm"
         assert args[2] == "test/model"
-        assert kwargs["force"] is True
+        assert kwargs["force"] is False
         assert kwargs["expected_model_fingerprint"] == loaded_model_fingerprint(
             session._model, session.model_id,
         )
         # Auto-register on the session with the folded merged direction.
-        steer_mock = cast(MagicMock, session.steer)
-        steer_mock.assert_called_once()
-        call_name, call_profile = steer_mock.call_args.args
+        register = cast(MagicMock, session._registry.put_profile)
+        register.assert_called_once()
+        call_name, call_profile = register.call_args.args
         assert call_name == "noble"
         assert call_profile.layers == [0, 5]
         assert torch.allclose(call_profile[0].float(), expected[0].float(), atol=1e-5)

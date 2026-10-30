@@ -29,6 +29,7 @@ from drowse.steering.hooks import (
     install_persistent_offset_hooks,
 )
 from drowse.session.session import DrowseSession
+from tests.support.stubs import attach_stub_instruments, wire_stub_steering
 
 _D = 8
 _LAYERS = [0, 1, 2]
@@ -279,14 +280,14 @@ def test_session_close_removes_both_persistent_hook_families():
     steering = SteeringManager()
     steering.adopt_compiled_offsets(offset_buffers, offset_handles)
     session = DrowseSession.__new__(DrowseSession)
+    attach_stub_instruments(session)
     session._steering = steering
     session._capture_buffers = capture_buffers
     session._capture_handles = capture_handles
     session._capture = HiddenCapture()
     session._capture._per_layer = {0: [torch.ones(2)]}
-    session._profiles = {}
-    session._manifolds = {}
     session.events = EventBus()
+    wire_stub_steering(session)
     session.events.subscribe(lambda _event: None)
     cast(Any, session)._jlens_device_cache = {("lens",): torch.ones(2)}
     session._jlens_decode_cache = {1: "one"}

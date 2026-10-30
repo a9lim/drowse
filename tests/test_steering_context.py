@@ -19,8 +19,7 @@ import torch
 from drowse import SamplingConfig
 from drowse.errors import RoleBaselineMismatchWarning
 from drowse.events import SteeringApplied, SteeringCleared
-from drowse.session.session import ConcurrentExtractionError, ProfileNotRegisteredError
-from drowse.steering.composer import SteeringComposer
+from drowse.errors import ConcurrentExtractionError, ProfileNotRegisteredError
 from drowse.steering.grammar import SteeringExprError
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
@@ -62,27 +61,65 @@ def test_single_scope_attaches_hooks_and_detaches_on_exit(session: Any) -> None:
     assert _applied(events)[0].alphas == {"angry.calm": 0.5}
 
 
-def test_plain_materialization_does_not_wake_whitener() -> None:
-    """Only ``~``/``|`` terms need the projection-time whitener read."""
+def test_resolving_a_projection_leaves_the_neutral_baseline_alone() -> None:
+    """Resolution only records a ``~``/``|`` term's operands; the projection
+    (and the whitener it needs) is computed at composition, under the lock."""
+    from types import SimpleNamespace
 
-    class _NoWhitener:
-        _profiles: dict[str, object] = {}
+    from tests.support.stubs import wire_stub_steering
 
-        @property
-        def whitener(self) -> None:
-            raise AssertionError("plain steering touched the lazy whitener")
+    stub = SimpleNamespace()
+    composer = wire_stub_steering(
+        stub, profiles={"a": {0: torch.ones(2)}, "b": {0: torch.ones(2)}},
+    )
 
-    composer = SteeringComposer(_NoWhitener())  # type: ignore[arg-type]
-    assert composer.materialize_projections(Steering(alphas={"plain": 0.2})) == {}
+    def _no_build(**_kwargs: Any) -> None:
+        raise AssertionError("resolution touched the neutral baseline")
+
+    stub._neutral.ensure = _no_build
+    entries = composer.resolve(Steering.from_value("0.3 a|b + 0.2 a"))
+    assert set(entries) == {"a|b", "a"}
+    assert composer.projection("a|b") is None
 
 
-def test_generation_preflight_builds_the_lazy_whitener(
+def test_first_scope_on_a_cold_session_builds_the_baseline(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    """C2: the first ``session.steering()`` on a cold session used to raise.
+
+    Composition read the guarded public ``layer_means`` getter while the push
+    held the lock with its entry already on the stack, so the getter saw an
+    "active steering scope" and refused.  Composition now builds the neutral
+    baseline through the unguarded path the push's lock licenses.
+    """
+    session = make_tiny_session(warm=False)
+    register_vectors(session, "a")
+    baseline = forward_logits(session)
+    with session.steering("0.5 a"):
+        assert not torch.equal(forward_logits(session), baseline)
+    assert session.whitener is not None
+    assert torch.equal(forward_logits(session), baseline)
+
+
+def test_cold_session_score_choices_composes_steering(
+    make_tiny_session: TinySessionFactory,
+) -> None:
+    """C2 through a non-generation steering surface (no preflight priming)."""
+    session = make_tiny_session(warm=False)
+    register_vectors(session, "a")
+    scores = session.score_choices(
+        [{"role": "user", "content": "pick"}], ["x", "y"], steering="0.4 a",
+    )
+    assert scores is not None
+
+
+def test_generation_builds_the_lazy_whitener_for_a_projection(
     make_tiny_session: TinySessionFactory,
 ) -> None:
     """A ``~`` projection on a cold session needs the whitener mid-generation.
 
-    The public ``whitener`` getter refuses while a generation is in flight, so
-    the lock-owning generation preflight must publish it first.
+    The public ``whitener`` getter refuses while a generation is in flight;
+    composition builds it through the lock the generation already holds.
     """
     session = make_tiny_session(warm=False)
     register_vectors(session, "a", "b")
@@ -302,3 +339,73 @@ class TestRoleUnanimity:
                 assert self._assistant_label(session, script) == "sage"
             assert self._assistant_label(session, script) == "pirate"
         assert self._assistant_label(session, script) == "assistant"
+
+
+# ---------------------------------------------------------------------------
+# Scope exit: nothing leaks when the pop fails or the scope never entered
+# ---------------------------------------------------------------------------
+
+
+class TestScopeExitHygiene:
+    @pytest.fixture
+    def scripted(self, make_tiny_session: TinySessionFactory) -> tuple[Any, Any]:
+        session, script = make_tiny_session.scripted("ok")
+        register_vectors(session, "a", "b", _PIRATE, _SAGE)
+        return session, script
+
+    def test_failed_pop_restores_role_and_leaves_no_projection_behind(
+        self, scripted: tuple[Any, Any],
+    ) -> None:
+        """C3: an exit whose rebuild raised used to keep the inner role bound
+        and the inner ``a|b`` synthetic profile in the registry."""
+        session, script = scripted
+        baseline = forward_logits(session)
+        before = set(session.profiles)
+        outer = session.steering("0.3 a")
+        outer.__enter__()
+        with pytest.warns(RoleBaselineMismatchWarning):
+            inner = session.steering(f"0.5 {_PIRATE} + 0.2 b|a")
+        inner.__enter__()
+        assert TestRoleUnanimity._assistant_label(session, script) == "pirate"
+        session.registry.pop_profile("a")
+        with pytest.raises(ProfileNotRegisteredError):
+            inner.__exit__(None, None, None)
+        assert TestRoleUnanimity._assistant_label(session, script) == "assistant"
+        assert "b|a" not in session.profiles
+        assert set(session.profiles) == before - {"a"}
+        assert torch.equal(forward_logits(session), baseline)
+        session.registry.put_profile("a", register_vectors(session, "a")["a"])
+        outer.__exit__(None, None, None)
+        assert not session._steering_composer.active
+
+    def test_scope_that_never_entered_leaves_the_outer_role(
+        self, scripted: tuple[Any, Any],
+    ) -> None:
+        """F3: closing a scope whose enter never ran used to reset the role
+        to ``None`` even with an outer role scope still open."""
+        session, script = scripted
+        with session.steering(f"0.5 {_PIRATE}"):
+            unentered = session.steering(f"0.3 {_SAGE}")
+            unentered.close(internal=True, swallow=True)
+            unentered.__exit__(None, None, None)
+            assert TestRoleUnanimity._assistant_label(session, script) == "pirate"
+        assert TestRoleUnanimity._assistant_label(session, script) == "assistant"
+
+    def test_failed_role_generation_keeps_the_outer_role(
+        self, scripted: tuple[Any, Any],
+    ) -> None:
+        """F3 through generation: a role-scoped send that fails before its
+        scope enters must not clear the enclosing scope's role."""
+        session, script = scripted
+        opened: list[Any] = []
+        open_scope = session.steering
+        session.steering = lambda value: (opened.append(value), open_scope(value))[1]
+        with session.steering(f"0.5 {_PIRATE}"):
+            with pytest.raises(Exception):
+                session.generate(
+                    "hi", steering=f"0.3 {_SAGE}", parent_node_id="no-such-node",
+                    sampling=SamplingConfig(max_tokens=2),
+                )
+            # The generation opened its own (role) scope before failing.
+            assert len(opened) == 2
+            assert TestRoleUnanimity._assistant_label(session, script) == "pirate"
