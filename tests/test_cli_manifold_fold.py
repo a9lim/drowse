@@ -131,7 +131,7 @@ def _write_fitted_manifold(
         layers=layers,
         mahalanobis_share=share,
     )
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
 
     folder = manifold_dir(ns, name)
     if not (folder / "manifold.json").exists():
@@ -147,7 +147,7 @@ def _write_fitted_manifold(
     }
     manifest = folder / "manifold.json"
     if manifest.exists():
-        from drowse.store.manifolds import ManifoldFolder
+        from drowse.store.manifold_folder import ManifoldFolder
 
         metadata["nodes_sha256"] = ManifoldFolder.load(
             folder, verify_manifest=False,
@@ -155,7 +155,7 @@ def _write_fitted_manifold(
         metadata["fit_policy_version"] = MANIFOLD_FIT_POLICY_VERSION
     save_manifold(mfld, path, metadata)
     if manifest.exists():
-        from drowse.store.manifolds import ManifoldFolder
+        from drowse.store.manifold_folder import ManifoldFolder
 
         ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
             path, path.with_suffix(".json"),
@@ -335,9 +335,8 @@ class TestCompareFold:
 
 def _make_full_manifold(ns: str, name: str, *, seed: int = 0) -> Path:
     """A complete manifold folder (manifold.json + nodes) plus a fitted tensor."""
-    from drowse.store.manifolds import (
-        create_discover_manifold_folder, ManifoldFolder, hash_manifold_files,
-    )
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
+    from drowse.store.manifold_folder import ManifoldFolder, hash_manifold_files
     pos_label, neg_label = (
         name.split(".", 1) if "." in name else (name, f"{name}_neg")
     )
@@ -404,7 +403,7 @@ class TestGgufFold:
         from drowse.store.gguf import export_gguf_manifold
 
         # manifold.json but no fitted tensor for the model.
-        from drowse.store.manifolds import create_discover_manifold_folder
+        from drowse.store.manifold_authoring import create_discover_manifold_folder
         create_discover_manifold_folder(
             "default", "happy.sad", "x", fit_mode="pca",
             node_corpora={"happy": ["a"], "sad": ["b"]},
@@ -423,7 +422,7 @@ class TestGgufFold:
         from drowse.store import gguf as gguf_io
         from drowse.base import integrity
         from drowse.store.gguf import export_gguf_manifold
-        from drowse.store.manifolds import ManifoldFolder
+        from drowse.store.manifold_folder import ManifoldFolder
 
         folder = _make_full_manifold("default", "happy.sad")
         raw = folder / tensor_filename(_MODEL)
@@ -464,8 +463,8 @@ def test_default_probe_preflight_skips_unrelated_variant_hashes(
     from drowse.store.manifold_tensors import load_manifold
     from drowse.session.session import DrowseSession
     from drowse.base import integrity
-    from drowse.store.manifolds import ManifoldFolder
-    import drowse.store.manifolds as manifolds_module
+    from drowse.store.manifold_folder import ManifoldFolder
+    import drowse.store.bundled as bundled_module
     import drowse.store.bundled_probes as probes_module
 
     folder = _make_full_manifold("default", "probe")
@@ -493,7 +492,7 @@ def test_default_probe_preflight_skips_unrelated_variant_hashes(
 
     monkeypatch.setattr(integrity, "hash_file", track_hash)
     monkeypatch.setattr(probes_module, "load_default_manifolds", lambda: {})
-    monkeypatch.setattr(manifolds_module, "bundled_manifold_names", lambda: ["probe"])
+    monkeypatch.setattr(bundled_module, "bundled_manifold_names", lambda: ["probe"])
     session = StubSession()
     probes = DrowseSession._bootstrap_manifold_probes(
         cast(Any, session), [], include_fitted_defaults=True,

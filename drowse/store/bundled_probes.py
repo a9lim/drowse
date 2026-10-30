@@ -20,16 +20,17 @@ def load_default_manifolds() -> dict[str, list[str]]:
 
     A steering vector lives as a 2-node ``pca`` manifold, tagged
     (``manifold.json::tags``) for category-grouped probe bootstrap.  Triggers
-    first-run materialization of the bundled artifacts.
+    first-run materialization of the bundled artifacts, then reads the
+    memoized selector index rather than re-walking the tree.
     """
     from drowse.store.bundled import materialize_bundled_artifacts
-    from drowse.store.manifolds import iter_manifold_folders
+    from drowse.store.selectors import Selector, resolve
 
     materialize_bundled_artifacts()
     by_tag: dict[str, list[str]] = {}
-    for _ns, mf in iter_manifold_folders(namespace="default"):
-        for tag in mf.tags or []:
-            by_tag.setdefault(tag, []).append(mf.name)
+    for concept in resolve(Selector(kind="namespace", value="default")):
+        for tag in concept.tags:
+            by_tag.setdefault(tag, []).append(concept.name)
     return by_tag
 
 

@@ -16,7 +16,7 @@ from drowse.cli.runners import (
     _lens_fit_source_preflight_matches,
     _try_lens_fit_noop_preflight,
 )
-from drowse.store.manifold_folder import ManifoldFormatError
+from drowse.store.manifold_schema import ManifoldFormatError
 from drowse.store.manifold_authoring import create_discover_manifold_folder
 from tests.test_jlens_session import _PROMPTS, _StubSession
 

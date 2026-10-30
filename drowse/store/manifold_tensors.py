@@ -1,21 +1,11 @@
-"""Manifold on-disk tensor codec + the activation-row spool (io layer).
+"""The fitted-manifold tensor codec and the activation-row spool.
 
-The safetensors save/load for a fitted :class:`~drowse.geometry.manifold.Manifold`
-and the disk-backed :class:`ActivationRowStore` used by curved fitting. Both
-are persistence: atomic tempfile + ``os.replace`` writes, safetensors payloads,
-mmap row spools. They live in ``io`` — the persistence layer — rather than
-``geometry/manifold.py``, whose contract is pure-tensor fp32 subspace + manifold
-math with no session/IO coupling.
-
-``io`` importing ``core``'s dataclasses (:class:`~drowse.geometry.manifold.Manifold`,
-:class:`~drowse.geometry.manifold.LayerSubspace`, :class:`~drowse.geometry.manifold.ManifoldDomain` via :func:`~drowse.geometry.manifold.domain_from_spec`) is the
-correct layering arrow: the codec needs those types, so the codec belongs beside
-the format it serializes, not inside the geometry module. These functions lived
-in ``core`` only because that arrow used to run the wrong way.
-
-The manifold folder / integrity / sidecar orchestration lives in
-:mod:`drowse.store.manifold_folder`; this module owns just the fitted-tensor pair
-read/write and the row spool.
+:func:`save_manifold` / :func:`load_manifold` read and write one fitted
+tensor/sidecar pair (atomic, fsynced, sidecar first) under the stable pair
+lock; the sidecar schema is :class:`drowse.store.manifold_schema.ManifoldSidecar`.
+:class:`ActivationRowStore` is the mmap-backed per-layer row spool curved
+fitting consumes.  Folder-level orchestration (manifest, proofs, locks) lives
+in :mod:`drowse.store.manifold_folder`.
 """
 from __future__ import annotations
 
@@ -25,7 +15,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Sequence, cast
+from typing import Sequence
 
 import torch
 from safetensors import safe_open
@@ -36,6 +26,18 @@ from drowse.geometry.manifold import (
     LayerSubspace,
     Manifold,
     domain_from_spec,
+)
+from drowse.store.manifold_folder import (
+    ManifoldFolder,
+    _locked_manifest,
+    manifold_pair_lock,
+    prove_pair,
+)
+from drowse.store.manifold_schema import (
+    SIDECAR_DERIVED_FIELDS,
+    SIDECAR_FIELDS,
+    ManifoldFormatError,
+    ManifoldSidecar,
 )
 
 log = logging.getLogger(__name__)
@@ -56,7 +58,7 @@ class ActivationRowStore:
     only when covariance math consumes a node slice.
     """
 
-    def __init__(self, node_sizes: Sequence[int]) -> None:
+    def __init__(self, node_sizes: Sequence[int], *, spool: bool = True) -> None:
         self.node_sizes = [int(size) for size in node_sizes]
         self.offsets: list[int] = []
         offset = 0
@@ -66,66 +68,11 @@ class ActivationRowStore:
         self.total_rows = offset
         self._tmp: tempfile.TemporaryDirectory[str] | None = (
             tempfile.TemporaryDirectory(prefix="drowse-manifold-rows-")
+            if spool else None
         )
         self._layers: dict[int, torch.Tensor] = {}
         self._owners: list[ActivationRowStore] = []
         self._closed = False
-
-    @classmethod
-    def load(
-        cls, path: Path, node_sizes: Sequence[int], *,
-        layer_indices: Sequence[int] | None = None,
-    ) -> "ActivationRowStore":
-        store = cls.__new__(cls)
-        store.node_sizes = [int(size) for size in node_sizes]
-        store.offsets = []
-        offset = 0
-        for size in store.node_sizes:
-            store.offsets.append(offset)
-            offset += size
-        store.total_rows = offset
-        selected = (
-            None if layer_indices is None
-            else {int(idx) for idx in layer_indices}
-        )
-        store._layers = {}
-        with safe_open(str(path), framework="pt", device="cpu") as tensors:
-            layer_keys: dict[int, str] = {}
-            for key in tensors.keys():
-                if not key.startswith("layer_"):
-                    raise ValueError(
-                        f"invalid activation-row cache key {key!r} at {path}"
-                    )
-                try:
-                    idx = int(key.split("_", 1)[1])
-                except ValueError as exc:
-                    raise ValueError(
-                        f"invalid activation-row cache key {key!r} at {path}"
-                    ) from exc
-                shape = tuple(int(dim) for dim in tensors.get_slice(key).get_shape())
-                if len(shape) != 2 or shape[0] != store.total_rows:
-                    raise ValueError(
-                        f"invalid activation-row cache tensor {key!r} at {path}"
-                    )
-                layer_keys[idx] = key
-                if selected is None or idx in selected:
-                    store._layers[idx] = tensors.get_tensor(key)
-            if not layer_keys:
-                raise ValueError(f"empty activation-row cache at {path}")
-        if not store._layers or any(
-            rows.ndim != 2 or int(rows.shape[0]) != store.total_rows
-            for rows in store._layers.values()
-        ):
-            raise ValueError(f"invalid activation-row cache at {path}")
-        if selected is not None and set(store._layers) != selected:
-            raise ValueError(
-                f"activation-row cache at {path} has layers "
-                f"{sorted(store._layers)}, need {sorted(selected)}"
-            )
-        store._tmp = None
-        store._owners = []
-        store._closed = False
-        return store
 
     @classmethod
     def load_shards(
@@ -143,15 +90,7 @@ class ActivationRowStore:
         """
         if not paths:
             raise ValueError("activation-row shard selection must not be empty")
-        store = cls.__new__(cls)
-        store.node_sizes = [int(size) for size in node_sizes]
-        store.offsets = []
-        offset = 0
-        for size in store.node_sizes:
-            store.offsets.append(offset)
-            offset += size
-        store.total_rows = offset
-        store._layers = {}
+        store = cls(node_sizes, spool=False)
         for idx, path in sorted(paths.items()):
             expected_key = f"layer_{int(idx)}"
             with safe_open(str(path), framework="pt", device="cpu") as tensors:
@@ -170,9 +109,6 @@ class ActivationRowStore:
                         f"at {path}"
                     )
                 store._layers[int(idx)] = tensors.get_tensor(expected_key)
-        store._tmp = None
-        store._owners = []
-        store._closed = False
         return store
 
     @classmethod
@@ -202,14 +138,9 @@ class ActivationRowStore:
                     f"activation-row stores overlap layers {sorted(overlap)}"
                 )
             layers.update(store._layers)
-        combined = cls.__new__(cls)
-        combined.node_sizes = node_sizes
-        combined.offsets = list(stores[0].offsets)
-        combined.total_rows = stores[0].total_rows
-        combined._tmp = None
+        combined = cls(node_sizes, spool=False)
         combined._layers = layers
         combined._owners = list(stores)
-        combined._closed = False
         return combined
 
     def _layer(self, idx: int, *, dim: int, dtype: torch.dtype) -> torch.Tensor:
@@ -247,27 +178,6 @@ class ActivationRowStore:
     def flat_rows(self, idx: int) -> torch.Tensor:
         return self._layers[idx]
 
-    def persist(self, path: Path) -> None:
-        if self._closed:
-            raise RuntimeError("activation-row store is closed")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
-        )
-        os.close(fd)
-        tmp = Path(tmp_name)
-        try:
-            save_file(
-                {
-                    f"layer_{idx}": rows.contiguous()
-                    for idx, rows in self._layers.items()
-                },
-                str(tmp),
-            )
-            os.replace(tmp, path)
-        finally:
-            tmp.unlink(missing_ok=True)
-
     def __iter__(self) -> Iterator[dict[int, torch.Tensor]]:
         for node_idx in range(len(self.node_sizes)):
             yield self.node_rows(node_idx)
@@ -298,56 +208,29 @@ def _replace_manifold_file(source: Path, target: Path) -> None:
 
     os.replace(source, target)
 
-# Provenance the *fit* stamps into ``metadata`` and the writer copies straight
-# through to the sidecar.  All of it is informational — the runtime hot path
-# reads the tensor and never the sidecar — but each field is what lets a later
-# reader prove a cached fit is current, or lets `manifold show` / the webui
-# inspector explain how the fit was reached:
-#
-# - identity/staleness: ``nodes_sha256`` (corpus+geometry key), ``capture_sha256``,
-#   ``model_fingerprint``, ``fit_policy_version``;
-# - SAE-space fits: ``sae_release`` / ``sae_revision`` / ``sae_fingerprint`` /
-#   ``sae_ids_by_layer`` / ``sae_full_coverage``;
-# - metric labels: ``share_metric`` (share weighting) and ``subspace_metric``
-#   (``mahalanobis`` = whitened/Fisher PCA, ``euclidean`` = a raw-δ̂ basis);
-# - curved-fit summaries: ``rbf_smoothing_per_layer`` ``{L: {lambda, edf, gcv}}``
-#   and ``sigma_field_per_layer`` ``{L: {sigma_mean, sigma_min, sigma_max,
-#   lambda}}`` — the σ-RBF tensors themselves ride the safetensors;
-# - discover-mode: ``fit_mode`` + ``hyperparams`` + ``diagnostics`` (lifted by
-#   ``canonical_manifold_sidecar_payload``), plus, for ``fit_mode="auto"`` only,
-#   ``resolved_fit_mode`` / ``topology_winner`` / ``topology_candidates`` — the
-#   ranked GCV+persistence evidence behind the flat-vs-curved-vs-periodic call;
-# - per-node provenance aligned index-by-index with ``node_labels``:
-#   ``node_roles`` (``None`` = standard assistant baseline) and ``node_kinds``;
-# - baked merges: ``components`` / ``bake_policy``; cross-model transfers:
-#   ``source_model_id`` / ``source_model_fingerprint`` /
-#   ``transfer_quality_estimate`` (written in the initial sidecar so pair
-#   publication has no post-save patch crash window).
-#
-# Deliberately absent: everything the writer derives from the ``Manifold``
-# itself (identity, ``fitted_layers``, ``mahalanobis_share_per_layer``,
-# ``origin_per_layer``). Those are computed from the fitted object above and
-# must win over anything a caller happens to pass.
-_WRITER_PROVENANCE_KEYS = (
-    "nodes_sha256", "capture_sha256", "capture_version",
-    "capture_render_sha256", "baseline_prompts_sha256",
-    "model_fingerprint", "model_source_fingerprint", "fit_policy_version",
-    "sae_release", "sae_revision", "sae_fingerprint", "sae_ids_by_layer",
-    "sae_full_coverage",
-    "share_metric", "subspace_metric",
-    "rbf_smoothing_per_layer", "sigma_field_per_layer",
-    "resolved_fit_mode", "topology_winner", "topology_candidates",
-    "node_roles", "node_kinds",
-    "components", "bake_policy",
-    "source_model_id", "source_model_fingerprint", "transfer_quality_estimate",
-)
+def fitted_tensor_layers(tensor_path: Path) -> tuple[int, ...] | None:
+    """Fitted layer roster off the safetensors header alone (no payload read).
 
-# Read-side annotations ``_load_manifold_locked`` stamps onto a loaded
-# manifold's ``metadata`` that must never reach disk.  ``_tensor_sha256`` is the
-# digest the integrity manifest proved for the payload just read;
-# ``fit.bake.merge_into_manifold`` consumes it as component provenance.  A
-# round-trip (load → transfer → save) carries them along, so the unknown-key
-# guard has to tolerate exactly these.
+    ``None`` when the header is unreadable.
+    """
+    from safetensors import SafetensorError
+
+    try:
+        with safe_open(str(tensor_path), framework="pt", device="cpu") as tensors:
+            return tuple(sorted({
+                int(key.split(".", 1)[0].split("_", 1)[1])
+                for key in tensors.keys()
+                if key.startswith("layer_") and key.endswith(".mean")
+            }))
+    except (OSError, ValueError, SafetensorError):
+        return None
+
+
+# Read-side annotations ``load_manifold`` stamps onto a loaded manifold's
+# ``metadata`` that must never reach disk.  ``_tensor_sha256`` is the digest the
+# integrity manifest proved for the payload just read; ``fit.bake`` consumes it
+# as component provenance.  A round-trip (load -> transfer -> save) carries it
+# along, so the writer tolerates exactly these keys.
 _TRANSIENT_METADATA_KEYS = frozenset({"_tensor_sha256"})
 
 
@@ -372,17 +255,11 @@ def save_manifold(
     on disk is the read-side affine marker ``load_manifold`` keys on, so a
     folded-vector artifact and a fitted manifold share one save/load path.
     """
-    from drowse.store.manifold_folder import (
-        MANIFOLD_SIDECAR_FIELDS, canonical_manifold_sidecar_payload,
-        validate_manifold_sidecar_payload,
-    )
-
-    # A key outside the exact sidecar schema would be dropped before the
-    # canonical-shape assert below ever sees it, so that assert catches a
-    # *missing* field but is structurally blind to an extra one.  Reject up
-    # front: a fit author adding a provenance key must add it to the schema
-    # (a format-version bump) rather than watch it vanish silently.
-    unknown = set(metadata) - MANIFOLD_SIDECAR_FIELDS - _TRANSIENT_METADATA_KEYS
+    # The writer derives every identity field from ``manifold`` itself; the
+    # caller's metadata supplies provenance only.  A key outside the sidecar
+    # schema would otherwise vanish silently — a new provenance field must be
+    # added to the schema instead.
+    unknown = set(metadata) - SIDECAR_FIELDS - _TRANSIENT_METADATA_KEYS
     if unknown:
         raise ValueError(
             f"manifold writer metadata has unknown key(s): {sorted(unknown)}"
@@ -432,50 +309,26 @@ def save_manifold(
             tensors[f"layer_{idx}.sigma_poly_coeffs"] = (
                 sub.sigma_poly_coeffs.contiguous().to(torch.float32).cpu()
             )
-    from drowse import __version__ as _drowse_version
-
-    sidecar: dict[str, object] = canonical_manifold_sidecar_payload(
+    provenance = {
+        key: value for key, value in metadata.items()
+        if key in SIDECAR_FIELDS and key not in SIDECAR_DERIVED_FIELDS
+    }
+    provenance.setdefault("method", "manifold_pca")
+    sidecar = ManifoldSidecar.build(
         name=manifold.name,
-        method=cast(str, metadata.get("method", "manifold_pca")),
-        drowse_version=_drowse_version,
         domain=manifold.domain.to_spec(),
         node_labels=list(manifold.node_labels),
         feature_space=manifold.feature_space,
-        fit_mode=cast(str, metadata.get("fit_mode", "authored")),
-        hyperparams=cast(dict[str, Any], metadata.get("hyperparams", {})),
-        diagnostics=cast(dict[str, Any], metadata.get("diagnostics", {})),
-        node_spread_per_layer=cast(
-            dict[str, Any], metadata.get("node_spread_per_layer", {}),
-        ),
         fitted_layers=sorted(manifold.layers),
-        semantic_metadata=metadata,
-    )
-    # Per-layer Mahalanobis share weight (whitened bake-score analogue).
-    # Stored as ``{str(idx): float}`` like EV; absent when no whitener was
-    # available at fit time, in which case the apply-time share weighting
-    # falls back to the Euclidean centroid-spread.
-    if manifold.mahalanobis_share:
-        sidecar["mahalanobis_share_per_layer"] = {
-            str(idx): float(v)
-            for idx, v in manifold.mahalanobis_share.items()
-        }
-    # Per-layer origin ``O_L`` (the authoring-coordinate foot of the neutral
-    # mean) — the cold-start foot seed.  Stored ``{str(L): [coord, ...]}`` like
-    # the other per-layer bakes; absent on a fit with no neutral means.
-    if manifold.origin:
-        sidecar["origin_per_layer"] = {
+        mahalanobis_share_per_layer={
+            str(idx): float(v) for idx, v in manifold.mahalanobis_share.items()
+        },
+        origin_per_layer={
             str(idx): [float(c) for c in o.reshape(-1).tolist()]
             for idx, o in manifold.origin.items()
-        }
-    for key in _WRITER_PROVENANCE_KEYS:
-        if key in metadata:
-            sidecar[key] = metadata[key]
-
-    if set(sidecar) != MANIFOLD_SIDECAR_FIELDS:
-        raise ValueError("manifold writer produced a non-canonical sidecar")
-    validate_manifold_sidecar_payload(sidecar, location="manifold writer sidecar")
-
-    from drowse.store.manifold_folder import manifold_pair_lock
+        },
+        **provenance,
+    ).to_payload()
 
     with manifold_pair_lock(path):
         sidecar_path = path.with_suffix(".json")
@@ -530,19 +383,18 @@ def save_manifold(
 def load_manifold(
     path: str | Path, *, verify_manifest: bool = True,
 ) -> Manifold:
-    """Load a fitted manifold, verifying its targeted manifest pair by default."""
-    from drowse.store.manifold_folder import _locked_manifest, manifold_pair_lock
+    """Load a fitted manifold, proving its manifest pair by default.
 
+    With ``verify_manifest`` the folder manifest must prove both halves of
+    this pair, and a non-baked fit must also be current for the live corpus
+    (``nodes_sha256``) and the current numerical fit policy.
+    """
     resolved = Path(path)
     if verify_manifest:
         # Global lock order for fitted artifacts is folder -> tensor pair.
-        # Fit/publication already uses this order; readers must match it or a
-        # reader holding the pair can deadlock a fitter holding the folder.
         with _locked_manifest(resolved.parent):
             with manifold_pair_lock(resolved):
-                return _load_manifold_locked(
-                    resolved, verify_manifest=verify_manifest,
-                )
+                return _load_manifold_locked(resolved, verify_manifest=True)
     with manifold_pair_lock(resolved):
         return _load_manifold_locked(resolved, verify_manifest=False)
 
@@ -551,72 +403,31 @@ def _load_manifold_locked(
     path: str | Path, *, verify_manifest: bool = True,
 ) -> Manifold:
     """Read one fitted manifold while its tensor/sidecar pair lock is held."""
-    from drowse.store.manifold_folder import (
-        ManifoldFormatError,
-        load_manifold_sidecar_data,
-    )
-
     path = Path(path)
-    manifest_path = path.parent / "manifold.json"
-    verified_tensor_sha256: str | None = None
-    folder_view: Any | None = None
-    if verify_manifest and manifest_path.exists():
-        from drowse.base.integrity import verify_integrity
-        from drowse.store.manifold_folder import ManifoldFolder
-
+    folder_view: ManifoldFolder | None = None
+    if verify_manifest and (path.parent / "manifold.json").exists():
         folder_view = ManifoldFolder.load(path.parent, verify_manifest=False)
-        files = folder_view.files
-        pair_names = (path.name, path.with_suffix(".json").name)
-        missing = [name for name in pair_names if name not in files]
-        if missing:
+        if not prove_pair(path.parent, path, folder_view.files):
             raise ManifoldFormatError(
-                f"manifold integrity manifest has no proof for {missing}"
+                f"manifold integrity manifest has no proof for fitted pair {path.name}"
             )
-        expected = {name: files[name] for name in pair_names}
-        for name, digest in expected.items():
-            if (
-                not isinstance(digest, str)
-                or len(digest) != 64
-                or any(char not in "0123456789abcdef" for char in digest)
-            ):
-                raise ManifoldFormatError(
-                    f"manifold integrity manifest has invalid sha256 for "
-                    f"selected file {name!r}"
-                )
-        ok, bad = verify_integrity(path.parent, expected)
-        if not ok:
-            raise ManifoldFormatError(
-                f"manifold integrity check failed for {path.name}: {bad}"
-            )
-        verified_tensor_sha256 = str(expected[path.name])
     tensors = load_file(str(path))
-    sidecar_path = path.with_suffix(".json")
-    sidecar = load_manifold_sidecar_data(sidecar_path)
-    if verified_tensor_sha256 is not None:
-        sidecar["_tensor_sha256"] = verified_tensor_sha256
-    if (
-        verify_manifest
-        and manifest_path.exists()
-        and sidecar["fit_mode"] != "baked"
-    ):
-        # ``load_manifold`` holds the folder lock outside the pair lock.
-        if folder_view is None:
-            raise AssertionError("validated manifold folder view is unavailable")
-        current_nodes = folder_view.nodes_sha256()
-        if sidecar.get("nodes_sha256") != current_nodes:
-            raise ManifoldFormatError(
-                f"fitted manifold {path.name} is stale for the live corpus/"
-                "domain/template inputs; refit before loading"
-            )
-        if sidecar.get("fit_policy_version") != MANIFOLD_FIT_POLICY_VERSION:
-            raise ManifoldFormatError(
-                f"fitted manifold {path.name} uses an older numerical fit "
-                "policy; refit it with the current drowse"
-            )
+    sidecar = ManifoldSidecar.load(path.with_suffix(".json")).to_payload()
+    if folder_view is not None:
+        sidecar["_tensor_sha256"] = folder_view.files[path.name]
+        if sidecar["fit_mode"] != "baked":
+            if sidecar["nodes_sha256"] != folder_view.nodes_sha256():
+                raise ManifoldFormatError(
+                    f"fitted manifold {path.name} is stale for the live corpus/"
+                    "domain/template inputs; refit before loading"
+                )
+            if sidecar["fit_policy_version"] != MANIFOLD_FIT_POLICY_VERSION:
+                raise ManifoldFormatError(
+                    f"fitted manifold {path.name} uses an older numerical fit "
+                    "policy; refit it with the current drowse"
+                )
     # The shared, layer-agnostic node_coords tensor — pop it before the
     # per-layer key split, which assumes ``layer_<idx>.<field>``.
-    from drowse.store.manifold_folder import ManifoldFormatError
-
     node_coords = tensors.pop("node_coords", None)
     if node_coords is None:
         raise ManifoldFormatError("fitted manifold tensor is missing node_coords")
@@ -695,9 +506,6 @@ def _load_manifold_locked(
         )
 
     domain = domain_from_spec(sidecar["domain"])
-    if node_coords is None:
-        node_coords = torch.zeros(0, domain.intrinsic_dim)
-
     maha_raw = sidecar["mahalanobis_share_per_layer"]
     mahalanobis_share: dict[int, float] = {
         int(k): float(v) for k, v in maha_raw.items()

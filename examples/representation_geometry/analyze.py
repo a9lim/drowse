@@ -25,7 +25,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from data import PROBES  # noqa: E402  # pyright: ignore[reportAttributeAccessIssue]  # sibling script module inserted above
 
-from drowse.store.manifold_folder import load_manifold_sidecar_data  # noqa: E402
+from drowse.store.manifold_schema import ManifoldSidecar  # noqa: E402
 from drowse.store.manifold_tensors import load_manifold  # noqa: E402
 from drowse.base.paths import manifold_dir, tensor_filename  # noqa: E402
 
@@ -40,7 +40,7 @@ def load_fit(probe: str, model_id: str) -> tuple[np.ndarray, list[str], dict[str
     if not tensor.exists():
         sys.exit(f"no fit at {tensor}\n  run: drowse manifold fit {probe} -m {model_id}")
     manifold = load_manifold(tensor)
-    sidecar = load_manifold_sidecar_data(tensor.with_suffix(".json"))
+    sidecar = ManifoldSidecar.load(tensor.with_suffix(".json")).to_payload()
     coords = manifold.node_coords.detach().cpu().numpy().astype(
         np.float64, copy=False,
     )

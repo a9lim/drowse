@@ -286,14 +286,14 @@ def _warmup_session(session: DrowseSession) -> None:
 def _iter_manifold_folders(namespace: str | None):
     """Yield ``(namespace, ManifoldFolder)`` for every installed manifold.
 
-    Thin wrapper over :func:`drowse.store.manifolds.iter_manifold_folders` —
+    Thin wrapper over :func:`drowse.store.manifold_authoring.iter_manifold_folders` —
     the discovery walk lives in ``io`` so the server shares it without
     importing ``cli``.
 
     Materializes bundled manifolds (e.g. ``default/personas``) before
     the walk.  CLI verbs like ``manifold fit`` / ``pack show`` / ``pack ls``
     resolve folders *before* any session is constructed, so the session-
-    startup ``materialize_bundled_manifolds`` call hasn't fired yet —
+    startup ``materialize_bundled_artifacts`` call hasn't fired yet —
     without this hop, a user's first ``drowse manifold fit
     default/personas`` would miss the bundled folder and exit with "not
     found".  The format-version short-circuit inside the materialize
@@ -302,7 +302,7 @@ def _iter_manifold_folders(namespace: str | None):
     going through ``iter_manifold_folders`` directly stays correct.
     """
     from drowse.store.bundled import materialize_bundled_artifacts
-    from drowse.store.manifolds import iter_manifold_folders
+    from drowse.store.manifold_authoring import iter_manifold_folders
 
     materialize_bundled_artifacts()
     yield from iter_manifold_folders(namespace)

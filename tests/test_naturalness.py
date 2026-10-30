@@ -184,11 +184,9 @@ def test_naturalness_preflight_does_not_hash_fitted_payloads(
 
     import drowse.cli.runners as runners
     from drowse.base import integrity
-    from drowse.store.manifolds import (
-        ManifoldFolder,
-        create_manifold_folder,
-    )
-    from drowse.store.manifold_folder import canonical_manifold_sidecar_payload
+    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.manifold_authoring import create_manifold_folder
+    from drowse.store.manifold_schema import ManifoldSidecar
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
@@ -203,11 +201,11 @@ def test_naturalness_preflight_does_not_hash_fitted_payloads(
     tensor = folder / "unrelated.safetensors"
     sidecar = folder / "unrelated.json"
     tensor.write_bytes(b"unrelated fitted payload")
-    sidecar.write_text(json.dumps(canonical_manifold_sidecar_payload(
-        name="behavior", method="manifold_pca", drowse_version="0",
+    sidecar.write_text(json.dumps(ManifoldSidecar.build(
+        name="behavior", method="manifold_pca",
         domain=domain, node_labels=["a", "b", "c"], feature_space="raw",
         fit_mode="authored",
-    )))
+    ).to_payload()))
     ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
         tensor, sidecar,
     )

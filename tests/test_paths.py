@@ -168,17 +168,6 @@ def test_safe_model_id_is_bijective_across_slash_and_literal_double_underscore()
     assert paths.safe_model_id("org/model") != paths.safe_model_id("org__model")
 
 
-def test_sidecar_filename_partners_tensor():
-    assert paths.sidecar_filename("google/gemma-2-2b-it", release=None) == f"{GOOGLE_2B}.json"
-    assert paths.sidecar_filename(
-        "google/gemma-2-2b-it", release="gemma-scope-2b-pt-res-canonical",
-    ) == f"{GOOGLE_2B}_sae-{paths.encode_release_id('gemma-scope-2b-pt-res-canonical')}.json"
-    assert paths.sidecar_filename(
-        "Qwen/Qwen2.5-7B-Instruct",
-        transferred_from="google/gemma-3-4b-it",
-    ) == f"{QWEN_2_5}_from-{paths.encode_release_id('google/gemma-3-4b-it')}.json"
-
-
 def test_safe_from_suffix_slugs_unsafe_chars():
     # Source ids use the same reversible lowercase identity codec as releases.
     assert paths.safe_from_suffix(None) == ""
@@ -194,3 +183,19 @@ def test_role_like_text_is_part_of_raw_model_id() -> None:
     assert paths.parse_tensor_filename(name) == (
         paths.safe_model_id("org/model_role-pirate"), None,
     )
+
+
+def test_tensor_filename_for_variant_maps_selector_variants():
+    model = "google/gemma-2-2b-it"
+    canonical = paths.tensor_filename(model)
+    assert paths.tensor_filename_for_variant(model, None) == canonical
+    assert paths.tensor_filename_for_variant(model, "raw") == canonical
+    assert paths.tensor_filename_for_variant(model, "role-pirate") == canonical
+    assert paths.tensor_filename_for_variant(model, "sae-rel") == paths.tensor_filename(
+        model, release="rel",
+    )
+    encoded = paths.encode_release_id("Qwen/Qwen2.5-7B-Instruct")
+    assert paths.tensor_filename_for_variant(model, f"from-{encoded}") == paths.tensor_filename(
+        model, transferred_from="Qwen/Qwen2.5-7B-Instruct",
+    )
+    assert paths.tensor_filename_for_variant(model, "pca") is None

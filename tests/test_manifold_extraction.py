@@ -22,8 +22,9 @@ from drowse.fit import capture as V
 from drowse.events import EventBus, ManifoldExtracted
 from drowse.fit.pipeline import ManifoldExtractionPipeline
 from drowse.sae.backend import MockSaeBackend
-from drowse.store.manifolds import MANIFOLD_FORMAT_VERSION, ManifoldFolder
-from drowse.base.paths import sidecar_filename, tensor_filename
+from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
+from drowse.store.manifold_folder import ManifoldFolder
+from drowse.base.paths import tensor_filename
 from tests._whitener import synthetic_means, synthetic_whitener
 
 _LABELS = ["calm", "uneasy", "afraid", "frantic", "numb"]
@@ -202,7 +203,7 @@ def test_fit_produces_manifold(tmp_path: Path) -> None:
 
 
 def test_templated_fit_rematerializes_value_and_assistant_edits() -> None:
-    from drowse.store.manifolds import create_manifold_from_template
+    from drowse.store.manifold_authoring import create_manifold_from_template
     from drowse.store.templates import create_template_folder
 
     create_template_folder(
@@ -240,7 +241,7 @@ def test_template_mutation_between_resolve_and_hash_cannot_publish_stale_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from drowse.fit.pipeline import ManifoldAuthoringChangedError
-    from drowse.store.manifolds import create_manifold_from_template
+    from drowse.store.manifold_authoring import create_manifold_from_template
     from drowse.store.templates import TemplateFolder, create_template_folder
 
     create_template_folder(
@@ -284,7 +285,7 @@ def test_fit_can_restrict_transformer_layers(tmp_path: Path) -> None:
     manifold = pipe.fit(folder, layer_indices=[1, 3])
     assert sorted(manifold.layers) == [1, 3]
 
-    from drowse.store.manifolds import ManifoldSidecar
+    from drowse.store.manifold_schema import ManifoldSidecar
     from drowse.base.paths import tensor_filename
 
     sidecar = ManifoldSidecar.load(
@@ -652,7 +653,7 @@ def test_interrupted_pair_publish_is_retryable(
     with pytest.raises(OSError, match="injected"):
         pipe.fit(folder)
     assert not (folder / tensor_filename("stub-model")).exists()
-    assert (folder / sidecar_filename("stub-model")).exists()
+    assert (folder / Path(tensor_filename("stub-model")).with_suffix(".json").name).exists()
 
     monkeypatch.setattr(
         manifold_module, "_replace_manifold_file", real_replace,
@@ -1361,7 +1362,7 @@ def test_fit_writes_tensor_and_manifest(tmp_path: Path) -> None:
     folder = _author_manifold(tmp_path)
     ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
     tensor_name = tensor_filename("stub-model")
-    sidecar_name = sidecar_filename("stub-model")
+    sidecar_name = Path(tensor_filename("stub-model")).with_suffix(".json").name
     assert (folder / tensor_name).exists()
     assert (folder / sidecar_name).exists()
     mf = ManifoldFolder.load(folder)
@@ -2102,13 +2103,13 @@ def test_fit_rejects_poisedness_failure(tmp_path: Path) -> None:
         ],
     }
     coords = [[t, t] for t in (0.0, 0.25, 0.5, 0.75, 1.0)]
-    with pytest.warns(UserWarning, match="poised"):
-        folder = _author_manifold(
-            tmp_path, labels=labels, domain=domain, coords=coords,
-        )
-        ManifoldFolder.load(folder)
-    with pytest.warns(UserWarning, match="poised"), \
-            pytest.raises(ValueError, match="poisedness"):
+    # Loading never warns (the poisedness advisory is authoring-time); the
+    # fit itself refuses the layout.
+    folder = _author_manifold(
+        tmp_path, labels=labels, domain=domain, coords=coords,
+    )
+    ManifoldFolder.load(folder)
+    with pytest.raises(ValueError, match="poisedness"):
         ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
 
 
@@ -2201,7 +2202,7 @@ def test_discover_pca_produces_affine_subspaces(tmp_path: Path) -> None:
         assert sub.node_coords.shape[1] == sub.rank   # (K, R)
     # subspace_metric is always "mahalanobis": the stub carries a covering
     # whitener and there is no Euclidean fit path.
-    sidecar = json.loads((folder / sidecar_filename("stub-model")).read_text())
+    sidecar = json.loads((folder / Path(tensor_filename("stub-model")).with_suffix(".json").name).read_text())
     assert sidecar["subspace_metric"] == "mahalanobis"
 
 
@@ -2256,7 +2257,7 @@ def test_discover_records_fit_mode_and_diagnostics(tmp_path: Path) -> None:
     )
     ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
 
-    sidecar = json.loads((folder / sidecar_filename("stub-model")).read_text())
+    sidecar = json.loads((folder / Path(tensor_filename("stub-model")).with_suffix(".json").name).read_text())
     assert sidecar["fit_mode"] == "pca"
     assert "diagnostics" in sidecar
     diag = sidecar["diagnostics"]
@@ -2322,7 +2323,7 @@ def test_discover_cache_invalidates_on_fit_mode_change(tmp_path: Path) -> None:
         hyperparams={"max_dim": 4},
     )
     ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
-    sidecar_path = folder / sidecar_filename("stub-model")
+    sidecar_path = folder / Path(tensor_filename("stub-model")).with_suffix(".json").name
     sidecar_pca = json.loads(sidecar_path.read_text())
     assert sidecar_pca["fit_mode"] == "pca"
 

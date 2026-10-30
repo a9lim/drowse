@@ -268,7 +268,7 @@ def test_pole_alias_resolves_to_manifold_term_with_trigger(
     bipolar-pole alias resolution moved to the manifold tier, so a bare pole
     no longer produces a signed vector.)
     """
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     from drowse.steering.grammar import ManifoldTerm, parse_expr
     create_discover_manifold_folder(
         "default", "deer.wolf", "x", fit_mode="pca",

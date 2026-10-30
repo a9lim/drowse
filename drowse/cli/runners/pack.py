@@ -14,7 +14,7 @@ from drowse.cli.runners.shared import (
 
 def _run_pack_ls(args: argparse.Namespace) -> None:
     import json as _json
-    from drowse.store.manifolds import domain_label
+    from drowse.store.manifold_schema import domain_label
 
     rows = list(_iter_manifold_folders(getattr(args, "namespace", None)))
     if getattr(args, "json_output", False):
@@ -45,7 +45,7 @@ def _run_pack_ls(args: argparse.Namespace) -> None:
 
 def _run_pack_show(args: argparse.Namespace) -> None:
     import json as _json
-    from drowse.store.manifolds import domain_label
+    from drowse.store.manifold_schema import domain_label
 
     name = args.name
     target_ns = None
@@ -68,7 +68,7 @@ def _run_pack_show(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
     ns, mf = matches[0]
-    from drowse.store.manifolds import manifold_fit_summary
+    from drowse.store.manifold_lifecycle import manifold_fit_summary
 
     fitted = [
         manifold_fit_summary(mf.sidecar(stem), stem)
@@ -92,13 +92,10 @@ def _run_pack_show(args: argparse.Namespace) -> None:
         except (FileNotFoundError, KeyError, ValueError):
             derived_node_coords = []
 
-    # Per-node roles ride alongside coords in the JSON shape; ``None``
-    # for a given node means "pooled under the standard assistant
-    # baseline" (the legacy / non-role default).  Padded to the label
-    # count so consumers can index by node.
-    node_roles_padded = list(mf.node_roles) + [None] * (
-        len(mf.node_labels) - len(mf.node_roles)
-    )
+    # Per-node roles ride alongside coords; ``None`` for a given node means
+    # "pooled under the standard assistant baseline".  ``mf.roles`` is
+    # padded to the label count so consumers can index by node.
+    node_roles_padded = mf.roles
     if getattr(args, "json_output", False):
         # Share the session-independent summary serializer with the
         # server's ``GET /drowse/v1/manifolds/{ns}/{name}`` route so both
@@ -107,7 +104,7 @@ def _run_pack_show(args: argparse.Namespace) -> None:
         # ``node_coords == []`` — since the derived per-model layout lives
         # in the fitted safetensors; the text path below still surfaces
         # the derived coords for interactive use.
-        from drowse.store.manifolds import manifold_summary
+        from drowse.store.manifold_lifecycle import manifold_summary
         print(_json.dumps(
             manifold_summary(mf.folder, include_fits=True), indent=2,
         ))
@@ -289,7 +286,7 @@ def _run_pack_push(args: argparse.Namespace) -> None:
 
 
 def _run_pack_rm(args: argparse.Namespace) -> None:
-    from drowse.store.manifolds import remove_manifold_folder
+    from drowse.store.manifold_lifecycle import remove_manifold_folder
 
     ns, name = _resolve_manifold_ns_name(args.selector)
     # Removal is irrecoverable for every namespace *except* bundled
@@ -320,7 +317,7 @@ def _run_pack_rm(args: argparse.Namespace) -> None:
 
 
 def _run_pack_clear(args: argparse.Namespace) -> None:
-    from drowse.store.manifolds import clear_manifold_tensors
+    from drowse.store.manifold_lifecycle import clear_manifold_tensors
 
     ns, name = _resolve_manifold_ns_name(args.selector)
     # ``args.model`` is the raw model id; ``clear_manifold_tensors`` owns the
@@ -334,7 +331,7 @@ def _run_pack_clear(args: argparse.Namespace) -> None:
 
 
 def _run_pack_refresh(args: argparse.Namespace) -> None:
-    from drowse.store.manifolds import refresh_manifold
+    from drowse.store.manifold_lifecycle import refresh_manifold
 
     ns, name = _resolve_manifold_ns_name(args.selector)
     # ``args.model`` is the raw model id; ``refresh_manifold`` converts to

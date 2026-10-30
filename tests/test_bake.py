@@ -8,10 +8,9 @@ import pytest
 import torch
 
 from drowse.fit import bake
-from drowse.store.manifolds import (
-    ManifoldFolder, ManifoldSidecar,
-    create_baked_manifold_folder, save_baked_manifold_tensor,
-)
+from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
+from drowse.store.manifold_folder import ManifoldFolder
+from drowse.store.manifold_schema import ManifoldSidecar
 from drowse.store.manifold_tensors import load_manifold
 from drowse.fit.capture import fold_directions_to_subspace, folded_directions
 from drowse.base.paths import encode_release_id, model_dir, safe_model_id, tensor_filename
@@ -138,7 +137,7 @@ def _make_concept_with_tensors(
     is shared across every model's per-model tensor, mirroring how
     :func:`bake.merge_into_manifold` writes multi-model output.
     """
-    folder: Path | None = None
+    tensors: list[BakedTensor] = []
     for model_id, profile in model_tensors.items():
         _seed_neutral_cache(model_id, profile)
         means = {layer: torch.zeros_like(direction) for layer, direction in profile.items()}
@@ -149,19 +148,11 @@ def _make_concept_with_tensors(
             ),
             label="test",
         )
-        if folder is None:
-            folder, _mf = create_baked_manifold_folder(
-                ns, name, "x", manifold, model_id, method="folded_vector",
-                model_fingerprint=f"fp:{model_id}",
-            )
-        else:
-            save_baked_manifold_tensor(
-                folder, manifold, model_id, method="folded_vector",
-                model_fingerprint=f"fp:{model_id}",
-            )
-    assert folder is not None
-    ManifoldFolder.load(folder).write_metadata()
-    return folder
+        tensors.append(BakedTensor(
+            model_id=model_id, manifold=manifold, model_fingerprint=f"fp:{model_id}",
+            components={"0:default/x": {"selector": "default/x", "alpha": 1.0, "tensor_sha256": "0" * 64}},
+        ))
+    return publish_baked_manifold(ns, name, "x", tensors, method="merge")
 
 
 def _seed_neutral_cache(model_id: str, profile: dict[int, torch.Tensor]) -> None:
@@ -285,6 +276,8 @@ def test_transfer_variant_routes_concrete_tensor(
     payload["source_model_id"] = "src"
     payload["source_model_fingerprint"] = "fp:src"
     payload["model_fingerprint"] = "fp:target"
+    payload["components"] = None
+    payload["bake_policy"] = None
     target_sidecar.write_text(__import__("json").dumps(payload))
     ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
         target_tensor, target_sidecar,
@@ -350,9 +343,13 @@ def test_merge_into_manifold_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path:
         )
 
 
-def test_merge_retry_repairs_later_unproven_baked_pair(
+def test_merge_failure_mid_publication_leaves_no_destination(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
+    """A multi-model merge publishes all-or-nothing; a retry then succeeds."""
+    from drowse.base.paths import manifold_dir
+    from drowse.store import manifold_tensors
+
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     profiles = {
         "gemma": {0: torch.tensor([1.0])},
@@ -360,21 +357,22 @@ def test_merge_retry_repairs_later_unproven_baked_pair(
     }
     _make_concept_with_tensors(tmp_path, "default", "happy", profiles)
     _make_concept_with_tensors(tmp_path, "a9lim", "archaic", profiles)
-    real_update = ManifoldFolder.update_file_hashes
+    real_save = manifold_tensors.save_manifold
     calls = 0
 
-    def fail_second(self: ManifoldFolder, *paths: Path) -> None:
+    def fail_second(*args: Any, **kwargs: Any) -> None:
         nonlocal calls
         calls += 1
         if calls == 2:
-            raise OSError("injected baked manifest failure")
-        real_update(self, *paths)
+            raise OSError("injected baked publication failure")
+        real_save(*args, **kwargs)
 
-    monkeypatch.setattr(ManifoldFolder, "update_file_hashes", fail_second)
+    monkeypatch.setattr(manifold_tensors, "save_manifold", fail_second)
     expression = "default/happy + a9lim/archaic"
     with pytest.raises(OSError, match="injected"):
         bake.merge_into_manifold("bard", expression, model=None)
-    monkeypatch.setattr(ManifoldFolder, "update_file_hashes", real_update)
+    assert not manifold_dir("local", "bard").exists()
+    monkeypatch.setattr(manifold_tensors, "save_manifold", real_save)
 
     dst = bake.merge_into_manifold("bard", expression, model=None)
     loaded = ManifoldFolder.load(dst)
@@ -418,5 +416,6 @@ def test_legacy_projected_bake_requires_rebake(
         }
     }
     sidecar_path.write_text(__import__("json").dumps(payload))
+    mf = ManifoldFolder.load(folder, verify_manifest=False)
     with pytest.raises(Exception, match="invalid component provenance"):
-        ManifoldFolder.load(folder, verify_manifest=False)
+        mf.sidecar(tensor_path.stem)

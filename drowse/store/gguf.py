@@ -221,7 +221,7 @@ def export_gguf_manifold(
       - None → write alongside the safetensors (rejected for bundled manifolds,
         whose folder is restored on refresh)
     """
-    from drowse.store.manifolds import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
     from drowse.base.paths import (
         manifold_dir, parse_tensor_filename, tensor_filename,
     )

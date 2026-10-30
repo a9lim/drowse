@@ -8,7 +8,6 @@ silently substituting an offline Euclidean projection would change semantics.
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
@@ -73,25 +72,12 @@ def _manifold_tensor_path(ns: str, name: str, sid: str, variant: Optional[str]) 
     Role variants validate the canonical tensor's recorded baseline. Transfer
     and SAE variants select their concrete tensor suffix.
     """
-    from drowse.base.paths import manifold_dir, tensor_filename
+    from drowse.base.paths import manifold_dir, tensor_filename_for_variant
 
-    transferred_from: str | None = None
-    if variant in (None, "raw"):
-        release: Optional[str] = None
-    elif variant.startswith("sae-"):
-        release = variant[len("sae-"):]
-    elif variant.startswith("from-"):
-        release = None
-        transferred_from = variant[len("from-"):]
-    elif variant.startswith("role-"):
-        release = None
-    else:
+    filename = tensor_filename_for_variant(sid, variant, model_id_is_safe=True)
+    if filename is None:
         return None
-    path = manifold_dir(ns, name) / tensor_filename(
-        sid, release=release, transferred_from=transferred_from,
-        model_id_is_safe=True,
-        transferred_from_is_encoded=transferred_from is not None,
-    )
+    path = manifold_dir(ns, name) / filename
     return path if path.exists() and path.with_suffix(".json").exists() else None
 
 
@@ -301,96 +287,6 @@ def _term_desc(term: _MergeTerm) -> str:
     return f"{term.name} ({term.coeff})"
 
 
-def _resumable_baked_merge(
-    folder: Path,
-    *,
-    name: str,
-    description: str,
-    prepared_outputs: list[tuple[str, Any, dict[str, Any], str]],
-) -> tuple[bool, set[str]]:
-    """Validate an interrupted same-merge destination and its proven prefix."""
-
-    from drowse.store.manifold_folder import (
-        MANIFOLD_FORMAT_VERSION,
-        MERGE_BAKE_POLICY,
-        manifold_folder_tensor_paths,
-    )
-    from drowse.base.integrity import verify_integrity
-    from drowse.base.paths import tensor_filename
-
-    try:
-        payload = json.loads((folder / "manifold.json").read_text())
-    except (OSError, json.JSONDecodeError, TypeError):
-        return False, set()
-    first_manifold = prepared_outputs[0][1]
-    identity = {
-        "format_version": payload.get("format_version"),
-        "name": payload.get("name"),
-        "description": payload.get("description"),
-        "fit_mode": payload.get("fit_mode"),
-        "domain": payload.get("domain"),
-        "nodes": payload.get("nodes"),
-        "tags": payload.get("tags"),
-        "source": payload.get("source"),
-        "template_ref": payload.get("template_ref"),
-    }
-    expected_identity = {
-        "format_version": MANIFOLD_FORMAT_VERSION,
-        "name": name,
-        "description": description,
-        "fit_mode": "baked",
-        "domain": first_manifold.domain.to_spec(),
-        "nodes": [
-            {"label": label, "role": None, "kind": None}
-            for label in first_manifold.node_labels
-        ],
-        "tags": ["merge"],
-        "source": "local",
-        "template_ref": None,
-    }
-    if identity != expected_identity:
-        return False, set()
-
-    expected_by_path = {
-        folder / tensor_filename(sid, model_id_is_safe=True): (
-            sid, component_info, fingerprint,
-        )
-        for sid, _manifold, component_info, fingerprint in prepared_outputs
-    }
-    if any(
-        tensor_path not in expected_by_path
-        for tensor_path in manifold_folder_tensor_paths(folder)
-    ):
-        return False, set()
-    files = payload.get("files", {})
-    if not isinstance(files, dict):
-        return False, set()
-
-    completed: set[str] = set()
-    for tensor_path, (sid, component_info, fingerprint) in expected_by_path.items():
-        sidecar_path = tensor_path.with_suffix(".json")
-        names = (tensor_path.name, sidecar_path.name)
-        expected = {filename: files[filename] for filename in names if filename in files}
-        if len(expected) != 2 or not verify_integrity(folder, expected)[0]:
-            continue
-        try:
-            sidecar = json.loads(sidecar_path.read_text())
-        except (OSError, json.JSONDecodeError, TypeError):
-            return False, set()
-        if not (
-            sidecar.get("method") == "merge"
-            and sidecar.get("fit_mode") == "baked"
-            and sidecar.get("model_fingerprint") == fingerprint
-            and sidecar.get("components") == component_info
-            and sidecar.get("bake_policy") == MERGE_BAKE_POLICY
-        ):
-            return False, set()
-        completed.add(sid)
-    # A fully proven destination remains an ordinary exists conflict.  Resume is
-    # only for a missing/unproven suffix of this exact deterministic merge.
-    return len(completed) < len(prepared_outputs), completed
-
-
 def merge_into_manifold(
     name: str,
     expression: str,
@@ -435,10 +331,7 @@ def _merge_into_manifold_locked(
     into the baked tensor.  Returns the manifold folder path.
     """
     from drowse.fit.capture import fold_directions_to_subspace
-    from drowse.store.manifolds import (
-        create_baked_manifold_folder,
-        save_baked_manifold_tensor,
-    )
+    from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
     from drowse.base.paths import manifold_dir
 
     terms = _parse_merge_expr(expression)
@@ -465,7 +358,7 @@ def _merge_into_manifold_locked(
 
     description = f"Merged manifold: {' + '.join(_term_desc(t) for t in terms)}"
 
-    prepared_outputs: list[tuple[str, Any, dict[str, Any], str]] = []
+    prepared_outputs: list[BakedTensor] = []
     for sid in target_models:
         profiles_and_alphas: list[tuple[Profile, float]] = []
         component_info: dict[str, dict[str, Any]] = {}
@@ -517,42 +410,18 @@ def _merge_into_manifold_locked(
                 f"cannot bake {name!r} for {sid}: components were fitted for "
                 "different loaded weights; refit them for this session first"
             )
-        prepared_outputs.append((
-            sid, manifold, component_info, baked_fingerprint,
+        prepared_outputs.append(BakedTensor(
+            model_id=sid, manifold=manifold, model_fingerprint=baked_fingerprint,
+            components=component_info, model_id_is_safe=True,
         ))
 
-    # All models are resolved, integrity-checked, folded, and identity-checked
-    # before the first destination mutation. A late model failure therefore
-    # cannot leave a partial new folder or delete a prior good force target.
-    completed: set[str] = set()
-    folder: Optional[Path] = None
+    # Every model is resolved, integrity-checked, folded, and identity-checked
+    # before the destination is touched; publication then builds the whole
+    # folder in staging and swaps it in, so a late failure or a crash can never
+    # leave a partial merge or delete a prior good force target.
     if (dst / "manifold.json").exists() and not force:
-        resumable, completed = _resumable_baked_merge(
-            dst, name=name, description=description,
-            prepared_outputs=prepared_outputs,
-        )
-        if not resumable:
-            raise MergeError(f"{dst} exists; pass force=True to overwrite")
-        folder = dst
-    for sid, manifold, component_info, baked_fingerprint in prepared_outputs:
-        if sid in completed:
-            continue
-        if folder is None:
-            folder, _mf = create_baked_manifold_folder(
-                "local", name, description, manifold, sid,
-                method="merge", tags=["merge"], force=force,
-                components=component_info,
-                model_fingerprint=baked_fingerprint,
-                model_id_is_safe=True,
-            )
-        else:
-            save_baked_manifold_tensor(
-                folder, manifold, sid, method="merge", components=component_info,
-                model_fingerprint=baked_fingerprint,
-                model_id_is_safe=True,
-            )
-
-    # ``target_models`` is non-empty (shared_models raises on an empty
-    # intersection; the explicit-model branch is always a singleton).
-    assert folder is not None
-    return folder
+        raise MergeError(f"{dst} exists; pass force=True to overwrite")
+    return publish_baked_manifold(
+        "local", name, description, prepared_outputs,
+        method="merge", tags=["merge"], force=force,
+    )

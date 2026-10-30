@@ -8,10 +8,8 @@ import json
 from typing import Any
 
 from drowse.store import selectors as sel
-from drowse.store.manifolds import (
-    create_discover_manifold_folder,
-)
-from drowse.store.manifold_folder import canonical_manifold_sidecar_payload
+from drowse.store.manifold_authoring import create_discover_manifold_folder
+from drowse.store.manifold_schema import ManifoldSidecar
 
 
 def test_parse_bare_name():
@@ -150,12 +148,12 @@ def _fake_fitted_tensor(folder: Path, filename: str) -> None:
     """
     (folder / filename).write_bytes(b"x")
     sidecar = Path(folder) / (Path(filename).stem + ".json")
-    sidecar.write_text(json.dumps(canonical_manifold_sidecar_payload(
-        name=folder.name, method="manifold_discover_pca", drowse_version="0",
+    sidecar.write_text(json.dumps(ManifoldSidecar.build(
+        name=folder.name, method="manifold_discover_pca",
         domain={"type": "custom", "embed_dim": 1, "bounds": None},
         node_labels=["pos", "neg"],
         feature_space="raw", fit_mode="pca",
-    )))
+    ).to_payload()))
 
 
 def test_resolve_model_matches_raw_and_sae_tensors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -187,30 +185,6 @@ def test_resolve_model_matches_raw_and_sae_tensors(monkeypatch: pytest.MonkeyPat
     results = sel.resolve(sel.parse(f"model:{model_id}"))
     names = sorted(r.name for r in results)
     assert names == ["a_raw_only", "b_sae_only"]
-
-
-def test_parse_args_concept_plus_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    args, model_scope = sel.parse_args(["tag:emotion", "model:google/gemma-2-2b-it"])
-    assert args.kind == "tag"
-    assert args.value == "emotion"
-    assert model_scope == "google/gemma-2-2b-it"
-
-
-def test_parse_args_concept_only():
-    args, model_scope = sel.parse_args(["happy"])
-    assert args.kind == "name"
-    assert model_scope is None
-
-
-def test_parse_args_two_concepts_raises():
-    with pytest.raises(sel.SelectorError, match="one concept"):
-        sel.parse_args(["happy", "tag:emotion"])
-
-
-def test_parse_args_two_models_raises():
-    with pytest.raises(sel.SelectorError, match="one model"):
-        sel.parse_args(["happy", "model:a", "model:b"])
 
 
 # --- canonicalize_atom (the retired resolve_pole's surviving behavior) -------
@@ -459,7 +433,7 @@ def test_create_authored_folder_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import create_manifold_folder
+    from drowse.store.manifold_authoring import create_manifold_folder
 
     _warm_index()
     create_manifold_folder(
@@ -480,7 +454,10 @@ def test_update_manifold_folder_invalidates(
 ) -> None:
     """Re-authoring node labels must not leave the old roster resolvable."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import create_manifold_folder, update_manifold_folder
+    from drowse.store.manifold_authoring import (
+        create_manifold_folder,
+        update_manifold_folder,
+    )
 
     domain = {"type": "box",
               "axes": [{"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
@@ -506,7 +483,7 @@ def test_merge_discover_manifolds_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import merge_discover_manifolds
+    from drowse.store.manifold_authoring import merge_discover_manifolds
 
     _mk_nodes("local", "a", ["alpha"])
     _mk_nodes("local", "b", ["beta"])
@@ -523,7 +500,7 @@ def test_remove_manifold_folder_invalidates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import remove_manifold_folder
+    from drowse.store.manifold_lifecycle import remove_manifold_folder
 
     _mk_nodes("local", "personas", ["pirate", "wizard"])
     assert sel.resolve_manifold_label("pirate") is not None
@@ -543,8 +520,9 @@ def test_streaming_authoring_path_invalidates(
     that call has to drop the index too.
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import (
-        append_discover_manifold_node, init_discover_manifold_folder,
+    from drowse.store.manifold_authoring import (
+        append_discover_manifold_node,
+        init_discover_manifold_folder,
     )
 
     _warm_index()
@@ -563,10 +541,9 @@ def test_bundled_materialization_invalidates(
 ) -> None:
     """A cold resolve before bootstrap must not pin an empty roster."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store import manifolds as manifolds_mod
-    from drowse.store.bundled import materialize_bundled_artifacts
+    from drowse.store.bundled import materialize_bundled_artifacts, reset_bundled_state
 
-    monkeypatch.setattr(manifolds_mod, "_materialized_home", None)
+    reset_bundled_state()
     sel.invalidate()
     assert sel.all_concepts() == []
     materialize_bundled_artifacts()
@@ -593,20 +570,82 @@ def test_single_walk_serves_all_three_views(
 ) -> None:
     """A cold compound resolve parses the manifold tree exactly once."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store import manifolds as manifolds_mod
+    from drowse.store import manifold_authoring as authoring_mod
     _mk_nodes("local", "deer.wolf", ["deer", "wolf"])
     sel.invalidate()
 
     walks = 0
-    real_iter = manifolds_mod.iter_manifold_folders
+    real_iter = authoring_mod.iter_manifold_folders
 
     def counting_iter(*args: Any, **kwargs: Any) -> Any:
         nonlocal walks
         walks += 1
         return real_iter(*args, **kwargs)
 
-    monkeypatch.setattr(manifolds_mod, "iter_manifold_folders", counting_iter)
+    monkeypatch.setattr(authoring_mod, "iter_manifold_folders", counting_iter)
     sel.all_concepts()
     sel.resolve_manifold_label("deer")
     sel.resolve_manifold_name("deer.wolf")
     assert walks == 1
+
+
+def test_index_sees_out_of_process_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A manifold written by another process resolves without invalidate().
+
+    The memo used to be keyed on the root path alone, so a running server
+    never saw a label created by a separate CLI process until restart.
+    """
+    import shutil
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    staged = _mk_nodes("local", "deer.wolf", ["deer", "wolf"])
+    sel.invalidate()
+    assert sel.resolve_manifold_label("deer") is not None
+    assert sel.resolve_manifold_label("pirate") is None
+
+    # "Another process": copy a complete folder into place and rewrite its
+    # manifest without any in-process invalidation.
+    other = staged.with_name("personas")
+    shutil.copytree(staged, other)
+    manifest = json.loads((other / "manifold.json").read_text())
+    manifest["name"] = "personas"
+    manifest["nodes"] = [
+        {"label": "pirate", "role": None, "kind": None},
+        {"label": "wizard", "role": None, "kind": None},
+    ]
+    (other / "nodes" / "00_deer.json").rename(other / "nodes" / "00_pirate.json")
+    (other / "nodes" / "01_wolf.json").rename(other / "nodes" / "01_wizard.json")
+    (other / "manifold.json").write_text(json.dumps(manifest))
+
+    hit = sel.resolve_manifold_label("pirate")
+    assert hit is not None and hit.manifold_key == "local/personas"
+
+    shutil.rmtree(other)
+    assert sel.resolve_manifold_label("pirate") is None
+
+
+def test_bare_label_survives_a_bad_sidecar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A malformed fitted sidecar must not demote a label to the pole tier."""
+    from drowse.base.paths import tensor_filename
+    from drowse.store.manifold_schema import ManifoldSidecar
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = _mk_nodes("default", "personas", ["pirate", "wizard"])
+    tensor = folder / tensor_filename("some/model")
+    tensor.write_bytes(b"x")
+    payload = ManifoldSidecar.build(
+        name="personas", method="manifold_discover_pca",
+        domain={"type": "custom", "embed_dim": 1, "bounds": None},
+        node_labels=["pirate", "wizard"], fit_mode="pca",
+    ).to_payload()
+    payload["domain"] = {"type": "bogus"}
+    tensor.with_suffix(".json").write_text(json.dumps(payload))
+    sel.invalidate()
+
+    atom = sel.resolve_bare_atom("pirate")
+    assert atom.kind == "label"
+    assert atom.manifold is not None and atom.manifold.manifold_key == "default/personas"

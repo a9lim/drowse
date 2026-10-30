@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from data import PROBES  # noqa: E402  # pyright: ignore[reportAttributeAccessIssue]  # sibling script module inserted above
 
-from drowse.store.manifolds import create_manifold_from_template
+from drowse.store.manifold_authoring import create_manifold_from_template
 from drowse.store.templates import create_template_folder
 
 NS = "local"

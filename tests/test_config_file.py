@@ -123,7 +123,9 @@ def test_ensure_vectors_installed_all_present(monkeypatch: pytest.MonkeyPatch, t
     # against the just-dropped folder with nothing to install.  Reset the
     # process-scope materialize guard so it actually fires under this test's
     # DROWSE_HOME (in a real CLI run, config load is the first materialize).
-    monkeypatch.setattr("drowse.store.manifolds._materialized_home", None)
+    from drowse.store.bundled import reset_bundled_state
+
+    reset_bundled_state()
     c = cfg.ConfigFile(vectors="0.5 default/confident.uncertain")
     missing = cfg.ensure_vectors_installed(c, strict=False)
     assert missing == []
@@ -133,16 +135,16 @@ def test_bundled_manifolds_materialize_after_in_process_home_switch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """The process guard must not strand a newly selected artifact root."""
-    from drowse.store import manifolds as manifolds_mod
+    from drowse.store import bundled
     from drowse.base.paths import manifolds_dir
 
-    monkeypatch.setattr(manifolds_mod, "_materialized_home", None)
+    bundled.reset_bundled_state()
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "first"))
-    manifolds_mod.materialize_bundled_manifolds()
+    bundled.materialize_bundled_artifacts()
     assert (manifolds_dir() / "default" / "formal.casual").is_dir()
 
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "second"))
-    manifolds_mod.materialize_bundled_manifolds()
+    bundled.materialize_bundled_artifacts()
     assert (manifolds_dir() / "default" / "formal.casual").is_dir()
 
 
@@ -224,7 +226,7 @@ def test_bare_pole_validates_against_installed_packs(monkeypatch: pytest.MonkeyP
     ``_bare_concept_resolves`` rather than the old ``vectors/`` pole alias.
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     from drowse.store.selectors import invalidate
     create_discover_manifold_folder(
         "local", "deer.wolf", "x", fit_mode="pca",

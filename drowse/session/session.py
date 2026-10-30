@@ -4920,7 +4920,7 @@ class DrowseSession:
 
                 existing = ManifoldFolder.load(
                     folder, verify_manifest=False,
-                )._roles_padded()
+                ).roles
                 if not existing or not all(value == role for value in existing):
                     raise ValueError(
                         f"manifold {ns}/{name} already carries role baseline "
@@ -5018,13 +5018,13 @@ class DrowseSession:
 
         Both callers differ only in their corpus source (generate vs given); by
         the time they reach here they hold ``node_corpora`` (label → corpus) and
-        ``node_kinds`` (label → kind).  This rmtrees + re-authors the folder when
-        ``force`` or the manifest is missing (``node_corpora`` is consulted only
-        then, so a cache-hit caller may pass ``None``), then delegates to
-        :meth:`_fit_concept_manifold`.  Runs with ``_gen_lock`` already held by
-        the caller.
+        ``node_kinds`` (label → kind).  This re-authors the folder in one staged
+        swap when ``force`` or the manifest is missing (``node_corpora`` is
+        consulted only then, so a cache-hit caller may pass ``None``), then
+        delegates to :meth:`_fit_concept_manifold`.  Runs with ``_gen_lock``
+        already held by the caller.
         """
-        from drowse.store.manifolds import create_discover_manifold_folder
+        from drowse.store.manifold_authoring import create_discover_manifold_folder
         from drowse.store.manifold_folder import ManifoldFolder
         from drowse.base.paths import manifold_dir
 
@@ -5041,7 +5041,7 @@ class DrowseSession:
             if manifest.exists() and not force:
                 existing = ManifoldFolder.load(
                     folder, verify_manifest=False,
-                )._roles_padded()
+                ).roles
                 if not existing or not all(value == role for value in existing):
                     raise ValueError(
                         f"manifold {ns}/{name} already carries role baseline "
@@ -5053,15 +5053,12 @@ class DrowseSession:
                 node_roles: dict[str, str | None] | None = (
                     {label: role for label in node_corpora} if role else None
                 )
-                if folder.exists():
-                    from drowse.store.manifold_folder import reset_manifold_folder
-
-                    reset_manifold_folder(folder)
                 create_discover_manifold_folder(
                     ns, name, description, fit_mode="pca",
                     node_corpora=node_corpora,
                     hyperparams={"max_dim": 1, "var_threshold": 0.7},
                     node_roles=node_roles, node_kinds=node_kinds,
+                    force=force,
                 )
         return self._fit_concept_manifold(
             name, folder, sae=sae, sae_revision=sae_revision,
@@ -5659,11 +5656,9 @@ class DrowseSession:
         # Attach-only sweep: every fitted bundled multi-node manifold that the
         # tagged tier didn't already pick up (personas / emotions carry no
         # category tag, so they fall through to here).
-        from drowse.store.manifolds import (
-            ManifoldFolder,
-            ManifoldFormatError,
-            bundled_manifold_names,
-        )
+        from drowse.store.manifold_folder import ManifoldFolder
+        from drowse.store.manifold_schema import ManifoldFormatError
+        from drowse.store.bundled import bundled_manifold_names
 
         stem = safe_model_id(self.model_id)
         for name in bundled_manifold_names():

@@ -1,4 +1,4 @@
-"""On-disk format tests for drowse.store.manifolds — CPU-only, no model."""
+"""On-disk manifold format, authoring, lifecycle, and bundled tests — CPU-only."""
 from __future__ import annotations
 
 import json
@@ -11,32 +11,42 @@ import pytest
 import torch
 
 from drowse.store.alignment import LayerAlignment
-from drowse.store.manifolds import (
+from drowse.store.manifold_schema import (
     MANIFOLD_FORMAT_VERSION,
     BakedManifoldError,
-    DiscoverGenerationPlan,
-    ManifoldFolder,
     ManifoldFormatError,
     ManifoldSidecar,
+    min_nodes,
+)
+from drowse.store.manifold_folder import (
+    DiscoverGenerationPlan,
+    ManifoldFolder,
+    hash_manifold_files,
+)
+from drowse.store.manifold_authoring import (
     append_discover_manifold_node,
-    clear_manifold_tensors,
-    create_baked_manifold_folder,
+    BakedTensor,
+    publish_baked_manifold,
     create_discover_manifold_folder,
     create_manifold_folder,
     init_discover_manifold_folder,
-    hash_manifold_files,
     iter_manifold_folders,
-    manifold_summary,
     merge_discover_manifolds,
-    min_nodes,
     plan_discover_generation,
+    update_manifold_folder,
+)
+from drowse.store.manifold_lifecycle import (
+    clear_manifold_tensors,
+    manifold_summary,
     preflight_transfer_manifold,
     refresh_manifold,
     remove_manifold_folder,
     transfer_manifold,
-    update_manifold_folder,
 )
 from drowse.base.paths import safe_model_id, tensor_filename
+
+_STUB_TENSOR = tensor_filename("stub/model")
+_STUB_SIDECAR = Path(_STUB_TENSOR).with_suffix(".json").name
 
 
 def _alignment(dense: torch.Tensor) -> LayerAlignment:
@@ -318,10 +328,15 @@ def test_poisedness_soft_warning(tmp_path: Path):
         {"label": f"n{i}", "coords": [t, t]}      # the diagonal line
         for i, t in enumerate([0.0, 0.25, 0.5, 0.75, 1.0])
     ]
-    with pytest.warns(UserWarning, match="poised"):
-        ManifoldFolder.load(
-            _author_manifold(tmp_path, domain=domain, nodes=nodes)
-        )
+    from drowse.store.manifold_authoring import authoring_advisories
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # loading never warns; advice is authoring-time
+        mf = ManifoldFolder.load(_author_manifold(tmp_path, domain=domain, nodes=nodes))
+    advisories = authoring_advisories(mf.name, mf.domain, mf.node_coords)
+    assert any("poised" in advisory for advisory in advisories)
 
 
 def test_missing_node_file_raises(tmp_path: Path):
@@ -333,8 +348,8 @@ def test_missing_node_file_raises(tmp_path: Path):
 
 def _add_dummy_tensor(folder: Path) -> None:
     """Write a placeholder fitted tensor + sidecar (no model needed)."""
-    (folder / "stub-model.safetensors").write_bytes(b"placeholder-tensor")
-    (folder / "stub-model.json").write_text(json.dumps(_sidecar_payload(
+    (folder / _STUB_TENSOR).write_bytes(b"placeholder-tensor")
+    (folder / _STUB_SIDECAR).write_text(json.dumps(_sidecar_payload(
         labels=["calm", "uneasy", "afraid", "frantic"],
         domain={"type": "box", "axes": [
             {"name": "t", "periodic": True, "period": 1.0, "lo": 0.0, "hi": 1.0},
@@ -350,7 +365,7 @@ def test_integrity_check_catches_tampering(tmp_path: Path):
     meta["files"] = files
     (folder / "manifold.json").write_text(json.dumps(meta))
     ManifoldFolder.load(folder)
-    (folder / "stub-model.safetensors").write_bytes(b"tampered")
+    (folder / _STUB_TENSOR).write_bytes(b"tampered")
     with pytest.raises(ManifoldFormatError):
         ManifoldFolder.load(folder)
 
@@ -359,7 +374,7 @@ def test_missing_sidecar_raises(tmp_path: Path):
     # A fitted .safetensors without its .json sidecar is a corrupt folder.
     folder = _author_manifold(tmp_path)
     _add_dummy_tensor(folder)
-    (folder / "stub-model.json").unlink()
+    (folder / _STUB_SIDECAR).unlink()
     with pytest.raises(ManifoldFormatError, match="no sidecar"):
         ManifoldFolder.load(folder)
 
@@ -425,10 +440,10 @@ def test_write_metadata_populates_files(tmp_path: Path):
     # their exact successful outputs explicitly.
     assert mf.files == {}
     mf.update_file_hashes(
-        folder / "stub-model.safetensors", folder / "stub-model.json",
+        folder / _STUB_TENSOR, folder / _STUB_SIDECAR,
     )
-    assert "stub-model.safetensors" in mf.files
-    assert "stub-model.json" in mf.files
+    assert _STUB_TENSOR in mf.files
+    assert _STUB_SIDECAR in mf.files
     assert not any(k.startswith("nodes/") for k in mf.files)
     reloaded = ManifoldFolder.load(folder)
     assert reloaded.files == mf.files
@@ -444,7 +459,7 @@ def test_update_file_hashes_only_reads_new_artifact(
     new_tensor = folder / "other-model.safetensors"
     new_sidecar = folder / "other-model.json"
     new_tensor.write_bytes(b"new tensor")
-    new_sidecar.write_bytes((folder / "stub-model.json").read_bytes())
+    new_sidecar.write_bytes((folder / _STUB_SIDECAR).read_bytes())
 
     from drowse.store import manifold_folder as folder_mod
     real_hash = folder_mod.hash_file
@@ -486,7 +501,8 @@ def test_update_file_hashes_rejects_unreadable_future_manifest(
 
 
 def test_bundle_drift_ignores_local_fit_transaction_state() -> None:
-    from drowse.store.manifolds import _manifest_content_sha256
+    from drowse.store.bundled import payload_drift_sha256
+    from drowse.store.manifold_schema import LOCAL_STATE_KEYS
 
     base = {"format_version": MANIFOLD_FORMAT_VERSION, "name": "mood", "files": {}}
     local = {
@@ -495,9 +511,9 @@ def test_bundle_drift_ignores_local_fit_transaction_state() -> None:
         "artifact_id": "local-generation",
         "fit_epochs": {"model:raw": 3},
     }
-    assert _manifest_content_sha256(json.dumps(base).encode()) == (
-        _manifest_content_sha256(json.dumps(local).encode())
-    )
+    assert payload_drift_sha256(
+        json.dumps(base).encode(), strip_keys=LOCAL_STATE_KEYS,
+    ) == payload_drift_sha256(json.dumps(local).encode(), strip_keys=LOCAL_STATE_KEYS)
 
 
 def test_update_file_hashes_merges_latest_manifest_from_stale_instances(
@@ -1056,7 +1072,7 @@ def test_iter_manifold_folders_is_metadata_only(
     )
     _add_dummy_tensor(folder)
     ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(
-        folder / "stub-model.safetensors",
+        folder / _STUB_TENSOR,
     )
 
     def _must_not_verify(*_args: Any, **_kwargs: Any) -> Any:
@@ -1533,9 +1549,9 @@ def _fake_fit_tensor(folder: Path, model_id: str, *, release: str | None = None)
 
     No model needed — the lifecycle functions only glob/parse filenames.
     """
-    from drowse.base.paths import sidecar_filename, tensor_filename
+    from drowse.base.paths import tensor_filename
     ts = folder / tensor_filename(model_id, release=release)
-    sc = folder / sidecar_filename(model_id, release=release)
+    sc = folder / Path(tensor_filename(model_id, release=release)).with_suffix(".json").name
     ts.write_bytes(b"placeholder-tensor")
     sc.write_text(json.dumps(_sidecar_payload(name=folder.name)))
     # Trust only this successful pair; metadata rewrites never scan-and-bless
@@ -1662,6 +1678,34 @@ def test_clear_reaps_capture_when_both_fitted_halves_are_missing(
 
     assert clear_manifold_tensors("local", "mood") == 0
     assert not capture_file.exists()
+
+
+def test_scoped_clear_reaps_orphan_capture_with_no_fitted_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fit killed after capture publication leaves only the capture.
+
+    No fitted file and no manifest entry names the model, so the scoped
+    model itself must seed the sweep (``clear -m`` / ``refresh -m``).
+    """
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    domain = {"type": "box", "axes": [
+        {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
+    create_manifold_folder("local", "mood", "", domain, _author_nodes(["a", "b", "c"]))
+    from drowse.base.paths import model_dir
+
+    capture_dir = model_dir("org/model") / "manifold_capture"
+    capture_dir.mkdir(parents=True)
+    orphan = capture_dir / f"{'7' * 64}.rows"
+    orphan.write_bytes(b"orphan")
+    unrelated_dir = model_dir("org/other") / "manifold_capture"
+    unrelated_dir.mkdir(parents=True)
+    unrelated = unrelated_dir / f"{'8' * 64}.rows"
+    unrelated.write_bytes(b"other model")
+
+    assert clear_manifold_tensors("local", "mood", "org/model") == 0
+    assert not orphan.exists()
+    assert unrelated.exists()
 
 
 def test_rm_reaps_capture_when_sidecar_is_corrupt(
@@ -2043,7 +2087,7 @@ def test_manifold_pair_lock_identity_is_external_stable_and_bounded(
     assert len(before.name) < 100
 
 
-@pytest.mark.parametrize("operation", ["clear", "rm", "refresh"])
+@pytest.mark.parametrize("operation", ["clear", "rm"])
 def test_lifecycle_mutations_wait_for_stable_pair_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2054,22 +2098,10 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     domain = {"type": "box", "axes": [
         {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
-    namespace = "alice" if operation == "refresh" else "local"
     folder, _ = create_manifold_folder(
-        namespace, "mood", "", domain, _author_nodes(["a", "b", "c"]),
+        "local", "mood", "", domain, _author_nodes(["a", "b", "c"]),
     )
     fitted = _fake_fit_tensor(folder, "google/gemma-3-4b-it")
-    if operation == "refresh":
-        mf = ManifoldFolder.load(folder)
-        mf.source = "hf://alice/mood@v1"
-        mf.write_metadata()
-        import drowse.store.hub as hfm
-
-        monkeypatch.setattr(
-            hfm,
-            "pull_manifold",
-            lambda coord, *, target_folder, force, revision=None: target_folder,
-        )
 
     started = threading.Event()
     done = threading.Event()
@@ -2079,11 +2111,9 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
         started.set()
         try:
             if operation == "clear":
-                clear_manifold_tensors(namespace, "mood")
-            elif operation == "rm":
-                remove_manifold_folder(namespace, "mood")
+                clear_manifold_tensors("local", "mood")
             else:
-                refresh_manifold(namespace, "mood")
+                remove_manifold_folder("local", "mood")
         except BaseException as exc:  # pragma: no cover - asserted below
             errors.append(exc)
         finally:
@@ -2099,6 +2129,49 @@ def test_lifecycle_mutations_wait_for_stable_pair_lock(
     assert not worker.is_alive()
     assert errors == []
     assert done.is_set()
+
+
+def test_hf_refresh_holds_no_pair_lock_while_repulling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refresh must not hold pair locks across the re-pull.
+
+    ``pull_manifold`` takes the manifest lock (and, forced, the pair locks in
+    manifest-then-pairs order).  Refresh used to wrap it in the pair locks,
+    inverting that global order against ``load_manifold`` (manifest, then
+    pair): two processes could each hold one lock and wait forever.
+    """
+    from drowse.store.manifold_folder import manifold_pair_lock
+    import drowse.store.hub as hfm
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    domain = {"type": "box", "axes": [
+        {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
+    folder, _ = create_manifold_folder(
+        "alice", "mood", "", domain, _author_nodes(["a", "b", "c"]),
+    )
+    fitted = _fake_fit_tensor(folder, "google/gemma-3-4b-it")
+    mf = ManifoldFolder.load(folder)
+    mf.source = "hf://alice/mood@v1"
+    mf.write_metadata()
+    pair_free: list[bool] = []
+
+    def fake_pull(coord: str, *, target_folder: Path, force: bool, revision: Any = None) -> Path:
+        acquired: list[bool] = []
+
+        def probe() -> None:
+            with manifold_pair_lock(fitted):
+                acquired.append(True)
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join(timeout=1.0)
+        pair_free.append(bool(acquired))
+        return target_folder
+
+    monkeypatch.setattr(hfm, "pull_manifold", fake_pull)
+    assert refresh_manifold("alice", "mood") == "hf"
+    assert pair_free == [True]
 
 
 def test_force_authoring_reset_waits_for_stable_pair_lock(
@@ -3040,7 +3113,7 @@ def test_manifold_summary_reports_template_ref(
     ``nodes/`` by hand.
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store.manifolds import create_manifold_from_template
+    from drowse.store.manifold_authoring import create_manifold_from_template
     from drowse.store.templates import create_template_folder
 
     create_template_folder(
@@ -3074,9 +3147,9 @@ def test_manifold_fit_summary_surfaces_auto_topology_evidence(tmp_path: Path):
     from drowse.geometry.manifold import (
         BoxAxis, BoxDomain, Manifold, fit_layer_subspace,
     )
-    from drowse.store.manifold_folder import ManifoldSidecar
+    from drowse.store.manifold_schema import ManifoldSidecar
     from drowse.store.manifold_tensors import save_manifold
-    from drowse.store.manifolds import manifold_fit_summary
+    from drowse.store.manifold_lifecycle import manifold_fit_summary
 
     g = torch.Generator().manual_seed(0)
     domain = BoxDomain([BoxAxis("t", periodic=False, lo=0.0, hi=1.0)])
@@ -3208,11 +3281,12 @@ def test_plan_fresh_creates_skeleton_all_pending(tmp_path: Path):
 
 
 def test_plan_force_reset_and_skeleton_share_manifest_transaction(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from drowse.store.manifold_folder import _locked_manifest
 
-    folder = tmp_path / "m"
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = tmp_path / "manifolds" / "local" / "m"
     first = plan_discover_generation(
         folder, "m", "old", fit_mode="pca", labels=["a", "b"],
     )
@@ -3266,9 +3340,12 @@ def test_plan_force_validates_before_removing_prior_folder(tmp_path: Path) -> No
     assert (folder / "manifold.json").read_bytes() == before
 
 
-def test_plan_force_recovers_partial_folder_without_manifest(tmp_path: Path) -> None:
-    folder = tmp_path / "m"
-    folder.mkdir()
+def test_plan_force_recovers_partial_folder_without_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = tmp_path / "manifolds" / "local" / "m"
+    folder.mkdir(parents=True)
     (folder / "orphan").write_text("partial")
 
     plan = plan_discover_generation(
@@ -3278,6 +3355,35 @@ def test_plan_force_recovers_partial_folder_without_manifest(tmp_path: Path) -> 
     assert plan.pending == ("a", "b")
     assert not (folder / "orphan").exists()
     assert (folder / "manifold.json").exists()
+
+
+def test_plan_force_failure_mid_skeleton_keeps_prior_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A forced re-plan swaps the skeleton in; it never rmtrees first.
+
+    The old path removed the prior folder and then wrote the skeleton in
+    place, so a failure in between lost the corpus and every fit.
+    """
+    from drowse.store import manifold_authoring
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = tmp_path / "manifolds" / "local" / "m"
+    plan = plan_discover_generation(folder, "m", "kept", fit_mode="pca", labels=["a", "b"])
+    for label in ("a", "b"):
+        append_discover_manifold_node(folder, plan.index_of[label], label, [f"{label}."])
+    before = {p.name: p.read_bytes() for p in folder.rglob("*.json")}
+
+    def boom(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("injected skeleton failure")
+
+    monkeypatch.setattr(manifold_authoring, "write_json_atomic", boom)
+    with pytest.raises(OSError, match="injected"):
+        plan_discover_generation(
+            folder, "m", "new", fit_mode="pca", labels=["c", "d"], force=True,
+        )
+    assert {p.name: p.read_bytes() for p in folder.rglob("*.json")} == before
+    assert ManifoldFolder.load(folder).node_labels == ["a", "b"]
 
 
 def test_plan_resume_reports_only_missing(tmp_path: Path):
@@ -3365,61 +3471,24 @@ def test_plan_rejects_non_discover_existing(
         )
 
 
-def test_bundled_materialization_helpers_ignore_non_json_payloads(tmp_path: Path) -> None:
-    """Package-data materialization should not mirror local metadata files."""
-    from drowse.store import manifolds as M
-    pkg = tmp_path / "pkg"
-    (pkg / "nodes").mkdir(parents=True)
-    (pkg / "manifold.json").write_text('{"name": "m"}')
-    (pkg / "extra.json").write_text('{"extra": []}')
-    (pkg / ".DS_Store").write_text("finder")
-    (pkg / "README.txt").write_text("not package data")
-    (pkg / "nodes" / "00_alpha.json").write_text('["a"]')
-    (pkg / "nodes" / ".DS_Store").write_text("finder")
-    (pkg / "nodes" / "notes.txt").write_text("not package data")
+def _bundled_axis_package(
+    root: Path, monkeypatch: pytest.MonkeyPatch, *, description: str = "v1",
+) -> Path:
+    """Fake ``drowse/data/manifolds/axis`` package data under ``root``.
 
-    target = tmp_path / "target"
-    M._copy_bundled_manifold_fresh(pkg, target)
-
-    assert (target / "manifold.json").is_file()
-    assert not (target / "extra.json").exists()
-    assert (target / "nodes" / "00_alpha.json").is_file()
-    assert not (target / ".DS_Store").exists()
-    assert not (target / "README.txt").exists()
-    assert not (target / "nodes" / ".DS_Store").exists()
-    assert not (target / "nodes" / "notes.txt").exists()
-
-    (pkg / "nodes" / "01_beta.json").write_text('["b"]')
-    (target / "nodes" / "stale.json").write_text('["old"]')
-    (target / "nodes" / ".DS_Store").write_text("old finder")
-
-    M._refresh_all_bundled_nodes(pkg, target)
-
-    assert (target / "nodes" / "00_alpha.json").read_text() == '["a"]'
-    assert (target / "nodes" / "01_beta.json").read_text() == '["b"]'
-    assert not (target / "nodes" / "stale.json").exists()
-    assert not (target / "nodes" / ".DS_Store").exists()
-
-
-def test_bundled_refresh_ignores_local_fit_proofs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Fit proofs in ``files`` must not read as a bundle update.
-
-    A fit appends its tensor/sidecar hashes to ``manifold.json.files``
-    (``update_file_hashes``).  The bundle-drift comparison has to ignore
-    that local state — before the fix it didn't, so the next launch saw
-    "manifest changed", refreshed the manifest from the bundle, and wiped
-    the proofs, orphaning every fitted tensor of every bundled manifold.
+    ``DROWSE_HOME`` is ``root``'s parent, so ``default/axis`` materializes at
+    ``<root parent>/manifolds/default/axis``.
     """
-    from drowse.store import manifolds as M
-    root = tmp_path / "bundled"
+    from drowse.store import bundled
+
+    monkeypatch.setenv("DROWSE_HOME", str(root.parent))
+
     pkg = root / "axis"
-    (pkg / "nodes").mkdir(parents=True)
-    bundled_manifest = {
-        "format_version": M.MANIFOLD_FORMAT_VERSION,
+    (pkg / "nodes").mkdir(parents=True, exist_ok=True)
+    (pkg / "manifold.json").write_text(json.dumps({
+        "format_version": MANIFOLD_FORMAT_VERSION,
         "name": "axis",
-        "description": "",
+        "description": description,
         "fit_mode": "pca",
         "hyperparams": {},
         "nodes": [
@@ -3428,105 +3497,184 @@ def test_bundled_refresh_ignores_local_fit_proofs(
         ],
         "files": {},
         "source": "bundled", "tags": [], "template_ref": None,
-    }
-    (pkg / "manifold.json").write_text(json.dumps(bundled_manifest))
+    }))
     (pkg / "nodes" / "00_pos.json").write_text('["a"]')
     (pkg / "nodes" / "01_neg.json").write_text('["b"]')
     monkeypatch.setattr(
-        M._resources, "files",
+        bundled._resources, "files",
         lambda package: root if package == "drowse.data.manifolds" else None,
     )
-
-    default_dir = tmp_path / "default"
-    M._materialize_one_bundled_manifold(default_dir, "axis")
-    target = default_dir / "axis"
-
-    # Simulate a fit: tensor + sidecar land, update_file_hashes records them.
-    (target / "model.safetensors").write_bytes(b"tensor-bytes")
-    (target / "model.json").write_text("{}")
-    on_disk = json.loads((target / "manifold.json").read_text())
-    on_disk["files"] = {
-        "model.safetensors": "aa" * 32,
-        "model.json": "bb" * 32,
-    }
-    (target / "manifold.json").write_text(json.dumps(on_disk))
-
-    M._materialize_one_bundled_manifold(default_dir, "axis")
-
-    refreshed = json.loads((target / "manifold.json").read_text())
-    assert refreshed["files"] == on_disk["files"], "proofs were clobbered"
-    assert not (target / "manifold.json.bak").exists(), (
-        "a proofs-only difference must not be treated as a bundle update"
-    )
+    return pkg
 
 
-def test_bundled_refresh_carries_tensor_proofs_forward(
+def _fake_fit(target: Path) -> dict[str, str]:
+    """Drop a fitted pair into ``target`` and record its proofs."""
+    tensor = target / tensor_filename("test/model")
+    tensor.write_bytes(b"tensor-bytes")
+    tensor.with_suffix(".json").write_text("{}")
+    manifest = json.loads((target / "manifold.json").read_text())
+    manifest["files"] = {tensor.name: "aa" * 32, tensor.with_suffix(".json").name: "bb" * 32}
+    (target / "manifold.json").write_text(json.dumps(manifest))
+    return manifest["files"]
+
+
+def test_bundled_copy_mirrors_only_package_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A genuine bundle update keeps proofs for surviving fitted artifacts.
+    """Package-data materialization must not mirror local metadata files."""
+    from drowse.store import bundled
 
-    Fitted tensors deliberately stay put across bundle updates (the
-    ``nodes_sha256`` staleness check owns re-fit decisions); their
-    integrity proofs must travel with them or the strict loader refuses
-    the files.  Entries for since-deleted files and for bundle-shipped
-    files are dropped.
-    """
-    from drowse.store import manifolds as M
-    root = tmp_path / "bundled"
-    pkg = root / "axis"
-    (pkg / "nodes").mkdir(parents=True)
+    pkg = _bundled_axis_package(tmp_path / "bundled", monkeypatch)
+    (pkg / "extra.json").write_text('{"extra": []}')
+    (pkg / ".DS_Store").write_text("finder")
+    (pkg / "nodes" / ".DS_Store").write_text("finder")
+    (pkg / "nodes" / "notes.txt").write_text("not package data")
 
-    def manifest(description: str) -> str:
-        return json.dumps({
-            "format_version": M.MANIFOLD_FORMAT_VERSION,
-            "name": "axis",
-            "fit_mode": "pca",
-            "description": description,
-            "nodes": [{"label": "pos"}, {"label": "neg"}],
-        })
-
-    (pkg / "manifold.json").write_text(manifest("v1"))
-    (pkg / "nodes" / "00_pos.json").write_text('["a"]')
-    (pkg / "nodes" / "01_neg.json").write_text('["b"]')
-    monkeypatch.setattr(
-        M._resources, "files",
-        lambda package: root if package == "drowse.data.manifolds" else None,
-    )
-
-    default_dir = tmp_path / "default"
-    M._materialize_one_bundled_manifold(default_dir, "axis")
+    default_dir = tmp_path / "manifolds" / "default"
+    bundled._materialize_manifold("axis", force=False)
     target = default_dir / "axis"
+    assert sorted(p.name for p in target.iterdir()) == ["manifold.json", "nodes"]
+    assert sorted(p.name for p in (target / "nodes").iterdir()) == [
+        "00_pos.json", "01_neg.json",
+    ]
+    ManifoldFolder.load(target)
 
-    (target / "model.safetensors").write_bytes(b"tensor-bytes")
-    (target / "model.json").write_text("{}")
-    on_disk = json.loads((target / "manifold.json").read_text())
-    on_disk["files"] = {
-        "model.safetensors": "aa" * 32,
-        "model.json": "bb" * 32,
+
+def test_bundled_refresh_ignores_local_fit_proofs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fit proofs in ``files`` must not read as a bundle update."""
+    from drowse.store import bundled
+
+    _bundled_axis_package(tmp_path / "bundled", monkeypatch)
+    default_dir = tmp_path / "manifolds" / "default"
+    bundled._materialize_manifold("axis", force=False)
+    target = default_dir / "axis"
+    proofs = _fake_fit(target)
+    before = (target / "manifold.json").stat().st_ino
+
+    bundled._materialize_manifold("axis", force=False)
+
+    assert json.loads((target / "manifold.json").read_text())["files"] == proofs
+    assert (target / "manifold.json").stat().st_ino == before, "no-drift must not rewrite"
+
+
+def test_bundled_update_carries_tensor_proofs_forward(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine bundle update keeps fitted pairs and their proofs only."""
+    from drowse.store import bundled
+
+    root = tmp_path / "bundled"
+    _bundled_axis_package(root, monkeypatch)
+    default_dir = tmp_path / "manifolds" / "default"
+    bundled._materialize_manifold("axis", force=False)
+    target = default_dir / "axis"
+    proofs = _fake_fit(target)
+    manifest = json.loads((target / "manifold.json").read_text())
+    manifest["files"].update({
         "gone.safetensors": "cc" * 32,   # file no longer on disk
-        "manifold.json": "dd" * 32,      # bundle-shipped name — never carried
-    }
-    (target / "manifold.json").write_text(json.dumps(on_disk))
+        "manifold.json": "dd" * 32,      # never carried
+    })
+    (target / "manifold.json").write_text(json.dumps(manifest))
+    (target / "nodes" / "00_pos.json").write_text('["edited"]')
 
-    # Ship a real bundle update.
-    (pkg / "manifold.json").write_text(manifest("v2"))
-    with pytest.warns(UserWarning, match="refreshed default/axis"):
-        M._materialize_one_bundled_manifold(default_dir, "axis")
+    _bundled_axis_package(root, monkeypatch, description="v2")
+    with pytest.warns(UserWarning, match="refreshed bundled manifold default/axis"):
+        bundled._materialize_manifold("axis", force=False)
 
     refreshed = json.loads((target / "manifold.json").read_text())
     assert refreshed["description"] == "v2"
-    assert refreshed["files"] == {
-        "model.safetensors": "aa" * 32,
-        "model.json": "bb" * 32,
-    }
-    assert (target / "manifold.json.bak").exists()
+    assert refreshed["files"] == proofs
+    assert (target / tensor_filename("test/model")).read_bytes() == b"tensor-bytes"
+    assert (target / "nodes" / "00_pos.json").read_text() == '["a"]'
+
+
+@pytest.mark.parametrize("damage", ["manifest", "node"])
+def test_bundled_interrupted_copy_is_repaired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str,
+) -> None:
+    """A folder left without its manifest or a declared node file is drift.
+
+    Before the fix a missing manifest made the materializer return early
+    forever, and a missing node file (with matching manifest hashes) was
+    skipped — either way the bundled manifold vanished from the index.
+    """
+    from drowse.store import bundled
+
+    _bundled_axis_package(tmp_path / "bundled", monkeypatch)
+    default_dir = tmp_path / "manifolds" / "default"
+    bundled._materialize_manifold("axis", force=False)
+    target = default_dir / "axis"
+    if damage == "manifest":
+        (target / "manifold.json").unlink()
+    else:
+        (target / "nodes" / "01_neg.json").unlink()
+
+    with pytest.warns(UserWarning, match="refreshed bundled manifold"):
+        bundled._materialize_manifold("axis", force=False)
+    assert ManifoldFolder.load(target).node_labels == ["pos", "neg"]
+
+
+def test_bundled_copy_failure_keeps_previous_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The re-copy is staged: a failure mid-copy leaves the old folder intact."""
+    from drowse.store import bundled
+
+    root = tmp_path / "bundled"
+    _bundled_axis_package(root, monkeypatch)
+    default_dir = tmp_path / "manifolds" / "default"
+    bundled._materialize_manifold("axis", force=False)
+    target = default_dir / "axis"
+    _bundled_axis_package(root, monkeypatch, description="v2")
+
+    def boom(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("injected copy failure")
+
+    monkeypatch.setattr(bundled, "write_json_atomic", boom)
+    with pytest.raises(OSError, match="injected"):
+        bundled._materialize_manifold("axis", force=False)
+    assert json.loads((target / "manifold.json").read_text())["description"] == "v1"
+    assert ManifoldFolder.load(target).node_labels == ["pos", "neg"]
+    from drowse.base.staging import staging_root
+
+    assert not any(staging_root().iterdir())
+
+
+def test_pack_refresh_restores_bundled_corpus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``refresh_manifold`` on a bundled folder re-copies the shipped corpus.
+
+    It used to call the process-scoped materializer, which had already run, so
+    an edited or deleted node file was never restored while reporting success.
+    """
+    from drowse.store import bundled
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    bundled.reset_bundled_state()
+    bundled.materialize_bundled_artifacts()
+    target = tmp_path / "manifolds" / "default" / "formal.casual"
+    shipped = (target / "nodes" / "00_formal.json").read_text()
+    (target / "nodes" / "00_formal.json").write_text('["edited"]')
+    (target / "nodes" / "01_casual.json").unlink()
+    proofs = _fake_fit(target)
+
+    assert refresh_manifold("default", "formal.casual") == "bundled"
+
+    assert (target / "nodes" / "00_formal.json").read_text() == shipped
+    assert (target / "nodes" / "01_casual.json").is_file()
+    assert json.loads((target / "manifold.json").read_text())["files"] == proofs
+    assert ManifoldFolder.load(target, verify_manifest=False).name == "formal.casual"
 
 
 def test_bundled_manifold_names_skips_incomplete_package_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A partial generation directory must not materialize as a bundled manifold."""
-    from drowse.store import manifolds as M
+    from drowse.store import bundled
+
     root = tmp_path / "bundled"
     complete = root / "complete"
     (complete / "nodes").mkdir(parents=True)
@@ -3548,11 +3696,10 @@ def test_bundled_manifold_names_skips_incomplete_package_data(
     (junk / "manifold.json").write_text("{not json")
 
     monkeypatch.setattr(
-        M._resources, "files",
+        bundled._resources, "files",
         lambda package: root if package == "drowse.data.manifolds" else None,
     )
-
-    assert M.bundled_manifold_names() == ["complete"]
+    assert bundled.bundled_manifold_names() == ["complete"]
 
 
 # =================================================== baked (corpus-less) ===
@@ -3577,28 +3724,36 @@ def _baked_manifold(name: str = "merged", n_layers: int = 3):
     )
 
 
+_MERGE_COMPONENTS = {
+    "0:default/x": {"selector": "default/x", "alpha": 1.0, "tensor_sha256": "0" * 64},
+}
+
+
+def _publish_baked(manifold: Any, *, model_id: str = "test/model", force: bool = False) -> Path:
+    return publish_baked_manifold(
+        "local", "merged", "a merged vector",
+        [BakedTensor(
+            model_id=model_id, manifold=manifold, model_fingerprint=f"fp:{model_id}",
+            components=_MERGE_COMPONENTS,
+        )],
+        method="merge", force=force,
+    )
+
+
 def test_baked_manifold_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     from drowse.store.manifold_tensors import load_manifold
     from drowse.fit.capture import folded_directions
 
     manifold, directions = _baked_manifold("merged")
-    folder, mf = create_baked_manifold_folder(
-        "local", "merged", "a merged vector", manifold, "test/model",
-        method="folded_vector", model_fingerprint="fp:test/model",
-    )
+    folder = _publish_baked(manifold)
+    mf = ManifoldFolder.load(folder)
     assert mf.fit_mode == "baked"
     assert mf.is_discover is False
     assert mf.node_labels == ["merged"]
-    assert mf.files, "files manifest should be back-filled"
-
-    # No nodes/ corpus on disk.
+    assert mf.files, "files manifest should carry the published proofs"
     assert not (folder / "nodes").exists()
-
-    # Reloads clean, with a stable provenance hash.
-    reloaded = ManifoldFolder.load(folder)
-    assert reloaded.fit_mode == "baked"
-    assert reloaded.nodes_sha256() == mf.nodes_sha256()
+    assert mf.tensor_models() == [safe_model_id("test/model")]
 
     # The tensor folds back to the per-layer directions it was baked from.
     (tensor,) = list(folder.glob("*.safetensors"))
@@ -3610,61 +3765,64 @@ def test_baked_publication_hashes_each_new_file_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
-    from drowse.store import manifold_folder as folder_module
-    from drowse.base import integrity
-    real_hash = folder_module.hash_file
+    from drowse.store import manifold_authoring as authoring_module
+    real_hash = authoring_module.hash_file
     hashed: list[Path] = []
 
     def count_hash(path: Path) -> str:
         hashed.append(Path(path))
         return real_hash(Path(path))
 
-    monkeypatch.setattr(folder_module, "hash_file", count_hash)
-    monkeypatch.setattr(integrity, "hash_file", count_hash)
+    monkeypatch.setattr(authoring_module, "hash_file", count_hash)
     manifold, _ = _baked_manifold("merged")
-
-    create_baked_manifold_folder(
-        "local", "merged", "", manifold, "test/model", method="folded_vector",
-        model_fingerprint="fp:test/model",
-    )
+    _publish_baked(manifold)
 
     tensor = tensor_filename("test/model")
     assert [path.name for path in hashed] == [tensor, Path(tensor).with_suffix(".json").name]
 
 
-def test_baked_first_publication_retry_repairs_unproven_pair(
+def test_baked_publication_crash_leaves_no_partial_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure mid-publication leaves neither a partial nor a discoverable folder."""
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    from drowse.base.paths import manifold_dir
+    from drowse.store import manifold_tensors
+
+    manifold, _directions = _baked_manifold("merged")
+    real_save = manifold_tensors.save_manifold
+
+    def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("injected baked publication failure")
+
+    monkeypatch.setattr(manifold_tensors, "save_manifold", fail)
+    with pytest.raises(OSError, match="injected"):
+        _publish_baked(manifold)
+    assert not manifold_dir("local", "merged").exists()
+    assert list(iter_manifold_folders()) == []
+
+    monkeypatch.setattr(manifold_tensors, "save_manifold", real_save)
+    folder = _publish_baked(manifold)
+    assert ManifoldFolder.load(folder).tensor_models() == [safe_model_id("test/model")]
+
+
+def test_baked_publication_refuses_existing_without_force(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     manifold, _directions = _baked_manifold("merged")
-    real_update = ManifoldFolder.update_file_hashes
-    failed = False
-
-    def fail_once(self: ManifoldFolder, *paths: Path) -> None:
-        nonlocal failed
-        if not failed:
-            failed = True
-            raise OSError("injected baked manifest failure")
-        real_update(self, *paths)
-
-    monkeypatch.setattr(ManifoldFolder, "update_file_hashes", fail_once)
-    with pytest.raises(OSError, match="injected"):
-        create_baked_manifold_folder(
-            "local", "merged", "", manifold, "test/model",
-            method="folded_vector", model_fingerprint="fp:test/model",
-        )
-
-    folder, _mf = create_baked_manifold_folder(
-        "local", "merged", "", manifold, "test/model",
-        method="folded_vector", model_fingerprint="fp:test/model",
-    )
-    loaded = ManifoldFolder.load(folder)
-    assert loaded.tensor_models() == [safe_model_id("test/model")]
+    folder = _publish_baked(manifold)
+    with pytest.raises(FileExistsError, match="already exists"):
+        _publish_baked(manifold)
+    replaced = _publish_baked(manifold, force=True)
+    assert replaced == folder
+    assert ManifoldFolder.load(folder).tensor_models() == [safe_model_id("test/model")]
 
 
-def test_baked_force_replaces_manifestless_partial_folder(
+def test_baked_publication_replaces_manifestless_partial_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A directory with no manifest is a crash leftover, not a manifold."""
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     from drowse.base.paths import manifold_dir
 
@@ -3674,16 +3832,7 @@ def test_baked_force_replaces_manifestless_partial_folder(
     (folder / "stale.json").write_text("{bad sidecar")
     manifold, _directions = _baked_manifold("merged")
 
-    with pytest.raises(FileExistsError, match="incomplete"):
-        create_baked_manifold_folder(
-            "local", "merged", "", manifold, "test/model",
-            method="folded_vector", model_fingerprint="fp:test/model",
-        )
-
-    created, _mf = create_baked_manifold_folder(
-        "local", "merged", "", manifold, "test/model",
-        method="folded_vector", model_fingerprint="fp:test/model", force=True,
-    )
+    created = _publish_baked(manifold)
     assert not (created / "stale.safetensors").exists()
     assert ManifoldFolder.load(created).tensor_models() == [safe_model_id("test/model")]
 
@@ -3693,10 +3842,7 @@ def test_baked_manifold_clear_and_scoped_refresh_refused(
 ):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     manifold, _ = _baked_manifold("merged")
-    create_baked_manifold_folder(
-        "local", "merged", "", manifold, "test/model", method="folded_vector",
-        model_fingerprint="fp:test/model",
-    )
+    _publish_baked(manifold)
     # Both tensor-deleting ops refuse — a baked manifold can't re-fit, so
     # clearing its tensor would destroy the only copy of its geometry.
     with pytest.raises(BakedManifoldError, match="rm"):
@@ -3708,10 +3854,7 @@ def test_baked_manifold_clear_and_scoped_refresh_refused(
 def test_baked_manifold_node_groups_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     manifold, _ = _baked_manifold("merged")
-    _, mf = create_baked_manifold_folder(
-        "local", "merged", "", manifold, "test/model", method="folded_vector",
-        model_fingerprint="fp:test/model",
-    )
+    mf = ManifoldFolder.load(_publish_baked(manifold))
     with pytest.raises(ManifoldFormatError, match="no node corpus"):
         mf.node_groups()
 
@@ -3770,3 +3913,145 @@ def test_baked_manifold_requires_domain(tmp_path: Path):
     (folder / "manifold.json").write_text(json.dumps(payload))
     with pytest.raises(ManifoldFormatError, match="needs a 'domain'"):
         ManifoldFolder.load(folder)
+
+
+# ============================================================ regressions ===
+
+
+def test_transfer_drops_source_capture_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``_from-`` sidecar must not claim the source fit's checkpoint/capture."""
+    from drowse.store.manifold_tensors import load_manifold
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    domain = {"type": "box", "axes": [
+        {"name": "t", "periodic": False, "lo": 0.0, "hi": 1.0}]}
+    folder, _ = create_manifold_folder(
+        "local", "mood", "", domain, _author_nodes(["a", "b", "c"]),
+    )
+    src_model, tgt_model = "google/gemma-3-4b-it", "Qwen/Qwen2.5-7B-Instruct"
+    src_tensor = _fit_real_manifold(folder, src_model, dim=6)
+    sidecar_path = src_tensor.with_suffix(".json")
+    payload = json.loads(sidecar_path.read_text())
+    payload.update({
+        "model_source_fingerprint": "src:checkpoint",
+        "capture_sha256": "1" * 64,
+        "capture_version": 3,
+        "capture_render_sha256": "2" * 64,
+        "baseline_prompts_sha256": "3" * 64,
+    })
+    sidecar_path.write_text(json.dumps(payload))
+    ManifoldFolder.load(folder, verify_manifest=False).update_file_hashes(src_tensor, sidecar_path)
+
+    whitener = _target_whitener()
+    out = transfer_manifold(
+        folder, from_model=src_model, to_model=tgt_model,
+        alignment=_alignments({L: torch.eye(6) for L in load_manifold(src_tensor).layers}),
+        source_model_fingerprint=f"fp:{src_model}",
+        target_model_fingerprint=f"fp:{tgt_model}",
+        whitener=whitener, target_layer_means=whitener.layer_means,
+    )
+    sidecar = json.loads(out.with_suffix(".json").read_text())
+    assert sidecar["model_fingerprint"] == f"fp:{tgt_model}"
+    for key in (
+        "model_source_fingerprint", "capture_sha256", "capture_version",
+        "capture_render_sha256", "baseline_prompts_sha256",
+    ):
+        assert sidecar[key] is None, key
+
+
+def test_merge_fit_mode_override_does_not_inherit_foreign_hyperparams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``manifold merge --method pca`` over spectral sources used to fail.
+
+    The sources' ``k_nn`` was inherited into a ``pca`` folder, which the
+    exact hyperparameter whitelist rejects.
+    """
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    for name, labels in (("a", ["x1", "x2", "x3"]), ("b", ["y1", "y2", "y3"])):
+        create_discover_manifold_folder(
+            "local", name, "", fit_mode="spectral",
+            node_corpora={label: [f"{label}."] for label in labels},
+            hyperparams={"k_nn": 2},
+        )
+    merged = merge_discover_manifolds(
+        "local", "ab", "", sources=[("local", "a"), ("local", "b")], fit_mode="pca",
+    )
+    mf = ManifoldFolder.load(merged)
+    assert mf.fit_mode == "pca"
+    assert mf.hyperparams == {}
+
+    same_mode = merge_discover_manifolds(
+        "local", "ab2", "", sources=[("local", "a"), ("local", "b")],
+    )
+    assert ManifoldFolder.load(same_mode).hyperparams == {"k_nn": 2}
+
+
+def test_update_manifold_folder_refuses_nodes_on_non_authored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PATCH ``nodes`` on a discover folder used to escape as a plain ValueError (500)."""
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = create_discover_manifold_folder(
+        "local", "d", "", fit_mode="pca",
+        node_corpora={"x": ["x."], "y": ["y."]},
+    )
+    with pytest.raises(ManifoldFormatError, match="only an authored manifold"):
+        update_manifold_folder(folder, nodes=_author_nodes(["a", "b", "c"]))
+    assert not (folder / "nodes" / "00_a.json").exists()
+    update_manifold_folder(folder, description="still editable")
+    assert ManifoldFolder.load(folder).description == "still editable"
+
+
+def test_bad_sidecar_domain_is_a_format_error_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One sidecar with a bogus domain must not break discovery.
+
+    The domain check raised a plain ``ValueError`` through
+    ``iter_manifold_folders``, breaking ``pack ls`` and silently disabling
+    bare-label steering for every manifold.
+    """
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = create_discover_manifold_folder(
+        "local", "d", "", fit_mode="pca",
+        node_corpora={"x": ["x."], "y": ["y."]},
+    )
+    tensor = folder / tensor_filename("some/model")
+    tensor.write_bytes(b"x")
+    payload = ManifoldSidecar.build(
+        name="d", method="manifold_discover_pca",
+        domain={"type": "custom", "embed_dim": 1, "bounds": None},
+        node_labels=["x", "y"], fit_mode="pca",
+    ).to_payload()
+    payload["domain"] = {"type": "bogus"}
+    tensor.with_suffix(".json").write_text(json.dumps(payload))
+
+    listed = [mf.name for _ns, mf in iter_manifold_folders()]
+    assert listed == ["d"]
+    mf = ManifoldFolder.load(folder, verify_manifest=False)
+    assert mf.tensor_models() == []
+    with pytest.raises(ManifoldFormatError, match="invalid domain"):
+        mf.sidecar(tensor.stem)
+
+
+def test_discovery_ignores_staging_and_misnamed_folders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Crash-left stages and backups are never discovered as duplicates."""
+    import shutil
+
+    from drowse.base.staging import backup_path, staging_root
+
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+    folder = create_discover_manifold_folder(
+        "local", "foo", "", fit_mode="pca",
+        node_corpora={"a": ["a."], "b": ["b."]},
+    )
+    for leftover in (backup_path(folder), staging_root() / "in-flight" / "foo"):
+        shutil.copytree(folder, leftover)
+    shutil.copytree(folder, folder.with_name("foo.copy"))
+
+    assert [(ns, mf.name) for ns, mf in iter_manifold_folders()] == [("local", "foo")]

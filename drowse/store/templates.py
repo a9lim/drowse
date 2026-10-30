@@ -38,30 +38,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import re
-import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
-from importlib import resources as _resources
 from pathlib import Path
 from typing import Any, Iterator
 
 from drowse.errors import DrowseError
-from drowse.base.atomic import artifact_lock, write_bytes_atomic, write_json_atomic
-from drowse.store.bundled import canonical_payload_sha256
-from drowse.base.integrity import NAME_REGEX
+from drowse.base.atomic import artifact_lock, write_json_atomic
+from drowse.base.integrity import LABEL_REGEX, NAME_REGEX, canonical_json
 from drowse.base.paths import ensure_within, templates_dir
 
-_LOG = logging.getLogger(__name__)
 
 TEMPLATE_FORMAT_VERSION = 2
 
-# Node label discipline — mirrors ``store.manifolds._LABEL_REGEX`` (a templated
-# manifold's nodes are this template's slugged values, so the slug must be a
-# valid node label). Defined here, not imported, so the
-# ``manifolds -> templates`` import direction stays acyclic.
-_LABEL_REGEX = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _VALID_ROLES = ("system", "user", "assistant")
 
 
@@ -70,18 +60,13 @@ class TemplateFormatError(ValueError, DrowseError):
 
 
 def _slug_value(value: str) -> str:
-    """Slug a template value to a node label (mirrors ``store.manifolds._slug_value``).
+    """Slug a template value to a node label.
 
     ``[^a-z0-9]+ -> _`` over the lowercased value, trimmed of edge underscores —
     ``"Monday" -> "monday"``, ``"New York" -> "new_york"`` — so the label a user
     steers (``weekday%monday``) matches the value typed.
     """
     return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
-
-
-def _canonical_json(obj: Any) -> bytes:
-    """Stable serialization for the staleness hash (sorted keys, compact)."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -203,7 +188,7 @@ class TemplateFolder:
                 for ctx in self.contexts
             ],
         }
-        return hashlib.sha256(_canonical_json(core)).hexdigest()
+        return hashlib.sha256(canonical_json(core)).hexdigest()
 
     def write(self, path: Path | None = None) -> Path:
         """Atomically write ``template.json``. Returns the folder path."""
@@ -330,10 +315,10 @@ def _validate_body(
     seen_labels: set[str] = set()
     for value in values:
         label = _slug_value(value)
-        if not _LABEL_REGEX.match(label):
+        if not LABEL_REGEX.match(label):
             raise TemplateFormatError(
                 f"template {name!r} value {value!r} slugs to {label!r}, which "
-                f"is not a valid node label (must match {_LABEL_REGEX.pattern})"
+                f"is not a valid node label (must match {LABEL_REGEX.pattern})"
             )
         if label in seen_labels:
             raise TemplateFormatError(
@@ -554,154 +539,3 @@ def remove_template_folder(namespace: str, name: str) -> bool:
             return False
         shutil.rmtree(path)
         return True
-
-
-# ---------------------------------------------------------------------------
-# Bundled materialization
-# ---------------------------------------------------------------------------
-#
-# Parallel to ``manifolds.materialize_bundled_manifolds`` but for the template
-# artifact kind.  Bundled templates live under ``drowse/data/templates/<name>/``
-# in the wheel and materialize into ``~/.drowse/templates/default/<name>/`` on
-# session startup.  A template is a single self-contained ``template.json`` (the
-# node corpora derive deterministically from ``slot × values × contexts``), so
-# the copy is one file — no ``nodes/`` subtree to mirror.
-#
-# **Dormant, not dead.**  No template ships bundled at present, so
-# ``bundled_template_names()`` returns ``[]`` and the materializer no-ops.  The
-# mechanism stays because a template-derived bundled manifold is the one
-# artifact that authors deterministically and model-free — write the template,
-# and ``create_manifold_from_template`` derives the corpus with no generation
-# step.  The ordering invariant below is what makes that shippable.
-#
-# **Ordering invariant.**  A bundled *manifold* may ``template_ref`` a bundled
-# ``default/<name>`` template.  The manifold *fit* resolves that ref to use the
-# template's multi-turn contexts as elicitation prefixes
-# (``fit/pipeline.py``) — a hard ``TemplateNotFoundError`` if it's absent — and
-# the ``nodes_sha256`` staleness key folds the resolved template's sha256
-# (best-effort: it falls back to the ref string if unresolved).  So this MUST
-# run before ``materialize_bundled_manifolds``.  That order is enforced in
-# exactly one place — :func:`drowse.store.bundled.materialize_bundled_artifacts`,
-# the entry point every bootstrap site calls — rather than by each site
-# remembering it.
-
-# Process-scope guard: the ``DROWSE_HOME`` the first
-# ``materialize_bundled_templates`` call covered, so a later call for that same
-# root is a no-op (``None`` means "not yet materialized").  Mirrors the manifold
-# materializer — process-scope caching sidesteps the "bundle changed under user"
-# vs "user changed it via CLI" ambiguity (see that function's docstring).
-_templates_materialized_home: Path | None = None
-
-
-def _bundled_template_valid(pkg_root: Any) -> bool:
-    """True when a package-data template parses and passes format validation."""
-    try:
-        with pkg_root.joinpath("template.json").open(encoding="utf-8") as f:
-            payload = json.load(f)
-    except (
-        AttributeError,
-        FileNotFoundError,
-        OSError,
-        json.JSONDecodeError,
-        UnicodeDecodeError,
-    ):
-        return False
-    try:
-        TemplateFolder.from_payload(payload)
-    except (TemplateFormatError, ValueError):
-        return False
-    return True
-
-
-def bundled_template_names() -> list[str]:
-    """List valid templates shipped under ``drowse/data/templates/``."""
-    try:
-        root = _resources.files("drowse.data.templates")
-    except (ModuleNotFoundError, FileNotFoundError):
-        return []
-    return sorted(
-        p.name for p in root.iterdir()
-        if p.is_dir() and _bundled_template_valid(p)
-    )
-
-
-def materialize_bundled_templates() -> None:
-    """Copy bundled templates into ``~/.drowse/templates/default/``.
-
-    Mirrors :func:`drowse.store.manifolds.materialize_bundled_manifolds` for the
-    template artifact kind:
-
-    - **Fresh install** (target missing) — copy ``template.json``.
-    - **Bundle update** (canonical hash differs OR on-disk ``format_version``
-      predates :data:`TEMPLATE_FORMAT_VERSION`) — re-copy, writing a ``.bak``;
-      user edits to a ``default/`` template are stale-against-old-bundle and
-      replaced (fork under another namespace to keep a custom copy).
-    - **No change** — skip.
-
-    Process-scoped no-op after the first call for a given ``DROWSE_HOME``.
-    Switching homes in-process bootstraps the new root.  Must run BEFORE
-    ``materialize_bundled_manifolds``; call
-    :func:`drowse.store.bundled.materialize_bundled_artifacts`, which owns that
-    ordering, rather than invoking this directly.
-    """
-    global _templates_materialized_home
-    home = templates_dir().parent
-    if _templates_materialized_home == home:
-        return
-    _templates_materialized_home = home
-
-    names = bundled_template_names()
-    if not names:
-        return
-
-    root = _resources.files("drowse.data.templates")
-    default_dir = templates_dir() / "default"
-    default_dir.mkdir(parents=True, exist_ok=True)
-    for name in names:
-        bundled_bytes = root.joinpath(name).joinpath("template.json").read_bytes()
-        target = default_dir / name
-        manifest = target / "template.json"
-
-        if not manifest.exists():
-            target.mkdir(parents=True, exist_ok=True)
-            write_bytes_atomic(manifest, bundled_bytes)
-            continue
-
-        try:
-            on_disk_bytes = manifest.read_bytes()
-            on_disk_payload = json.loads(on_disk_bytes)
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            # Corrupt on-disk copy — don't stomp user state.
-            continue
-
-        hash_changed = (
-            canonical_payload_sha256(on_disk_bytes)
-            != canonical_payload_sha256(bundled_bytes)
-        )
-        fmt = on_disk_payload.get("format_version")
-        format_stale = (
-            not isinstance(fmt, int)
-            or isinstance(fmt, bool)
-            or fmt != TEMPLATE_FORMAT_VERSION
-        )
-        if not hash_changed and not format_stale:
-            continue
-
-        write_bytes_atomic(manifest.with_suffix(".json.bak"), on_disk_bytes)
-        write_bytes_atomic(manifest, bundled_bytes)
-        reason = (
-            f"v{fmt}->v{TEMPLATE_FORMAT_VERSION} (format_version)"
-            if format_stale
-            else "content changed"
-        )
-        warnings.warn(
-            f"materialize_bundled_templates: refreshed default/{name} — "
-            f"{reason}; any local edits were overwritten (fork under a "
-            f"non-default namespace to keep a custom template)",
-            UserWarning,
-            stacklevel=2,
-        )
-        _LOG.warning(
-            "materialize_bundled_templates: refreshed default/%s — %s",
-            name, reason,
-        )

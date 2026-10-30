@@ -351,7 +351,7 @@ def main() -> None:
     do_neutral = NEUTRAL_TARGET in targets
 
     from drowse.base.atomic import write_json_atomic
-    from drowse.store.manifolds import (
+    from drowse.store.manifold_authoring import (
         append_discover_manifold_node,
         plan_discover_generation,
     )

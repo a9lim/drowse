@@ -23,11 +23,10 @@ from drowse.base.atomic import artifact_lock, fsync_directory, write_json_atomic
 from drowse.base.integrity import NAME_REGEX, hash_file
 from drowse.store.manifold_folder import (
     ManifoldFolder,
-    ManifoldFormatError,
-    load_manifold_sidecar_data,
     manifold_folder_tensor_paths,
     manifold_pair_lock,
 )
+from drowse.store.manifold_schema import ManifoldFormatError, ManifoldSidecar
 from drowse.base.paths import manifold_dir, drowse_home
 from drowse.store.templates import TemplateFolder, template_dir
 
@@ -485,7 +484,7 @@ def _validate_fitted_tensor(
         maximum=_METADATA_JSON_MAX_BYTES,
         label=f"fitted sidecar {sidecar_path.name}",
     )
-    sidecar = load_manifold_sidecar_data(sidecar_path)
+    sidecar = ManifoldSidecar.load(sidecar_path).to_payload()
     variant = parsed_filename[1]
     if variant is None:
         if (
