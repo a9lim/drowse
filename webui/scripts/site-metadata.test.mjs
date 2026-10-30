@@ -3,6 +3,13 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { siteDescription, siteAccent, socialImagePath, socialImageType, socialImageAlt, publicOrigin, discoveryMetadata, pageDiscoveryMetadata, projectOwner } from "./site-metadata.mjs";
 
+function readJsonLd(html) {
+  const scriptStart = '<script type="application/ld+json">';
+  assert.ok(html.includes(scriptStart));
+  assert.ok(html.endsWith("</script>"));
+  return JSON.parse(html.slice(html.indexOf(scriptStart) + scriptStart.length, -"</script>".length));
+}
+
 test("public metadata requires an explicit, safe HTTPS origin", () => {
   assert.equal(publicOrigin(), "");
   assert.equal(discoveryMetadata(""), "");
@@ -12,10 +19,7 @@ test("public metadata requires an explicit, safe HTTPS origin", () => {
 
 test("structured data describes only the website and actual application", () => {
   const html = discoveryMetadata("https://drowse.example", { version: "5.3.0" });
-  const scriptStart = '<script type="application/ld+json">';
-  assert.ok(html.includes(scriptStart));
-  assert.ok(html.endsWith("</script>"));
-  const graph = JSON.parse(html.slice(html.indexOf(scriptStart) + scriptStart.length, -"</script>".length))["@graph"];
+  const graph = readJsonLd(html)["@graph"];
   assert.deepEqual(graph.map(item => item["@type"]), ["WebSite", "WebApplication"]);
   assert.ok(graph.every(item => item.name === "Drowse" && item.description === siteDescription));
   assert.ok(graph.every(item => !item.aggregateRating && !item.potentialAction));
@@ -26,7 +30,7 @@ test("structured data describes only the website and actual application", () => 
   assert.deepEqual(graph[1].author, projectOwner);
   assert.deepEqual(graph[1].publisher, { "@type": "Person", name: "a9lim", url: "https://github.com/a9lim" });
   assert.ok(!("screenshot" in graph[1]), "no product screenshot asset exists to publish");
-  assert.ok(!("softwareVersion" in JSON.parse(/<script[^>]*>(.*)<\/script>/.exec(discoveryMetadata("https://drowse.example"))[1])["@graph"][1]));
+  assert.ok(!("softwareVersion" in readJsonLd(discoveryMetadata("https://drowse.example"))["@graph"][1]));
   assert.match(html, /rel="canonical" href="https:\/\/drowse.example\/"/);
 });
 
@@ -36,7 +40,7 @@ test("prerendered pages get their own canonical URL and WebPage data", () => {
   assert.match(html, /<link rel="canonical" href="https:\/\/drowse.example\/privacy" \/>/);
   assert.match(html, /<meta property="og:url" content="https:\/\/drowse.example\/privacy" \/>/);
   assert.doesNotMatch(html, /<Drowse>/, "JSON-LD must not open markup");
-  const page = JSON.parse(/<script[^>]*>(.*)<\/script>/.exec(html)[1]);
+  const page = readJsonLd(html);
   assert.equal(page["@type"], "WebPage");
   assert.equal(page.name, "Privacy <Drowse>");
   assert.deepEqual(page.isPartOf, { "@id": "https://drowse.example/#website" });

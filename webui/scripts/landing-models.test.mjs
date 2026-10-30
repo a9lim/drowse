@@ -47,7 +47,7 @@ try {
     assert.ok(html.includes(heading) || html.includes(heading.replace("&#39;", "'")), `${heading} section is visible`);
   }
   for (const term of ["Influence", "Strength (α)", "Word insights (J-lens)", "Feature insights (SAE)", "Loom", "Base model"]) {
-    assert.ok(new RegExp(`<dt[^>]*>${term.replace(/[()]/g, "\\$&")}</dt>`).test(html), `${term} is defined`);
+    assert.ok(new RegExp(`<dt[^>]*>${RegExp.escape(term)}</dt>`).test(html), `${term} is defined`);
   }
   assert.ok((html.match(/<details[\s>]/g) ?? []).length >= 8, "questions use native details elements");
   assert.doesNotMatch(html, /application\/ld\+json|FAQPage/, "structured data is not added by the landing component");
