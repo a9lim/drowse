@@ -12,7 +12,7 @@ forward-pass + cache + reorient path without HF weights.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -480,7 +480,7 @@ class _MockSession:
         from drowse.loom.joint_logprobs import JointLogprobReplayer
 
         return JointLogprobReplayer(
-            tree=lambda: self.tree,
+            tree=lambda: cast(Any, self.tree),
             model=self.model,
             tokenizer=self.tokenizer,
             traits=self.chat_traits,
@@ -488,7 +488,7 @@ class _MockSession:
             profile_names=lambda: self.profiles,
             gen_config=lambda sampling: self._engine.gen_config(sampling),
             open_scope=lambda value: self.steering(value),  # type: ignore[attr-defined]
-            steering=self._steering,
+            steering=cast(Any, self._steering),
             needs_probe_gating=lambda: (
                 self._steering_composer.steering_needs_probe_gating()
             ),
