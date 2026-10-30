@@ -141,7 +141,7 @@ class TestMergeVector:
         "component default/missing not installed",
     ])
     def test_merge_errors_propagate_as_400(self, session: Any, message: str):
-        from drowse.fit.bake import MergeError
+        from drowse.errors import MergeError
         with patch("drowse.fit.bake.merge_into_manifold", side_effect=MergeError(message)):
             with pytest.raises(MergeError) as error:
                 session.bake("x", "0.3 default/missing")
@@ -154,7 +154,7 @@ class TestMergeVector:
         guard fires rather than baking a tensor the loaded model never
         produced.
         """
-        from drowse.fit.bake import MergeError
+        from drowse.errors import MergeError
         live = loaded_model_fingerprint(session._model, session.model_id)
         seen: dict[str, Any] = {}
 
@@ -181,7 +181,7 @@ class TestMergeVector:
         model arg, but if it doesn't (e.g. silent skip), the session raises
         ``MergeError``.
         """
-        from drowse.fit.bake import MergeError
+        from drowse.errors import MergeError
         empty_folder = tmp_path / "local" / "x"
         empty_folder.mkdir(parents=True)
 
@@ -195,7 +195,7 @@ class TestMergeVector:
     def test_replacing_an_existing_bake_needs_explicit_force(self, session: Any):
         """C6: ``bake`` used to default to ``force=True`` and silently replace
         an existing ``local/<name>`` manifold (authored corpora included)."""
-        from drowse.fit.bake import MergeError
+        from drowse.errors import MergeError
 
         seen: list[Any] = []
 

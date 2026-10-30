@@ -343,7 +343,8 @@ class TestMergeFold:
         assert (dst / f"{safe_model_id(_MODEL)}.safetensors").exists()
 
     def test_merge_missing_component_errors(self) -> None:
-        from drowse.fit.bake import merge_into_manifold, MergeError
+        from drowse.errors import MergeError
+        from drowse.fit.bake import merge_into_manifold
 
         _write_fitted_manifold("default", "happy.sad", seed=1)
         with pytest.raises(MergeError):

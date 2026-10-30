@@ -31,9 +31,9 @@ from drowse.errors import (
 from drowse.errors import ProfileNotRegisteredError
 from drowse.steering.grammar import SteeringExprError
 from drowse.store.install import ManifoldInstallConflict
-from drowse.store.gguf import GGUFNotInstalled
+from drowse.geometry.gguf import GGUFNotInstalled
 from drowse.base.hf import HFError
-from drowse.fit.bake import MergeError
+from drowse.errors import MergeError
 
 
 def test_base_default_status_and_message():
@@ -79,7 +79,7 @@ _OVERRIDES: list[tuple[type[DrowseError], int]] = [
     (HFError, 502),
     # store/install.py
     (ManifoldInstallConflict, 409),
-    # store/gguf.py
+    # geometry/gguf.py
     (GGUFNotInstalled, 400),
     # fit/bake.py
     (MergeError, 400),

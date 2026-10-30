@@ -451,7 +451,8 @@ class Extraction:
         Dynamic terms and Mahalanobis projections are rejected by the offline
         merge, which carries no identity-matched whitener.
         """
-        from drowse.fit.bake import MergeError, merge_into_manifold
+        from drowse.errors import MergeError
+        from drowse.fit.bake import merge_into_manifold
         from drowse.model.fingerprint import loaded_model_fingerprint
         from drowse.store.manifold_tensors import load_manifold
 
