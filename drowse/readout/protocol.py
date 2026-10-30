@@ -189,15 +189,17 @@ class Instrument(Protocol):
         node_id: str,
         raw_index: int,
         *,
-        top_k: int = 8,
+        top_k: int | None = None,
         layers: "list[int] | str | None" = None,
         apply_steering: bool = True,
         raw: bool = False,
     ) -> dict[str, Any]:
         """The loom-anchored replay: rebuild the producing forward and
         return the FINISHED ``scope="replay"`` measurement envelope
-        (``{"measurements": …}``).  A family that cannot honor a knob
-        rejects it with ``ValueError`` rather than ignoring it."""
+        (``{"measurements": …}``).  ``top_k=None`` is the family's default
+        width (eight for the ranked lens/SAE reads).  A family that cannot
+        honor a knob rejects it with ``ValueError`` rather than ignoring
+        it."""
         ...
 
 

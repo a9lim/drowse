@@ -258,3 +258,30 @@ def test_gate_validation_is_only_where_a_channel_can_be_refused(make_tiny_sessio
         with pytest.raises(UnsupportedProbeChannelError):
             session.instruments[family].validate_gate(ref)
     assert session.instruments["geometry"].validate_gate(ref) is None
+
+
+@pytest.mark.parametrize("family", ["geometry", "lens", "sae"])
+def test_token_readout_signature_matches_the_protocol(family: str) -> None:
+    """Every family's ``token_readout`` takes the protocol's parameters with
+    the protocol's defaults (the protocol declared ``top_k: int = 8`` while
+    every implementation takes ``int | None = None``)."""
+    import inspect
+
+    from drowse.lens.instrument import LensInstrument
+    from drowse.readout.geometry import GeometryInstrument
+    from drowse.readout.protocol import Instrument
+    from drowse.sae.instrument import SaeInstrument
+
+    impl = {
+        "geometry": GeometryInstrument,
+        "lens": LensInstrument,
+        "sae": SaeInstrument,
+    }[family]
+
+    def shape(fn: Any) -> list[tuple[str, Any, Any, Any]]:
+        return [
+            (p.name, p.kind, p.default, p.annotation)
+            for p in inspect.signature(fn).parameters.values()
+        ]
+
+    assert shape(impl.token_readout) == shape(Instrument.token_readout)
