@@ -1,1 +1,0 @@
-import"./DrawerCloseButton-CoVSekNy.js";import{V as e,f as t,r as n,u as r,z as i}from"./index-client-CoJhqGNv.js";var a=e(`<span>[BASE]</span>`);function o(e,o){let s=n(o,`plain`,3,!1);var c=a();t(c,()=>({class:`base-tag`,"aria-description":`Base model · continues text without chat instructions`,[r]:{plain:s()}}),void 0,void 0,void 0,`svelte-1ove6n8`),i(e,c)}export{o as t};

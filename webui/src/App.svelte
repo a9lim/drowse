@@ -61,7 +61,8 @@
   // One typed registry row per drawer — component, params, sizing.  The
   // host below renders whichever row ``drawerState.open`` names, so there
   // is no per-drawer branch here to fall out of sync with the union.
-  import { DRAWERS, drawerParams } from "./drawers";
+  import { DRAWERS, drawerParams, loadedDrawer } from "./drawers";
+  import type { DrawerName } from "./lib/types";
   import DrawerOutlet from "./drawers/DrawerOutlet.svelte";
 
   import {
@@ -200,6 +201,9 @@
   }));
   let drawerTrigger: HTMLElement | null = null;
   let previousDrawer: string | null = null;
+  // A drawer opened before its chunk loaded takes focus from the outlet's
+  // ``onready``, once it is in the DOM, not from the placeholder.
+  let focusWhenReady: DrawerName | null = null;
 
   function creationActive(): boolean {
     return manifoldJobs.current !== null && ["running", "waiting", "cancelling"].includes(manifoldJobs.current.status);
@@ -261,10 +265,10 @@
       drawerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
     if (open !== null && !mobileTokenDrawer && (open !== previousDrawer || modal && !drawerEl?.contains(document.activeElement))) {
-      void tick().then(() => {
-        focusWithoutScrolling((drawerEl && tabStops(drawerEl)[0]) ?? drawerEl);
-      });
+      if (loadedDrawer(open)) void tick().then(focusOpenDrawer);
+      else focusWhenReady = open;
     } else if (open === null && previousDrawer !== null) {
+      focusWhenReady = null;
       const trigger = drawerTrigger;
       void tick().then(() => {
         if (trigger?.isConnected) focusWithoutScrolling(trigger);
@@ -274,6 +278,16 @@
     }
     previousDrawer = open;
   });
+
+  function focusOpenDrawer(): void {
+    focusWithoutScrolling((drawerEl && tabStops(drawerEl)[0]) ?? drawerEl);
+  }
+
+  function drawerReady(name: DrawerName): void {
+    if (focusWhenReady !== name) return;
+    focusWhenReady = null;
+    focusOpenDrawer();
+  }
 
   function drawerLabel(name: string): string {
     const labels: Record<string, string> = {
@@ -723,7 +737,7 @@
             </div>
           {/if}
           {#if drawerState.open !== null && drawerState.open !== "manifold_builder"}
-            <DrawerOutlet name={drawerState.open} params={drawerParams(drawerState.open, drawerState.params)} mobile={mobileTokenDrawer} onclose={dismiss} />
+            <DrawerOutlet name={drawerState.open} params={drawerParams(drawerState.open, drawerState.params)} mobile={mobileTokenDrawer} onclose={dismiss} onready={drawerReady} />
           {/if}
         </div>
           {/snippet}

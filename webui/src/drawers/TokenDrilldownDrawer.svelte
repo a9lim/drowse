@@ -654,7 +654,10 @@
     };
   });
 
-  let selectionAnchor = $state<DrawerParams | null>(null);
+  // Not $state: a $state would hold a proxy of ``params``, so the identity
+  // check below would never match and every dependency change would re-pick
+  // the tab.
+  let selectionAnchor: DrawerParams | null = null;
   $effect(() => {
     if (!active || !params || !token || !sessionState.info || selectionAnchor === params) return;
     drilldownUi.tab = availableDrilldownTab(
