@@ -4,18 +4,11 @@ from __future__ import annotations
 
 from pydantic import Field, FiniteFloat
 
-from drowse.core.generation import supports_thinking, thinking_is_optional
-from drowse.core.session import DrowseSession
-from drowse.core.steering import Steering
+from drowse.session.session import DrowseSession
+from drowse.steering.terms import Steering
 from drowse.server.instrument_routes import instrument_families
-from drowse.server.native_common import NativeRequest
+from drowse.server.runtime import NativeRequest
 from drowse.server.response_models import SamplingFields, SessionInfo
-
-
-class CreateSessionRequest(NativeRequest):
-    model: str | None = None
-    device: str | None = None
-    dtype: str | None = None
 
 
 class PatchSessionRequest(NativeRequest):
@@ -43,38 +36,28 @@ def session_config_dict(session: DrowseSession) -> SamplingFields:
     }
 
 
-def session_model_type(session: DrowseSession) -> str | None:
-    """Resolve the loaded model's ``model_type`` through multimodal wrappers."""
-    model_cfg = session.model.config
-    text_cfg = getattr(model_cfg, "text_config", None)
-    mt = getattr(text_cfg, "model_type", None) if text_cfg is not None else None
-    return mt or getattr(model_cfg, "model_type", None)
-
-
 def role_support(session: DrowseSession) -> tuple[bool, bool]:
     """``(assistant_supported, user_supported)`` for the loaded model family."""
-    from drowse.core.role_templates import ROLE_HEADERS, USER_ROLE_HEADERS
+    from drowse.model.role_templates import resolve_seat_headers
 
-    mt = session_model_type(session)
-    if mt is None:
+    mt = session.renderer.model_type
+    seats = resolve_seat_headers(session.tokenizer, mt) if mt is not None else None
+    if seats is None:
         return (False, False)
-    return (
-        ROLE_HEADERS.get(mt) is not None,
-        USER_ROLE_HEADERS.get(mt) is not None,
-    )
+    return (seats.assistant is not None, seats.user is not None)
 
 
 def default_role_labels(
     session: DrowseSession,
 ) -> tuple[str | None, str | None]:
     """The family-standard assistant/user role labels, if substitutable."""
-    from drowse.core.role_templates import ROLE_HEADERS, USER_ROLE_HEADERS
+    from drowse.model.role_templates import resolve_seat_headers
 
-    mt = session_model_type(session)
-    if mt is None:
+    mt = session.renderer.model_type
+    seats = resolve_seat_headers(session.tokenizer, mt) if mt is not None else None
+    if seats is None:
         return (None, None)
-    asst = ROLE_HEADERS.get(mt)
-    usr = USER_ROLE_HEADERS.get(mt)
+    asst, usr = seats.assistant, seats.user
     return (
         asst.label if asst is not None else None,
         usr.label if usr is not None else None,
@@ -102,13 +85,14 @@ def session_info(
     created_ts: int,
 ) -> SessionInfo:
     device, dtype = device_dtype(session)
-    thinks = bool(supports_thinking(session.tokenizer))
-    thinks_optional = bool(thinking_is_optional(session.tokenizer))
+    traits = session.chat_traits
+    thinks = traits.supports_thinking
+    thinks_optional = traits.thinking_optional
     is_base = bool(session.is_base_model)
     default_expr = str(default_steering) if default_steering is not None else None
     assistant_role_ok, user_role_ok = role_support(session)
     default_assistant_role, default_user_role = default_role_labels(session)
-    jlens_fitted = session.has_compatible_jlens()
+    jlens_fitted = session.lens.has_compatible()
     scene_mode, thinking_input, strips_history_thinking = _scene_capabilities(session)
     return {
         "id": "default",
@@ -124,12 +108,8 @@ def session_info(
         "thinking_is_optional": thinks_optional,
         "is_base_model": is_base,
         "jlens_fitted": jlens_fitted,
-        # The read plane's ONE representation: the same per-family blocks
-        # ``GET .../instruments`` lists ({family, live, source, probes,
-        # capabilities}).  The pre-5.x flat keys that re-flattened this
-        # state in three divergent shapes (``live_lens_layers`` /
-        # ``live_sae`` / ``live_probe_scores`` / ``sae_loaded`` /
-        # ``sae_info``) are gone — clean break, no aliases.
+        # The read plane's one representation: a {family, live, source,
+        # probes, capabilities} block per instrument family.
         "instruments": instrument_families(session),
         "default_steering": default_expr,
         "role_substitution_supported": assistant_role_ok,

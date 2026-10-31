@@ -1,10 +1,4 @@
-"""CLI entry point for drowse.
-
-Eight top-level verbs. ``manifold`` is the steering-vector / manifold *compute*
-surface (a steering vector is the K=2 case of a flat manifold); ``pack`` is the
-manifold *lifecycle* surface (install / share / inspect / remove); ``template``
-owns the standalone templated-completion artifact; ``lens`` owns the per-model
-Jacobian-lens artifact (residual→output transport + vocabulary readout):
+"""The ``drowse`` command line: eight verb groups, one error boundary.
 
     drowse serve <model> [...]
     drowse manifold {extract,generate,from-template,fit,bake,merge,transfer,compare,why} ...
@@ -15,7 +9,10 @@ Jacobian-lens artifact (residual→output transport + vocabulary readout):
     drowse lens {fit,fetch,ls,show,use,top,decompose,rm} ...
     drowse sae {train,fetch,ls,show,use,rm} ...
 
-``drowse`` with no arguments prints help.
+Each group lives in ``drowse.cli.verbs.<group>`` as a declarative
+:class:`~drowse.cli.spec.Verb` tree.  Building the parser imports only those
+modules — runners import the engine lazily — so ``drowse --help`` never loads
+torch.  ``drowse`` alone, or a bare group, prints that level's help (exit 0).
 """
 
 from __future__ import annotations
@@ -24,29 +21,53 @@ import argparse
 import os
 import sys
 
+from drowse.cli.context import CliError, exit_code_for
+from drowse.cli.spec import Verb, attach
+from drowse.errors import DrowseError
+
 os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:multiprocessing.resource_tracker")
 
-from drowse.cli.parsers import _build_root_parser
-from drowse.cli.runners import _COMMAND_RUNNERS
+
+def _groups() -> tuple[Verb, ...]:
+    from drowse.cli.verbs import (
+        config, experiment, lens, manifold, pack, sae, serve, template,
+    )
+
+    return (
+        serve.GROUP, manifold.GROUP, pack.GROUP, config.GROUP,
+        experiment.GROUP, template.GROUP, lens.GROUP, sae.GROUP,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(
+        prog="drowse",
+        description="Activation steering + trait monitoring for local HuggingFace models",
+        epilog="Run `drowse <verb> -h` for verb-specific options.",
+    )
+    attach(root, Verb("drowse", "", verbs=_groups()), ())
+    return root
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    if argv is None:
-        argv = sys.argv[1:]
-    parser = _build_root_parser()
-    # Zero-arg: print help+hint and exit 0 (not argparse's exit 2).
-    if not argv:
-        parser.print_help()
-        print()
-        print("try 'drowse serve <model_id>' or 'drowse --help'")
-        sys.exit(0)
-    return parser.parse_args(argv)
+    return build_parser().parse_args(sys.argv[1:] if argv is None else argv)
 
 
-def main(argv: list[str] | None = None):
+def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    cmd = getattr(args, "command", None)
-    if cmd is None:
-        _build_root_parser().print_help()
-        sys.exit(0)
-    _COMMAND_RUNNERS[cmd](args)
+    prefix = f"drowse {args.command}".rstrip()
+    try:
+        args.func(args)
+    except CliError as e:
+        print(f"{prefix}: {e}", file=sys.stderr)
+        sys.exit(e.exit_code)
+    except DrowseError as e:
+        status, message = e.user_message()
+        print(f"{prefix}: {message}", file=sys.stderr)
+        sys.exit(exit_code_for(status))
+    except (FileNotFoundError, FileExistsError) as e:
+        print(f"{prefix}: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print(f"{prefix}: interrupted", file=sys.stderr)
+        sys.exit(130)

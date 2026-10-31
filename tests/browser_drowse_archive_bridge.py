@@ -16,7 +16,7 @@ def _load_fixture(path: str) -> dict[str, Any]:
 
 
 def _summary(folder_path: Path) -> dict[str, Any]:
-    from drowse.io.manifold_folder import ManifoldFolder
+    from drowse.store.manifold_folder import ManifoldFolder
 
     folder = ManifoldFolder.load(folder_path)
     return {
@@ -36,8 +36,8 @@ def _summary(folder_path: Path) -> dict[str, Any]:
 def _export(
     fixture: dict[str, Any], output: Path,
 ) -> dict[str, Any]:
-    from drowse.io.manifold_authoring import create_discover_manifold_folder
-    from drowse.io.drowse_archive import export_drowse_archive
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
+    from drowse.store.archive import export_drowse_archive
 
     nodes = fixture["nodes"]
     folder = create_discover_manifold_folder(
@@ -55,9 +55,9 @@ def _export(
 
 
 def _install(archive: Path) -> dict[str, Any]:
-    from drowse.io.drowse_archive import install_drowse_archive
+    from drowse.store.install import install_manifold
 
-    return _summary(install_drowse_archive(archive))
+    return _summary(install_manifold(archive))
 
 
 def main() -> None:

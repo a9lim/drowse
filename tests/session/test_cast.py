@@ -1,0 +1,279 @@
+"""Cast-recipe composition at generation time (phase 3).
+
+The roster tier is the weakest: a cast member's recipe fills only the
+fields a call left unset, sampling merges field-wise with the call's
+non-default fields winning, and a regen's anchor + modifier compose on top
+in the same ``compose_call`` pass (the engine's ``compose_call``, which
+needs only the session's ``tree``, so a bare stub stands in for it).
+"""
+from __future__ import annotations
+
+from typing import Any, cast
+
+import pytest
+
+from drowse import CastMember, LoomTree, Recipe, SamplingConfig
+from drowse.generation.sampling import INHERIT_SYSTEM_PROMPT
+from drowse.session.session import DrowseSession
+from tests.support.engine import engine_over
+
+
+class _Stub:
+    def __init__(self) -> None:
+        self.tree = LoomTree()
+
+
+def _as_session(stub: _Stub) -> DrowseSession:
+    return cast(DrowseSession, stub)
+
+
+def _apply(
+    stub: _Stub,
+    steering: str | None = None,
+    sampling: SamplingConfig | None = None,
+    thinking: bool | None = None,
+    *,
+    raw: bool = False,
+    gen_seat: str = "assistant",
+) -> tuple[Any, SamplingConfig | None, bool | None]:
+    out = engine_over(stub).compose_call(
+        steering=steering, sampling=sampling,
+        thinking=thinking, system_prompt=INHERIT_SYSTEM_PROMPT,
+        raw=raw, gen_seat=gen_seat, parent_node_id=None, recipe_override=None,
+    )
+    return out.steering, out.sampling, out.thinking
+
+
+def test_no_label_no_change():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer", CastMember(recipe=Recipe(steering="0.5 skittish")),
+    )
+    # No sampling box at all → no label → roster untouched.
+    assert _apply(stub) == (None, None, None)
+    # A sampling box without the seat's label field → still no lookup.
+    s = SamplingConfig(temperature=0.7)
+    assert _apply(stub, sampling=s) == (None, s, None)
+
+
+def test_structural_assistant_member_applies_without_custom_label():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "assistant", CastMember(recipe=Recipe(steering="0.2 concise")),
+    )
+    steering, _, _ = _apply(stub)
+    assert steering == "0.2 concise"
+
+
+def test_label_without_member_no_change():
+    stub = _Stub()
+    s = SamplingConfig(assistant_role="pirate")
+    assert _apply(stub, sampling=s) == (None, s, None)
+
+
+def test_cast_fills_unset_fields():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer",
+        CastMember(recipe=Recipe(steering="0.5 skittish", thinking=False)),
+    )
+    s = SamplingConfig(assistant_role="deer")
+    steering, sampling, thinking = _apply(stub, sampling=s)
+    assert steering == "0.5 skittish"
+    assert thinking is False
+    assert sampling == s
+
+
+def test_explicit_kwargs_win():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer",
+        CastMember(recipe=Recipe(steering="0.5 skittish", thinking=False)),
+    )
+    s = SamplingConfig(assistant_role="deer")
+    steering, _, thinking = _apply(
+        stub, steering="0.2 formal", sampling=s, thinking=True,
+    )
+    assert steering == "0.2 formal"
+    assert thinking is True
+    # The empty string is the explicit unsteered override.
+    steering, _, _ = _apply(stub, steering="", sampling=s)
+    assert steering == ""
+
+
+def test_sampling_merges_fieldwise():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer",
+        CastMember(recipe=Recipe(
+            sampling=SamplingConfig(temperature=1.1, top_p=0.9),
+        )),
+    )
+    call = SamplingConfig(assistant_role="deer", temperature=0.3)
+    _, merged, _ = _apply(stub, sampling=call)
+    assert merged is not None
+    assert merged.temperature == 0.3      # call's non-default field wins
+    assert merged.top_p == 0.9            # cast fills the unset field
+    assert merged.assistant_role == "deer"  # label survives the merge
+
+
+def test_seed_applies_only_when_unpinned():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer", CastMember(recipe=Recipe(sampling=SamplingConfig(seed=1234))),
+    )
+    _, merged, _ = _apply(stub, sampling=SamplingConfig(assistant_role="deer"))
+    assert merged is not None and merged.seed == 1234
+    _, merged, _ = _apply(
+        stub, sampling=SamplingConfig(assistant_role="deer", seed=7),
+    )
+    assert merged is not None and merged.seed == 7
+
+
+def test_anchor_seed_beats_the_cast_seed_on_an_unseeded_regen():
+    """Regression: the cast tier composed in a first pass, so its seed
+    entered the regen pass as the *call* seed and beat the anchor's — an
+    unseeded ``cool`` regen of a seed-5 node ran on the cast's 1234."""
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer", CastMember(recipe=Recipe(sampling=SamplingConfig(seed=1234))),
+    )
+    user = stub.tree.add_user_turn("hi")
+    node = stub.tree.begin_assistant(
+        user, recipe=Recipe(sampling=SamplingConfig(seed=5, assistant_role="deer")),
+    )
+    stub.tree.finalize_assistant(node, text="hello")
+
+    def regen(sampling: SamplingConfig) -> SamplingConfig | None:
+        return engine_over(stub).compose_call(
+            steering=None, sampling=sampling, thinking=None,
+            system_prompt=INHERIT_SYSTEM_PROMPT, raw=False, gen_seat="assistant",
+            parent_node_id=node, recipe_override="cool",
+        ).sampling
+
+    composed = regen(SamplingConfig(assistant_role="deer"))
+    assert composed is not None
+    assert composed.seed == 5
+    assert composed.temperature == 0.3
+    # A seed the call pins still beats the anchor's (fan siblings).
+    pinned = regen(SamplingConfig(assistant_role="deer", seed=9))
+    assert pinned is not None and pinned.seed == 9
+
+
+def test_cast_member_steering_yields_to_the_regen_anchor():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer", CastMember(recipe=Recipe(steering="0.5 skittish", thinking=True)),
+    )
+    user = stub.tree.add_user_turn("hi")
+    node = stub.tree.begin_assistant(user, recipe=Recipe(
+        steering="0.3 calm", thinking=False,
+        sampling=SamplingConfig(seed=5, assistant_role="deer"),
+    ))
+    stub.tree.finalize_assistant(node, text="hello")
+    out = engine_over(stub).compose_call(
+        steering=None,
+        sampling=SamplingConfig(assistant_role="deer"), thinking=None,
+        system_prompt=INHERIT_SYSTEM_PROMPT, raw=False, gen_seat="assistant",
+        parent_node_id=node, recipe_override="hot",
+    )
+    assert out.steering == "0.3 calm"
+    assert out.thinking is False
+
+
+def test_seed_only_cast_member_keeps_its_null_sampling_shape(tiny_session: Any):
+    """The HTTP cast surface takes a seed but never a sampling block; the
+    member persists as ``sampling: null`` + ``seed`` (the drowse.ai cast
+    shape) and reads back identically."""
+    member = tiny_session.set_cast_member("deer", seed=1234)
+    data = member.to_dict()
+    assert data["recipe"]["sampling"] is None
+    assert data["recipe"]["seed"] == 1234
+    restored = CastMember.from_dict(data)
+    assert restored.recipe is not None
+    assert restored.recipe.sampling == SamplingConfig(seed=1234)
+    assert restored.to_dict() == data
+    # A member with a sampling block writes it in full beside the seed.
+    blocked = tiny_session.set_cast_member(
+        "deer", sampling=SamplingConfig(temperature=0.5), seed=7,
+    ).to_dict()["recipe"]
+    assert blocked["seed"] == 7
+    assert blocked["sampling"]["seed"] == 7
+    assert blocked["sampling"]["temperature"] == 0.5
+
+
+def test_user_seat_reads_user_role():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "captain", CastMember(recipe=Recipe(steering="0.4 formal")),
+    )
+    s = SamplingConfig(user_role="captain", assistant_role="deer")
+    steering, _, _ = _apply(stub, sampling=s, gen_seat="user")
+    assert steering == "0.4 formal"
+    # Assistant-seat gen with the same box reads assistant_role instead.
+    steering, _, _ = _apply(stub, sampling=s, gen_seat="assistant")
+    assert steering is None
+
+
+def test_raw_mode_skips_roster():
+    stub = _Stub()
+    stub.tree.set_cast_member(
+        "deer", CastMember(recipe=Recipe(steering="0.5 skittish")),
+    )
+    s = SamplingConfig(assistant_role="deer")
+    assert _apply(stub, sampling=s, raw=True) == (None, s, None)
+
+
+def test_bare_member_contributes_nothing():
+    stub = _Stub()
+    stub.tree.set_cast_member("deer", CastMember(notes="just a name"))
+    s = SamplingConfig(assistant_role="deer")
+    assert _apply(stub, sampling=s) == (None, s, None)
+
+
+def test_session_set_cast_member_validates_steering(tiny_session: Any):
+    import pytest
+    from drowse.steering.grammar import SteeringExprError
+
+    with pytest.raises(SteeringExprError):
+        tiny_session.set_cast_member("deer", steering="0.5 !!bad!!")
+    member = tiny_session.set_cast_member("deer", steering="0.5 formal.casual")
+    assert member.recipe is not None
+    assert member.recipe.steering == "0.5 formal.casual"
+    assert tiny_session.tree.cast["deer"] == member
+    # Field-less call authors a bare named label.
+    bare = tiny_session.set_cast_member("narrator")
+    assert bare.recipe is None
+    tiny_session.tree.remove_cast_member("narrator")
+    assert "narrator" not in tiny_session.tree.cast
+
+
+@pytest.mark.parametrize(("data", "match"), [
+    ({"recipe": ["0.5 formal"], "notes": ""}, "'recipe' must be an object or null"),
+    ({"recipe": None, "notes": 5}, "'notes' must be a string"),
+])
+def test_cast_member_from_dict_rejects_malformed_fields(
+    data: dict[str, Any], match: str,
+) -> None:
+    from drowse.loom.errors import LoomTreeError
+
+    with pytest.raises(LoomTreeError, match=match):
+        CastMember.from_dict(data)
+
+
+def test_ws_explicit_clear_survives_as_empty_steering():
+    """The server's steering composition must hand the session an *empty*
+    Steering on an explicit clear (``steering: ""``) — None means
+    "unset" and would let the cast roster fill it back in."""
+    from drowse.server.request_helpers import compose_request_steering
+    from drowse.steering.terms import Steering
+
+    cleared = compose_request_steering("", Steering(alphas={"x": 0.5}))
+    assert cleared is not None
+    assert cleared.alphas == {}
+
+    # No expression at all inherits the default — None when there is none,
+    # the roster's fill case.
+    assert compose_request_steering(None, None) is None
+    default = Steering(alphas={"x": 0.5})
+    assert compose_request_steering(None, default) is default

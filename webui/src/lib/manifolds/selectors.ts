@@ -22,7 +22,6 @@ const VARIANT_RE = /^(?:raw|sae(?:-[a-z0-9._-]+)?|role(?:-[a-z0-9._-]+)?|from(?:
 export function manifoldSelectorOptions(
   manifold: ManifoldInfo,
   modelId: string | null,
-  _browserMode: boolean,
 ): ManifoldSelectorOption[] {
   const key = `${manifold.namespace}/${manifold.name}`;
   const variants = variantsForModel(manifold, modelId);

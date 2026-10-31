@@ -11,6 +11,41 @@ export interface LoomSegment {
   shared: boolean;
 }
 
+type TokenRow = NonNullable<LoomNodeJSON["tokens"]>[number];
+
+// Token identity keys are memoized on object identity: a saved node keeps its
+// identity until the tree replaces it, and the live overlay reuses each token
+// row across frames, so a streamed frame only keys the newly arrived tokens.
+const nodeKeys = new WeakMap<LoomNodeJSON, string[] | null>();
+const rowKeys = new WeakMap<TokenRow, { roleLabel: string | null; previous: number; key: string }>();
+
+/** One key per model token (role label, text, and the raw ids it covers), or
+ *  null when the reply has no exact token record and must never be merged. */
+function tokenKeys(node: LoomNodeJSON): string[] | null {
+  if (nodeKeys.has(node)) return nodeKeys.get(node)!;
+  let result: string[] | null = null;
+  if (node.role === "assistant" && node.recipe && node.raw_token_ids?.length && node.tokens?.length) {
+    const roleLabel = node.role_label ?? null;
+    let previous = -1;
+    const keys: string[] = [];
+    for (const token of node.tokens) {
+      const index = token.raw_index;
+      if (index == null || !Number.isInteger(index) || index <= previous || token.token_id == null ||
+        node.raw_token_ids[index] !== token.token_id) break;
+      let memo = rowKeys.get(token);
+      if (!memo || memo.roleLabel !== roleLabel || memo.previous !== previous) {
+        memo = { roleLabel, previous, key: JSON.stringify([roleLabel, token.text, node.raw_token_ids.slice(previous + 1, index + 1)]) };
+        rowKeys.set(token, memo);
+      }
+      keys.push(memo.key);
+      previous = index;
+    }
+    if (keys.length === node.tokens.length) result = keys;
+  }
+  nodeKeys.set(node, result);
+  return result;
+}
+
 /** A display-only radix tree. Stored replies and their token indexes stay intact. */
 export function segmentLoom(nodes: LoomNodeJSON[], activeIds: ReadonlySet<string>): LoomSegment[] {
   const ids = new Set(nodes.map(node => node.id));
@@ -21,17 +56,8 @@ export function segmentLoom(nodes: LoomNodeJSON[], activeIds: ReadonlySet<string
     const siblings = children.get(parent) ?? [];
     siblings.push(node);
     children.set(parent, siblings);
-    if (node.role !== "assistant" || !node.recipe || !node.raw_token_ids?.length || !node.tokens?.length) continue;
-    let previous = -1;
-    const tokenKeys: string[] = [];
-    for (const token of node.tokens) {
-      const index = token.raw_index;
-      if (index == null || !Number.isInteger(index) || index <= previous || token.token_id == null ||
-        node.raw_token_ids[index] !== token.token_id) break;
-      tokenKeys.push(JSON.stringify([node.role_label, token.text, node.raw_token_ids.slice(previous + 1, index + 1)]));
-      previous = index;
-    }
-    if (tokenKeys.length === node.tokens.length) keys.set(node.id, tokenKeys);
+    const tokenKeyList = tokenKeys(node);
+    if (tokenKeyList) keys.set(node.id, tokenKeyList);
   }
   const result: LoomSegment[] = [];
   type Job = { nodes: LoomNodeJSON[]; parentId: string | null; depth: number; start: number };

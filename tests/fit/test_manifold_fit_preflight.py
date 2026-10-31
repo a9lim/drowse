@@ -1,0 +1,460 @@
+"""The weight-free ``manifold fit`` / ``manifold extract`` no-op preflight.
+
+Every test here answers one question: can an exact refit be *proven*
+unnecessary without instantiating the transformer, and does the proof collapse
+the instant any fit input moves?  The failure mode being defended against is
+asymmetric — a false "unproven" costs a model load, a false "proven" silently
+serves a stale artifact — so the refusal cases outnumber the acceptance case.
+
+CPU only: the fit that publishes the artifact runs through the same synthetic
+capture stub the rest of the extraction suite uses, and the preflight's model
+touchpoints (source fingerprint, neutral cache, config shape, tokenizer) are
+stubbed at their module boundaries.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+import torch
+
+from drowse.fit import capture as V
+from drowse.model import arch as arch_mod
+from drowse.model import fingerprint as fp_mod
+from drowse.model import load as model_mod
+from drowse.events import EventBus
+from drowse.fit.pipeline import ManifoldExtractionPipeline
+from drowse.model.fingerprint import loaded_model_fingerprint
+from drowse.store import neutral as alignment_mod
+from drowse.store.manifold_authoring import create_discover_manifold_folder
+from drowse.store.manifold_folder import ManifoldFolder
+from drowse.store.manifold_schema import ManifoldSidecar
+from drowse.fit.preflight import preflight_manifold_fit_noop
+from drowse.base.paths import tensor_filename
+from tests.support.whitener import synthetic_means, synthetic_whitener
+from tests.support.capture import CaptureTokenizer, install_capture, label_encoder_batch
+
+_MODEL_ID = "stub/model"
+_SOURCE_FP = "5c" * 32
+_DIM = 8
+_N_LAYERS = 4
+_CORPORA = {
+    "calm": ["calm statement 0", "calm statement 1"],
+    "frantic": ["frantic statement 0", "frantic statement 1"],
+}
+
+
+class _ProvableHandle:
+    """A ``ModelHandle`` whose weights carry a provable checkpoint source.
+
+    ``loaded_model_fingerprint`` folds ``_drowse_source_fingerprint`` in as
+    ``trusted_source``, and the fit stamps that same attribute onto the sidecar
+    — which is exactly the pair the preflight later re-establishes off-model.
+    """
+
+    def __init__(self) -> None:
+        self.model_id = _MODEL_ID
+        self.model: torch.nn.Module = torch.nn.Linear(1, 1)
+        self.model._drowse_source_fingerprint = _SOURCE_FP  # type: ignore[assignment]
+        self.tokenizer: Any = CaptureTokenizer()
+        self.device = torch.device("cpu")
+        self.dtype = torch.float32
+        self.layers: Any = torch.nn.ModuleList(
+            torch.nn.Identity() for _ in range(_N_LAYERS)
+        )
+        self.layer_means = synthetic_means(range(_N_LAYERS), _DIM)
+        self.whitener = synthetic_whitener(
+            range(_N_LAYERS), _DIM, means=self.layer_means,
+        )
+
+
+@pytest.fixture
+def fitted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+    """A published fit plus every stub the preflight's model touchpoints need."""
+    torch.manual_seed(0)
+    monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
+    install_capture(monkeypatch)
+
+    folder = create_discover_manifold_folder(
+        "local", "mood", "", fit_mode="pca", node_corpora=dict(_CORPORA),
+    )
+    handle = _ProvableHandle()
+    loaded_fp = loaded_model_fingerprint(handle.model, _MODEL_ID)
+    ManifoldExtractionPipeline(handle, EventBus()).fit(folder)
+
+    # The four model touchpoints, each stubbed where the preflight imports it.
+    monkeypatch.setattr(
+        fp_mod, "model_source_fingerprint",
+        lambda *_a, **_k: _SOURCE_FP,
+    )
+    monkeypatch.setattr(
+        arch_mod, "config_model_shape", lambda _m: (_N_LAYERS, _DIM),
+    )
+    monkeypatch.setattr(
+        alignment_mod, "validate_neutral_cache_metadata",
+        lambda _model_id, **_k: {
+            "model_source_fingerprint": _SOURCE_FP,
+            "model_fingerprint": loaded_fp,
+        },
+    )
+    import transformers
+
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained",
+        classmethod(lambda _cls, *_a, **_k: SimpleNamespace(model_type=None)),
+    )
+    monkeypatch.setattr(
+        transformers.AutoTokenizer, "from_pretrained",
+        classmethod(lambda _cls, *_a, **_k: CaptureTokenizer()),
+    )
+    return SimpleNamespace(
+        folder=folder, handle=handle, loaded_fp=loaded_fp,
+        tensor=folder / tensor_filename(_MODEL_ID),
+    )
+
+
+def _preflight(fitted: Any, **kwargs: Any) -> Any:
+    return preflight_manifold_fit_noop(
+        fitted.folder, model_id=_MODEL_ID, **kwargs,
+    )
+
+
+def _rewrite_sidecar(fitted: Any, **fields: Any) -> None:
+    """Patch the fitted sidecar and re-prove it in the folder manifest.
+
+    Editing the sidecar without refreshing the manifest hash would fail the
+    pair proof for the *wrong* reason, so every field-level refusal test goes
+    through here and isolates the field it is actually about.
+    """
+    sidecar_path = fitted.tensor.with_suffix(".json")
+    payload = json.loads(sidecar_path.read_text())
+    payload.update(fields)
+    sidecar_path.write_text(json.dumps(payload))
+    ManifoldFolder.load(fitted.folder, verify_manifest=False).update_file_hashes(
+        fitted.tensor, sidecar_path,
+    )
+
+
+# ---- the acceptance case --------------------------------------------------
+
+
+def test_preflight_proves_an_exact_refit_is_a_no_op(fitted: Any) -> None:
+    proof = _preflight(fitted)
+    assert proof is not None
+    assert proof.model_id == _MODEL_ID
+    assert proof.manifold_name == "mood"
+    assert proof.tensor_path == fitted.tensor
+    assert list(proof.node_labels) == list(_CORPORA)
+    assert list(proof.fitted_layers) == list(range(_N_LAYERS))
+
+
+def test_preflight_loads_no_model_weights(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every weight-loading entry point is poisoned for the duration."""
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("preflight loaded model weights")
+
+    import transformers
+
+    monkeypatch.setattr(model_mod, "load_model", _boom, raising=False)
+    monkeypatch.setattr(
+        transformers.AutoModelForCausalLM, "from_pretrained",
+        classmethod(lambda *_a, **_k: _boom()),
+    )
+    assert _preflight(fitted) is not None
+
+
+# ---- refusals: the fit inputs ---------------------------------------------
+
+
+def test_preflight_refuses_after_a_baseline_prompt_edit(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact failure a partial proof would hide.
+
+    The corpus files are byte-identical and the model is unchanged; only the
+    shared elicitation prompt moved, which changes every captured residual.
+    """
+    monkeypatch.setattr(V, "_load_baseline_prompts", lambda: ["a new prompt"])
+    assert _preflight(fitted) is None
+
+
+def test_preflight_refuses_after_a_corpus_edit(fitted: Any) -> None:
+    node = fitted.folder / "nodes" / "00_calm.json"
+    node.write_text(json.dumps(["calm statement 0", "calm statement EDITED"]))
+    assert _preflight(fitted) is None
+
+
+def test_preflight_refuses_on_a_layer_set_change(fitted: Any) -> None:
+    assert _preflight(fitted, layer_indices=[0, 1]) is None
+    assert _preflight(fitted, layer_indices="workspace") is None
+    # The same roster spelled differently is still the same roster.
+    assert _preflight(fitted, layer_indices="all") is not None
+    assert _preflight(fitted, layer_indices=list(range(_N_LAYERS))) is not None
+
+
+def test_preflight_refuses_an_old_format_sidecar(fitted: Any) -> None:
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
+
+    _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
+    assert _preflight(fitted) is None
+
+
+# ---- refusals: the model identity -----------------------------------------
+
+
+def test_preflight_refuses_when_the_checkpoint_source_is_unprovable(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        fp_mod, "model_source_fingerprint", lambda *_a, **_k: None,
+    )
+    assert _preflight(fitted) is None
+
+
+def test_preflight_refuses_when_the_source_no_longer_matches(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        fp_mod, "model_source_fingerprint", lambda *_a, **_k: "ab" * 32,
+    )
+    assert _preflight(fitted) is None
+
+
+def test_preflight_refuses_when_the_neutral_bridge_names_other_weights(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bridge is what supplies the loaded fingerprint; it must be exact."""
+    monkeypatch.setattr(
+        alignment_mod, "validate_neutral_cache_metadata",
+        lambda _model_id, **_k: {
+            "model_source_fingerprint": _SOURCE_FP,
+            "model_fingerprint": "different-loaded-weights",
+        },
+    )
+    assert _preflight(fitted) is None
+
+
+def test_preflight_refuses_without_a_neutral_cache(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _missing(_model_id: str, **_kwargs: Any) -> Any:
+        raise FileNotFoundError("no neutral cache")
+
+    monkeypatch.setattr(
+        alignment_mod, "validate_neutral_cache_metadata", _missing,
+    )
+    assert _preflight(fitted) is None
+
+
+def test_preflight_refuses_when_the_capture_schema_moved(fitted: Any) -> None:
+    _rewrite_sidecar(fitted, capture_version=99)
+    assert _preflight(fitted) is None
+
+
+def test_preflight_refuses_a_fit_with_no_provable_capture_identity(
+    fitted: Any,
+) -> None:
+    """A fit whose handle had no callable tokenizer stamps null digests."""
+    _rewrite_sidecar(
+        fitted, capture_sha256=None, capture_render_sha256=None,
+        baseline_prompts_sha256=None,
+    )
+    assert _preflight(fitted) is None
+
+
+def test_preflight_refuses_a_fit_from_an_unprovable_checkpoint(
+    fitted: Any,
+) -> None:
+    _rewrite_sidecar(fitted, model_source_fingerprint=None)
+    assert _preflight(fitted) is None
+
+
+# ---- refusals: request shapes that are not provable ------------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"sae": "some/release"},
+        {"fit_mode": "spectral"},
+        {"hyperparams": {"max_dim": 2}},
+    ],
+    ids=["sae", "fit-mode-override", "hyperparam-override"],
+)
+def test_preflight_declines_unprovable_requests(
+    fitted: Any, kwargs: dict[str, Any],
+) -> None:
+    assert _preflight(fitted, **kwargs) is None
+
+
+def test_preflight_refuses_a_missing_or_unproven_pair(fitted: Any) -> None:
+    fitted.tensor.unlink()
+    assert _preflight(fitted) is None
+
+
+def test_preflight_refuses_a_tampered_tensor(fitted: Any) -> None:
+    fitted.tensor.write_bytes(fitted.tensor.read_bytes() + b"\x00")
+    assert _preflight(fitted) is None
+
+
+# ---- the staleness contract: old sidecar = cache miss, never an error ------
+
+
+def test_old_format_sidecar_reads_as_a_cache_miss_not_an_error(
+    fitted: Any,
+) -> None:
+    """A format bump expires one fit, not the whole artifact.
+
+    The folder must still load — its labels, corpus, and geometry are
+    untouched — and simply report no fit for that model, which is what makes
+    the next fit a plain overwrite rather than a repair.
+    """
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
+
+    _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
+
+    mf = ManifoldFolder.load(fitted.folder, verify_manifest=False)
+    assert mf.node_labels == list(_CORPORA)
+    assert mf.tensor_models() == []
+
+
+def test_stale_fit_is_overwritten_by_the_next_fit(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
+
+    _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
+    monkeypatch.setattr(V, "_encode_and_capture_all_batch", label_encoder_batch)
+
+    manifold = ManifoldExtractionPipeline(fitted.handle, EventBus()).fit(
+        fitted.folder,
+    )
+    assert manifold.node_labels == list(_CORPORA)
+    sidecar = ManifoldSidecar.load(fitted.tensor.with_suffix(".json"))
+    assert sidecar.capture_render_sha256 is not None
+    assert _preflight(fitted) is not None
+
+
+def test_stale_fit_resolves_as_a_miss_not_a_codec_error(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Steering / probe resolution must say "refit", not raise a format error.
+
+    ``bootstrap_probe_roster`` retries a `ManifoldNotRegisteredError` by
+    fitting; a raw `ManifoldFormatError` escapes that retry and silently drops
+    the probe, which is how a format bump could empty a session's whole roster.
+    """
+    from drowse import ManifoldNotRegisteredError
+    from drowse.session.registry import ArtifactRegistry, ModelBinding
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
+
+    _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
+
+    registry = ArtifactRegistry(ModelBinding(
+        model=fitted.handle.model, tokenizer=None, model_id=_MODEL_ID,
+        device=torch.device("cpu"), dtype=torch.float32,
+    ))
+    with pytest.raises(ManifoldNotRegisteredError, match="no fitted tensor"):
+        registry.ensure_manifold_loaded("local/mood")
+
+
+def test_corrupt_sidecar_still_raises(fitted: Any) -> None:
+    """Staleness is forgiven; corruption is not."""
+    from drowse.store.manifold_schema import ManifoldFormatError
+
+    sidecar_path = fitted.tensor.with_suffix(".json")
+    payload = json.loads(sidecar_path.read_text())
+    payload["node_labels"] = ["only-one"]
+    sidecar_path.write_text(json.dumps(payload))
+    # Discovery stays up — one bad fit must not hide the manifold — but the
+    # fit is unavailable and the strict read refuses it.
+    mf = ManifoldFolder.load(fitted.folder, verify_manifest=False)
+    assert mf.tensor_models() == []
+    with pytest.raises(ManifoldFormatError):
+        mf.sidecar(fitted.tensor.stem)
+    with pytest.raises(ManifoldFormatError):
+        ManifoldFolder.load(fitted.folder)
+
+
+# ---- CLI adoption ----------------------------------------------------------
+
+
+def _run_cli(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Run ``drowse <argv>`` with model loads poisoned; returns the attempts.
+
+    A proven no-op returns normally with no attempt; anything else reaches
+    the load and stops there with ``RuntimeError``.
+    """
+    from drowse.cli.main import main
+    from tests.support.cli import poison_session
+
+    attempts = poison_session(monkeypatch)
+    try:
+        main(argv)
+    except RuntimeError as exc:
+        assert "model load attempted" in str(exc)
+    return attempts
+
+
+def test_cli_fit_reports_the_hit_without_constructing_a_session(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any,
+) -> None:
+    assert _run_cli(["manifold", "fit", str(fitted.folder), "-m", _MODEL_ID], monkeypatch) == []
+    captured = capsys.readouterr()
+    assert "nothing to do" in captured.err
+    assert "mood" in captured.out
+
+
+@pytest.mark.parametrize("unproven", [False, True], ids=["force", "unproven-source"])
+def test_cli_fit_loads_the_model_when_forced_or_unproven(
+    fitted: Any, unproven: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if unproven:
+        monkeypatch.setattr(fp_mod, "model_source_fingerprint", lambda *_a, **_k: None)
+    argv = ["manifold", "fit", str(fitted.folder), "-m", _MODEL_ID]
+    assert _run_cli(argv if unproven else [*argv, "-f"], monkeypatch) == [_MODEL_ID]
+
+
+def _republish_as(fitted: Any, name: str) -> None:
+    """Copy the fixture's ``local/mood`` artifact to the folder ``extract``
+    would author for ``name``."""
+    import shutil
+
+    target = fitted.folder.parent / name
+    shutil.copytree(fitted.folder, target)
+    payload = json.loads((target / "manifold.json").read_text())
+    payload["name"] = name
+    (target / "manifold.json").write_text(json.dumps(payload))
+    sidecar_path = target / fitted.tensor.with_suffix(".json").name
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar["name"] = name
+    sidecar_path.write_text(json.dumps(sidecar))
+    ManifoldFolder.load(target, verify_manifest=False).update_file_hashes(
+        target / fitted.tensor.name, sidecar_path,
+    )
+
+
+def test_cli_extract_reports_the_hit_without_constructing_a_session(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any,
+) -> None:
+    """``extract calm frantic`` canonicalizes onto the same folder."""
+    _republish_as(fitted, "calm.frantic")
+    argv = ["manifold", "extract", "calm", "frantic", "-m", _MODEL_ID]
+    assert _run_cli(argv, monkeypatch) == []
+    captured = capsys.readouterr()
+    assert "nothing to do" in captured.err
+    assert "calm.frantic" in captured.out
+
+
+def test_cli_extract_role_mismatch_falls_through_to_the_loaded_path(
+    fitted: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A role request against a role-free corpus is an error, not a hit."""
+    _republish_as(fitted, "calm.frantic")
+    argv = ["manifold", "extract", "calm", "frantic", "-m", _MODEL_ID, "--role", "pirate"]
+    assert _run_cli(argv, monkeypatch) == [_MODEL_ID]

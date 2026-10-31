@@ -171,18 +171,3 @@ export function enqueueOrApply(label: string, apply: () => void): void {
 export function isPendingBusy(): boolean {
   return dispatchReservations > 0 || genStatus.active || pendingActions.queue.length > 0;
 }
-
-/** Predict the post-queue active-node-is-user-role flag.  Walks the
- *  queue tail-first and returns the first non-null ``endsOnUserNode``;
- *  returns ``null`` when no queued item changes the role (e.g. the
- *  queue is empty or only carries rack mutations).  Drives the chat
- *  input's role-aware placeholder + send-button label so a queued
- *  user-seat submission flips the next one's predicted seat without
- *  waiting for the queue to drain. */
-export function predictedQueueEndOnUserNode(): boolean | null {
-  for (let i = pendingActions.queue.length - 1; i >= 0; i--) {
-    const e = pendingActions.queue[i].endsOnUserNode;
-    if (e !== undefined && e !== null) return e;
-  }
-  return null;
-}

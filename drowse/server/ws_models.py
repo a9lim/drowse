@@ -7,10 +7,11 @@ from typing import Any, Literal
 from pydantic import Field, FiniteFloat, NonNegativeInt, model_validator
 from pydantic_core import PydanticCustomError
 
-from drowse.core.results import GenerationResult
-from drowse.core.sampling import SamplingConfig
+from drowse.generation.results import GenerationResult
+from drowse.generation.sampling import SamplingConfig
 from drowse.server import request_helpers
-from drowse.server.native_common import NativeRequest
+from drowse.server.compat import usage_dict
+from drowse.server.runtime import NativeRequest
 
 
 class WSSamplingParams(NativeRequest):
@@ -38,7 +39,7 @@ class WSInputMessage(NativeRequest):
     content: str
     #: Cast label for this turn — the same per-turn ``role_label`` the loom
     #: stamps on its nodes, rendered into the constructed header by the scene
-    #: stitcher (``core.generation.build_chat_input`` reads the ``"label"``
+    #: stitcher (``generation.decode.build_chat_input`` reads the ``"label"``
     #: key).  The dashboard's auto-regen shadow replays a conversation as an
     #: explicit message list, so without this field a shadow of any
     #: custom-labelled turn was rejected outright by ``extra="forbid"`` — and
@@ -48,7 +49,7 @@ class WSInputMessage(NativeRequest):
 
 
 class WSGenerateMessage(NativeRequest):
-    """The specialist generation frame: fork, prefill, shadow, seat.
+    """The specialist generation frame: fork, shadow, seat.
 
     Authored turns are ``submit``'s job alone — this frame carries no
     ``commit_*`` vocabulary.  ``submit`` lowers onto this schema for its
@@ -73,8 +74,6 @@ class WSGenerateMessage(NativeRequest):
     fork_alt_token_id: int | None = None
     fork_replacement_text: str | None = None
     fork_seed: int | None = Field(default=None, ge=0, le=0x7fffffff)
-    prefill_node_id: str | None = None
-    prefill_text: str | None = None
     # Cast model: which seat the generated turn occupies.  ``"user"``
     # renders the generation prompt as a user-seat header and lands the
     # node with ``role="user"`` + a stamped recipe (generated is
@@ -84,16 +83,12 @@ class WSGenerateMessage(NativeRequest):
     generate_seat: Literal["user", "assistant"] | None = None
 
     @model_validator(mode="after")
-    def _check_mode_fields(self) -> "WSGenerateMessage":
-        """Fork and prefill are mutually exclusive, and each needs its whole
-        field group.
+    def _check_fork_fields(self) -> "WSGenerateMessage":
+        """A token fork needs its whole field group.
 
-        These live here rather than in a hand-rolled handler pass so the
-        schema is the single description of a well-formed frame: one
-        validation layer, one error shape (a ``ValidationError`` the WS
-        reader renders through the shared error-frame builder).
-        :class:`PydanticCustomError` keeps the message verbatim — a plain
-        ``ValueError`` would reach the wire as ``"Value error, …"``.
+        The schema is the single description of a well-formed frame;
+        :class:`PydanticCustomError` keeps the message verbatim (a plain
+        ``ValueError`` would reach the wire as ``"Value error, …"``).
         """
         fork_values = (
             self.fork_node_id,
@@ -118,17 +113,6 @@ class WSGenerateMessage(NativeRequest):
                 "fork_fields",
                 "fork requires fork_node_id, fork_raw_index, and exactly one "
                 "of fork_alt_token_id or fork_replacement_text",
-            )
-        is_prefill = self.prefill_node_id is not None
-        if is_prefill and not self.prefill_text:
-            raise PydanticCustomError(
-                "prefill_fields",
-                "prefill requires prefill_node_id and prefill_text together",
-            )
-        if is_fork and is_prefill:
-            raise PydanticCustomError(
-                "mode_conflict",
-                "a generate message cannot be both a fork and a prefill",
             )
         return self
 
@@ -195,7 +179,7 @@ def build_input(
     """Lower the strict wire message objects to the engine's mapping shape.
 
     ``model_dump`` carries ``label`` through verbatim, which is exactly the
-    per-turn key ``session._prepare_input`` hands to ``build_chat_input`` —
+    per-turn key ``PromptRenderer.prepare_input`` hands to ``build_chat_input`` —
     the wire message and a loom-derived message dict are the same shape.
     """
     if not isinstance(body, list):
@@ -204,16 +188,10 @@ def build_input(
 
 
 def result_to_json(result: GenerationResult) -> dict[str, Any]:
-    prompt_tokens = result.prompt_tokens
-    completion = result.token_count
     return {
         "text": result.text,
-        "tokens": completion,
+        "tokens": result.token_count,
         "finish_reason": result.finish_reason,
         "applied_steering": result.applied_steering,
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion,
-            "total_tokens": prompt_tokens + completion,
-        },
+        "usage": usage_dict(result),
     }

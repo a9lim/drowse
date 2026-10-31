@@ -259,11 +259,6 @@ export function createServiceTools(): AppTool[] {
     tool({ name: "drowse_delete_manifold", group: "artifacts", services: ["manifolds.delete"], available: capability("manifold_artifacts"), consequential: true,
       description: "Delete the exact installed manifold folder and its fitted data. Bundled artifacts may rematerialize on restart.", inputSchema: objectSchema(address, ["namespace", "name"]),
       execute: (input, context) => changed(context, "artifacts", () => runtime(context).manifolds.delete(input.namespace as string, input.name as string)) }),
-    tool({ name: "drowse_inspect_surface", group: "artifacts", services: ["manifolds.inspectSurface"], surfaces: ["surface_geometry"], readOnly: true,
-      description: "Calculate available geometric surface diagnostics for authored points. This is geometry evidence, not an LLM behavioral evaluation.",
-      available: (context) => context.runtime?.manifolds.inspectSurface ? null : "Surface diagnostics are unavailable on this runtime.",
-      inputSchema: objectSchema({ points: { type: "array", items: { type: "array", items: number, minItems: 1, maxItems: 32 }, minItems: 2, maxItems: 1000 } }, ["points"]),
-      execute: (input, context) => runtime(context).manifolds.inspectSurface!(input.points as number[][]) }),
     tool({ name: "drowse_list_manifold_packs", group: "artifacts", services: ["manifolds.drowseArchiveList"], readOnly: true, available: browserArtifacts,
       description: "List portable .drowse manifold packs installed in this runtime, with their source and installation provenance.", inputSchema: objectSchema(pagination),
       execute: async (input, context) => page((await runtime(context).manifolds.drowseArchiveList()).packs, input) }),
@@ -549,7 +544,7 @@ export async function reconcileServiceJob(id: string, context: ToolContext) {
 function preparationSchemas(): InputSchema[] {
   return [
     objectSchema({ family: choices("lens"), operation: choices("fetch"), source: name, force: flag }, ["family", "operation"]),
-    objectSchema({ family: choices("lens"), operation: choices("fit"), prompts: integer(1, 5000), seq_len: nullable(integer(32, 4096)), prompt_batch: nullable(integer(1, 64)), layers: text("all, workspace, or comma-separated source layers.", 1000), relp: flag, force: flag }, ["family", "operation"]),
+    objectSchema({ family: choices("lens"), operation: choices("fit"), prompts: integer(1, 5000), seq_len: nullable(integer(32, 4096)), prompt_batch: nullable(integer(1, 64)), layers: text("all, workspace, or comma-separated source layers.", 1000), kind: choices("r", "j"), force: flag }, ["family", "operation"]),
     objectSchema({ family: choices("sae"), operation: choices("fetch"), release: name, layer: nullable(integer()) }, ["family", "operation", "release"]),
     objectSchema({ family: choices("sae"), operation: choices("train"), name, layer: nullable(integer()), tokens: integer(1, 100000000), seq_len: integer(8, 4096), batch_size: integer(1, 256), width: nullable(integer(1)), expansion: integer(1, 128), learning_rate: { type: "number", minimum: Number.MIN_VALUE }, l1: { type: "number", minimum: 0 }, dead_threshold: { type: "number", minimum: 0 }, seed: integer(Number.MIN_SAFE_INTEGER), force: flag }, ["family", "operation", "name"]),
   ];

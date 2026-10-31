@@ -1,0 +1,460 @@
+"""Golden payloads for the one read-side wire record.
+
+The measurement envelope (``readout/measurements.py``) is carried by the native
+WS ``token`` and ``done`` frames, persisted loom token rows, and all three
+replay endpoints.  Its contract used to live only in hand-mirrored
+TypeScript, which is how a never-read aggregate block and a unit no producer
+held both survived unnoticed.
+
+These tests assert **exact key sets**, so wire drift is a test failure rather
+than a dashboard bug.  They also pin the 5.x/6.x reading split: geometry
+carries the full whitened ``ProbeReading``, the single-axis families carry
+their native ``ScalarReading`` (``value``/``unit``/``per_layer``/``depth``)
+and NOT eight constant geometry fields.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from tests.support.lens import lens_kwargs
+
+from drowse.readout.types import DepthSummary, ProbeReading, ScalarReading
+from drowse.readout.measurements import (
+    MEASUREMENTS_VERSION,
+    build_measurements,
+    live_sources,
+)
+
+# The eight fields a synthesized ``ProbeReading`` used to ship for every
+# lens/SAE probe on every token — constants masquerading as measurements.
+_FAKE_GEOMETRY_FIELDS = frozenset({
+    "fraction", "residual", "nearest", "assignment", "membership",
+    "fraction_per_layer", "residual_per_layer", "subspace_coords_per_layer",
+})
+
+
+def _geometry_reading() -> ProbeReading:
+    return ProbeReading(
+        fraction=0.42,
+        nearest=[("formal", 1.25)],
+        coords=(0.61, -0.2),
+        residual=0.03,
+        coords_per_layer={12: (0.5, -0.1), 18: (0.7, -0.3)},
+        depth_com=(0.55, 0.5),
+        depth_spread=(0.1, 0.2),
+    )
+
+
+def _lens_reading() -> ScalarReading:
+    return ScalarReading(
+        value=0.0125,
+        unit="mean_token_probability",
+        per_layer={12: 0.01, 18: 0.015},
+        depth=DepthSummary(
+            center=(0.62,), spread=(0.08,), basis="readout_probability_mass",
+        ),
+    )
+
+
+def _sae_reading() -> ScalarReading:
+    return ScalarReading(
+        value=0.84,
+        unit="activation_over_max",
+        per_layer={14: 0.84},
+        depth=DepthSummary(
+            center=(0.56,), spread=(0.0,), basis="single_layer",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# The native reading shapes
+# ---------------------------------------------------------------------------
+
+class TestReadingShapes:
+    def test_scalar_reading_wire_keys(self) -> None:
+        wire = _lens_reading().to_dict()
+        assert set(wire) == {"value", "unit", "per_layer", "depth"}
+        assert wire["value"] == pytest.approx(0.0125)
+        assert wire["unit"] == "mean_token_probability"
+        assert wire["per_layer"] == {"12": 0.01, "18": 0.015}
+        assert set(wire["depth"]) == {"center", "spread", "basis"}
+        assert wire["depth"]["basis"] == "readout_probability_mass"
+
+    def test_scalar_reading_carries_no_geometry_fields(self) -> None:
+        """The 171 bytes of constants per probe per token are off the wire."""
+        wire = _lens_reading().to_dict()
+        assert not (_FAKE_GEOMETRY_FIELDS & set(wire))
+
+    def test_depth_basis_is_family_specific(self) -> None:
+        """``depth_com`` means three unrelated things, so the mass names
+        itself — a consumer must never compare centers across bases."""
+        assert (
+            _lens_reading().to_dict()["depth"]["basis"]
+            != _sae_reading().to_dict()["depth"]["basis"]
+        )
+
+    def test_compat_projection_reintroduces_them_deliberately(self) -> None:
+        """``to_probe_reading`` survives ONLY at the two compatibility
+        boundaries; there it must still produce the historical shape."""
+        compat = _lens_reading().to_probe_reading().to_dict()
+        assert _FAKE_GEOMETRY_FIELDS <= set(compat)
+        assert compat["coords"] == [pytest.approx(0.0125)]
+        assert compat["fraction"] == 0.0
+        assert compat["membership"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Golden envelopes
+# ---------------------------------------------------------------------------
+
+class TestTokenFrame:
+    @staticmethod
+    def _envelope() -> dict[str, Any]:
+        env = build_measurements(
+            scope="token",
+            geometry_readings={"formal.casual": _geometry_reading()},
+            lens_readings={"jlens/fake": _lens_reading()},
+            sae_readings={"sae/548": _sae_reading()},
+            per_layer_scores={"12": {"formal.casual": 0.5}},
+            lens_readout={12: [(" a", 0.78)], 18: [(" b", 0.6)]},
+            lens_aggregate=[(" a", 0.41, 0.31, 0.05)],
+            lens_token_ids={12: [5], 18: [7]},
+            lens_source="local:default",
+            sae_features=[(42, 3.5, "fruit", 121.1)],
+            sae_source="saelens:scope",
+            sae_layer=14,
+            steering="0.3 formal.casual",
+        )
+        assert env is not None
+        return dict(env)
+
+    def test_top_level_keys(self) -> None:
+        env = self._envelope()
+        assert set(env) == {
+            "version", "scope", "provenance", "instruments",
+            "scores", "per_layer_scores",
+        }
+        assert env["version"] == MEASUREMENTS_VERSION
+        assert env["scope"] == "token"
+        assert env["provenance"] == "captured"
+
+    def test_families_and_channel_keys(self) -> None:
+        inst = self._envelope()["instruments"]
+        assert set(inst) == {"geometry", "lens", "sae"}
+        assert set(inst["geometry"]) == {"readings"}
+        assert set(inst["lens"]) == {"readings", "readout", "binding"}
+        assert set(inst["sae"]) == {"readings", "readout", "binding"}
+
+    def test_bindings(self) -> None:
+        inst = self._envelope()["instruments"]
+        assert inst["lens"]["binding"] == {
+            "source": "local:default", "steering": "0.3 formal.casual",
+        }
+        assert inst["sae"]["binding"] == {
+            "source": "saelens:scope",
+            "steering": "0.3 formal.casual",
+            "layer": 14,
+        }
+
+    def test_readings_are_family_native(self) -> None:
+        inst = self._envelope()["instruments"]
+        geo = inst["geometry"]["readings"]["formal.casual"]
+        assert "coords" in geo and "fraction" in geo
+        lens = inst["lens"]["readings"]["jlens/fake"]
+        assert set(lens) == {"value", "unit", "per_layer", "depth"}
+        sae = inst["sae"]["readings"]["sae/548"]
+        assert sae["unit"] == "activation_over_max"
+
+    def test_flat_scores_join_all_three_families(self) -> None:
+        env = self._envelope()
+        assert env["scores"] == {
+            "formal.casual": pytest.approx(0.61),
+            "jlens/fake": pytest.approx(0.0125),
+            "sae/548": pytest.approx(0.84),
+        }
+
+    def test_lens_readout_rows(self) -> None:
+        readout = self._envelope()["instruments"]["lens"]["readout"]
+        assert set(readout) == {"layers", "aggregate"}
+        assert [row["layer"] for row in readout["layers"]] == [12, 18]
+        assert set(readout["layers"][0]["tokens"][0]) == {
+            "token", "id", "logprob",
+        }
+        assert set(readout["aggregate"][0]) == {
+            "token", "strength", "com", "spread",
+        }
+
+    def test_sae_readout_rows(self) -> None:
+        features = self._envelope()["instruments"]["sae"]["readout"]["features"]
+        assert set(features[0]) == {"id", "activation", "label", "max_act"}
+
+
+class TestDoneAggregate:
+    """The ``done`` frame's envelope — built once by the engine at finalize
+    (``GenerationResult.measurements``), forwarded verbatim by the server."""
+
+    @staticmethod
+    def _envelope() -> dict[str, Any]:
+        env = build_measurements(
+            scope="aggregate",
+            geometry_readings={"formal.casual": _geometry_reading()},
+            lens_readings={"jlens/fake": _lens_reading()},
+            sae_readings={"sae/548": _sae_reading()},
+            lens_source="local:default",
+            sae_source="saelens:scope",
+            sae_layer=14,
+            steering="0.3 formal.casual",
+        )
+        assert env is not None
+        return dict(env)
+
+    def test_top_level_keys(self) -> None:
+        env = self._envelope()
+        assert set(env) == {
+            "version", "scope", "provenance", "instruments", "scores",
+        }
+        assert env["scope"] == "aggregate"
+
+    def test_no_readout_channel_without_a_discovery_surface(self) -> None:
+        """An aggregate has attached-probe ``readings`` only — the native
+        top-k ``readout`` is a per-step discovery surface."""
+        inst = self._envelope()["instruments"]
+        assert set(inst["lens"]) == {"readings", "binding"}
+        assert set(inst["sae"]) == {"readings", "binding"}
+
+    def test_none_when_nothing_measured(self) -> None:
+        assert build_measurements(scope="aggregate") is None
+
+    def test_the_result_carries_it(self) -> None:
+        """The finalize path — not the server — owns the aggregate
+        envelope, so the lens/SAE channels keep their native shape and the
+        ``done`` frame is a forward, not a re-split."""
+        from drowse.generation.results import GenerationResult
+
+        result = GenerationResult(
+            text="", tokens=[], token_count=0, tok_per_sec=0.0, elapsed=0.0,
+            measurements=self._envelope(),
+        )
+        assert result.to_dict()["measurements"]["scope"] == "aggregate"
+
+
+class TestReplayEnvelopes:
+    """One ``{"measurements": …}`` body per family, built by the family's
+    own ``token_readout`` — the route no longer reshapes anything."""
+
+    def test_geometry(self) -> None:
+        env = build_measurements(
+            scope="replay",
+            provenance="replayed",
+            geometry_readings={"formal.casual": _geometry_reading()},
+            geometry_binding={"source": None, "steering": "0.5 formal.casual"},
+        )
+        assert env is not None
+        assert set(env) == {
+            "version", "scope", "provenance", "instruments", "scores",
+        }
+        assert env["scope"] == "replay"
+        assert env["provenance"] == "replayed"
+        assert set(env["instruments"]) == {"geometry"}
+        assert "geometry" in env["instruments"]
+        assert set(env["instruments"]["geometry"]) == {"readings", "binding"}
+        assert "binding" in env["instruments"]["geometry"]
+        assert env["instruments"]["geometry"]["binding"] == {
+            "source": None, "steering": "0.5 formal.casual",
+        }
+
+    def test_lens(self) -> None:
+        env = build_measurements(
+            scope="replay",
+            provenance="replayed",
+            lens_readout={12: [(" a", 0.78)]},
+            lens_aggregate=[(" a", 0.41, 0.31, 0.05)],
+            lens_token_ids={12: [5]},
+            lens_source="local:default",
+            steering=None,
+        )
+        assert env is not None
+        assert set(env) == {"version", "scope", "provenance", "instruments"}
+        assert set(env["instruments"]) == {"lens"}
+        assert "lens" in env["instruments"]
+        assert set(env["instruments"]["lens"]) == {"readout", "binding"}
+        assert env["instruments"]["lens"]["binding"] == {
+            "source": "local:default", "steering": None,
+        }
+
+    def test_sae(self) -> None:
+        env = build_measurements(
+            scope="replay",
+            provenance="replayed",
+            sae_features=[(42, 3.5, "fruit", 121.1)],
+            sae_source="saelens:scope",
+            sae_layer=14,
+            steering="0.2 sae/42",
+        )
+        assert env is not None
+        assert set(env["instruments"]) == {"sae"}
+        assert "sae" in env["instruments"]
+        assert set(env["instruments"]["sae"]) == {"readout", "binding"}
+        assert "binding" in env["instruments"]["sae"]
+        assert "layer" in env["instruments"]["sae"]["binding"]
+        assert env["instruments"]["sae"]["binding"]["layer"] == 14
+
+    def test_every_family_returns_the_same_envelope_wrapper(self) -> None:
+        """``Instrument.token_readout`` is uniform: ``{"measurements": …}``
+        from all three families, so the route dispatches without a branch."""
+        from drowse.lens.instrument import LensInstrument
+        from tests.support.geometry import stub_geometry_instrument
+        from tests.support.sae import make_resident, sae_instrument
+
+        session = SimpleNamespace(
+            model_id="test/model",
+            _monitor=SimpleNamespace(
+                probe_names=["formal.casual"], probe_layers=lambda: {0},
+            ),
+        )
+        geometry = stub_geometry_instrument(
+            session, replay=_canned_replay({"formal.casual": _geometry_reading()}),
+        )
+        lens = LensInstrument(
+            **lens_kwargs(replay=_canned_replay((
+            {0: [("a", 0.5, 7)]}, [("a", 0.5, 0.0, 0.0)],
+        ))),
+        )
+        # No fitted lens on the stub: resolve a stand-in over one layer.
+        lens._require = lambda: object()  # type: ignore[method-assign]
+        lens.runtime.resolve_layers = lambda _lens, _layers: [0]  # type: ignore[method-assign]
+        sae = sae_instrument(session, replay=_canned_replay([(3, 1.5)]))
+        make_resident(sae.runtime, layer=14)
+        for instrument in (geometry, lens, sae):
+            out = _token_readout(instrument, instrument.family)
+            assert set(out) == {"measurements"}
+            binding = out["measurements"]["instruments"][instrument.family]["binding"]
+            assert binding["steering"] == "0.3 formal.casual"
+
+
+def _canned_replay(result: Any) -> Any:
+    """A token replay that skips the forward and hands back ``result`` as
+    the family read's output, under a steered replayed token."""
+    from drowse.readout.replay import ReplayedToken
+
+    def replay(
+        node_id: str, raw_index: int, *, apply_steering: bool = True, **_kw: Any,
+    ) -> tuple[ReplayedToken, Any]:
+        token = ReplayedToken(
+            node_id=node_id, raw_index=raw_index, token_id=1, token_text="x",
+            steering="0.3 formal.casual" if apply_steering else None,
+        )
+        return token, result
+
+    return replay
+
+
+def _token_readout(instrument: Any, family: str) -> dict[str, Any]:
+    """Call ``token_readout`` with only the knobs the family accepts."""
+    if family == "lens":
+        return instrument.token_readout("n1", 0, top_k=4, layers="all")
+    if family == "sae":
+        return instrument.token_readout("n1", 0, top_k=4)
+    return instrument.token_readout("n1", 0)
+
+
+class TestRejectedKnobs:
+    """A family that cannot honor a knob rejects it (400 at the route)
+    instead of dropping it silently — the route used to ignore ``top_k``
+    and ``layers`` on geometry with only a comment to say so."""
+
+    @staticmethod
+    def _instrument(family: str) -> Any:
+        from tests.support.geometry import stub_geometry_instrument
+        from tests.support.sae import sae_instrument
+
+        # The knob is refused before any replay work: the replay is unwired.
+        session = SimpleNamespace(model_id="test/model")
+        if family == "geometry":
+            return stub_geometry_instrument(session)
+        return sae_instrument(session)
+
+    def test_geometry_rejects_top_k(self) -> None:
+        with pytest.raises(ValueError, match="no top_k"):
+            self._instrument("geometry").token_readout("n1", 0, top_k=8)
+
+    def test_geometry_rejects_layers(self) -> None:
+        with pytest.raises(ValueError, match="no layers"):
+            self._instrument("geometry").token_readout("n1", 0, layers=[1, 2])
+
+    def test_sae_rejects_layers(self) -> None:
+        with pytest.raises(ValueError, match="no layers"):
+            self._instrument("sae").token_readout("n1", 0, layers=[1])
+
+
+# ---------------------------------------------------------------------------
+# The live source binding is one expression
+# ---------------------------------------------------------------------------
+
+class TestLiveSources:
+    """``live_sources`` is the one reading of the live lens / SAE configs into
+    the envelope's source fields (token rows, authored rows, aggregates)."""
+
+    _LENS = {"source": "local:j", "layers": [0, 1]}
+    _SAE = {"source": "saelens:scope", "layer": 14}
+
+    def test_binds_both_live_readouts(self) -> None:
+        assert live_sources(self._LENS, self._SAE) == {
+            "lens_source": "local:j", "sae_source": "saelens:scope", "sae_layer": 14,
+        }
+
+    def test_an_inactive_readout_binds_nothing(self) -> None:
+        assert live_sources(None, None) == {
+            "lens_source": None, "sae_source": None, "sae_layer": None,
+        }
+
+    def test_gates_each_family(self) -> None:
+        assert live_sources(self._LENS, self._SAE, lens=False) == {
+            "lens_source": None, "sae_source": "saelens:scope", "sae_layer": 14,
+        }
+        assert live_sources(self._LENS, self._SAE, sae=False) == {
+            "lens_source": "local:j", "sae_source": None, "sae_layer": None,
+        }
+
+    def test_feeds_the_envelope_binding(self) -> None:
+        env = build_measurements(
+            scope="token",
+            lens_readout={0: [("a", 0.5)]},
+            sae_features=[(3, 1.5, None, None)],
+            **live_sources(self._LENS, self._SAE),
+        )
+        assert env is not None
+        lens, sae = env["instruments"].get("lens"), env["instruments"].get("sae")
+        assert lens is not None and sae is not None
+        assert lens["binding"]["source"] == "local:j"
+        binding = sae["binding"]
+        assert (binding["source"], binding.get("layer")) == ("saelens:scope", 14)
+
+
+# ---------------------------------------------------------------------------
+# The family enumeration is one list
+# ---------------------------------------------------------------------------
+
+def test_payload_family_slots_match_the_registry(make_tiny_session: Any) -> None:
+    """``token_payloads``' per-family slots are pinned to the registry, so a
+    fourth read family cannot land a slot-less payload."""
+    from drowse.generation.token_payloads import _FAMILY_SLOTS
+
+    session = make_tiny_session(warm=False)
+    assert set(_FAMILY_SLOTS) == set(session.instruments)
+
+
+def test_capability_table_covers_every_family(make_tiny_session: Any) -> None:
+    from drowse.server.instrument_routes import CAPABILITIES
+
+    session = make_tiny_session(warm=False)
+    assert set(CAPABILITIES) == set(session.instruments)
+
+
+if __name__ == "__main__":  # pragma: no cover - convenience
+    raise SystemExit(pytest.main([__file__]))

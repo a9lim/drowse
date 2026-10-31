@@ -1,0 +1,84 @@
+"""``base.integrity`` — the shared artifact-name grammar + sha256 helpers.
+
+Covers ``hash_file`` / ``verify_integrity``: the digest primitives behind the
+manifold integrity manifest, the neutral/alignment caches, and the lens shard
+sidecars, including the stat-identity fingerprint cache and the
+path-traversal barrier on manifest-supplied relative paths.
+"""
+from pathlib import Path
+
+from pytest import MonkeyPatch
+
+from drowse.base import integrity
+def test_hash_file_sha256(tmp_path: Path):
+    p = tmp_path / "x.txt"
+    p.write_bytes(b"hello")
+    # echo -n hello | sha256sum
+    assert integrity.hash_file(p) == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+
+
+def test_verify_integrity_clean(tmp_path: Path):
+    (tmp_path / "statements.json").write_bytes(b"data")
+    files = {"statements.json": integrity.hash_file(tmp_path / "statements.json")}
+    ok, bad = integrity.verify_integrity(tmp_path, files)
+    assert ok is True
+    assert bad == []
+
+
+def test_verify_integrity_tampered(tmp_path: Path):
+    (tmp_path / "statements.json").write_bytes(b"original")
+    files = {"statements.json": integrity.hash_file(tmp_path / "statements.json")}
+    (tmp_path / "statements.json").write_bytes(b"tampered")
+    ok, bad = integrity.verify_integrity(tmp_path, files)
+    assert ok is False
+    assert bad == ["statements.json"]
+
+
+def test_verify_integrity_missing_file(tmp_path: Path):
+    files = {"statements.json": "deadbeef"}
+    ok, bad = integrity.verify_integrity(tmp_path, files)
+    assert ok is False
+    assert bad == ["statements.json"]
+
+
+def test_verify_integrity_detects_same_size_rewrite_with_restored_mtime(
+    tmp_path: Path,
+) -> None:
+    import os
+
+    target = tmp_path / "x.bin"
+    target.write_bytes(b"AAAA")
+    expected = integrity.hash_file(target)
+    assert integrity.verify_integrity(tmp_path, {"x.bin": expected}) == (True, [])
+    original = target.stat()
+    target.write_bytes(b"BBBB")
+    os.utime(target, ns=(original.st_atime_ns, original.st_mtime_ns))
+    ok, bad = integrity.verify_integrity(tmp_path, {"x.bin": expected})
+    assert not ok
+    assert bad == ["x.bin"]
+
+
+def test_verify_integrity_rejects_path_traversal(tmp_path: Path):
+    # A manifest entry resolving outside the folder fails rather than reading
+    # off-tree (ensure_within is the path-traversal barrier).
+    ok, bad = integrity.verify_integrity(tmp_path, {"../escape": "deadbeef"})
+    assert ok is False
+    assert bad == ["../escape"]
+
+
+def test_verify_integrity_fingerprint_cache_is_bounded(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    integrity._FINGERPRINT_CACHE.clear()
+    monkeypatch.setattr(integrity, "_FINGERPRINT_CACHE_MAX", 2)
+    for index in range(3):
+        target = tmp_path / f"{index}.bin"
+        target.write_bytes(str(index).encode())
+        expected = integrity.hash_file(target)
+        assert integrity.verify_integrity(tmp_path, {target.name: expected}) == (
+            True,
+            [],
+        )
+    assert len(integrity._FINGERPRINT_CACHE) == 2
+    assert str((tmp_path / "0.bin").resolve()) not in integrity._FINGERPRINT_CACHE
+    integrity._FINGERPRINT_CACHE.clear()

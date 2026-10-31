@@ -1,0 +1,350 @@
+"""Tests for ``DrowseError.user_message()`` centralization (Phase 4).
+
+Each subclass returns an HTTP-style ``(status, msg)`` tuple; the server and CLI
+consume the value to translate
+exceptions consistently.  Tests pin the contract so subclasses can't
+silently lose their override.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from drowse.cli.config_file import ConfigFileError
+from drowse.store.selectors import AmbiguousSelectorError, SelectorError
+from drowse.errors import (
+    AmbiguousVariantError,
+    ConcurrentGenerationError,
+    GenerationRequestError,
+    ManifoldArityError,
+    ManifoldSpecError,
+    OverlappingManifoldError,
+    PoisednessError,
+    ProfileError,
+    RequestError,
+    SaeBackendImportError,
+    SaeCoverageError,
+    SaeModelMismatchError,
+    SaeReleaseNotFoundError,
+    DrowseError,
+    SourceSpecError,
+    SteeringCompositionError,
+    UnknownManifoldLabelError,
+    UnknownVariantError,
+    WhitenerError,
+)
+from drowse.errors import ProfileNotRegisteredError
+from drowse.steering.grammar import SteeringExprError
+from drowse.store.install import ManifoldInstallConflict
+from drowse.geometry.gguf import GGUFNotInstalled
+from drowse.base.hf import HFError
+from drowse.errors import MergeError
+from drowse.loom.errors import RecipeOverrideError
+
+
+def test_base_default_status_and_message():
+    """Plain ``DrowseError`` returns ``(500, str(self))``."""
+    assert DrowseError("x").user_message() == (500, "x")
+
+
+def test_base_empty_falls_back_to_class_name():
+    """Empty args fall back to the class name so the user sees something."""
+    assert DrowseError().user_message() == (500, "DrowseError")
+
+
+# (subclass, expected_status_code) — one entry per overriding class.
+# Bumping the status is a deliberate contract change; any drift here is
+# user-visible.
+_OVERRIDES: list[tuple[type[DrowseError], int]] = [
+    # errors.py
+    (SaeBackendImportError, 400),
+    (SaeReleaseNotFoundError, 400),
+    (SaeModelMismatchError, 400),
+    (SaeCoverageError, 400),
+    (AmbiguousVariantError, 400),
+    (UnknownVariantError, 404),
+    (WhitenerError, 400),
+    (ProfileError, 400),
+    # A composition failure is syntactically valid but semantically
+    # unsatisfiable — 422, distinct from the parser's 400.
+    (SteeringCompositionError, 422),
+    (ManifoldArityError, 422),
+    (OverlappingManifoldError, 422),
+    (ConcurrentGenerationError, 409),
+    (RequestError, 400),
+    (GenerationRequestError, 400),
+    (SourceSpecError, 400),
+    (ManifoldSpecError, 400),
+    (PoisednessError, 400),
+    (UnknownManifoldLabelError, 404),
+    # session/session.py
+    (ProfileNotRegisteredError, 404),
+    # steering/grammar.py
+    (SteeringExprError, 400),
+    # store/selectors.py
+    (SelectorError, 400),
+    (AmbiguousSelectorError, 400),
+    # cli/config_file.py
+    (ConfigFileError, 400),
+    # base/hf.py
+    (HFError, 502),
+    # store/install.py
+    (ManifoldInstallConflict, 409),
+    # geometry/gguf.py
+    (GGUFNotInstalled, 400),
+    # errors.py (offline merge / bake)
+    (MergeError, 400),
+    # loom/errors.py
+    (RecipeOverrideError, 400),
+]
+
+
+@pytest.mark.parametrize("cls,expected_status", _OVERRIDES)
+def test_subclass_status_codes(cls: type[DrowseError], expected_status: int):
+    """Each overriding subclass returns its declared status code."""
+    code, _msg = cls("test message").user_message()
+    assert code == expected_status, (
+        f"{cls.__name__} returned status {code}, expected {expected_status}"
+    )
+
+
+@pytest.mark.parametrize("cls,_status", _OVERRIDES)
+def test_subclass_message_round_trips(cls: type[DrowseError], _status: int):
+    """The message string is non-empty and contains the original payload.
+
+    KeyError-derived subclasses (``UnknownVariantError``,
+    ``ProfileNotRegisteredError``) reach into ``args[0]`` to avoid
+    KeyError's repr-quoted ``str()`` shape; we just check the original
+    payload is in the surfaced message.
+    """
+    payload = "specific test payload"
+    _code, msg = cls(payload).user_message()
+    assert payload in msg, f"{cls.__name__} dropped the message payload"
+
+
+def test_ambiguous_selector_carries_disambiguation_tip():
+    """``AmbiguousSelectorError`` appends the disambiguation hint."""
+    _code, msg = AmbiguousSelectorError("'wolf' matches deer/wolf and zoo/wolf").user_message()
+    assert "namespace/name" in msg
+
+
+def test_ambiguous_selector_skips_redundant_tip():
+    """When the message already names the fix, don't double-suffix it."""
+    err = AmbiguousSelectorError("ambiguous; disambiguate with namespace/name (e.g. deer/wolf)")
+    _code, msg = err.user_message()
+    # Should not contain the canned tip twice.
+    assert msg.count("namespace/name") == 1
+
+
+def test_unknown_variant_strips_keyerror_quotes():
+    """``KeyError`` would render as ``"'foo'"``; the override uses ``args[0]``."""
+    _code, msg = UnknownVariantError("missing variant").user_message()
+    assert msg == "missing variant"
+
+
+def test_unknown_manifold_label_strips_keyerror_quotes():
+    """Regression: the label error returned ``str(self)``, so the 404 text
+    reached clients wrapped in KeyError's repr quotes."""
+    _code, msg = UnknownManifoldLabelError("manifold 'm' has no node labeled 'x'").user_message()
+    assert msg == "manifold 'm' has no node labeled 'x'"
+
+
+def test_concurrent_generation_carries_message():
+    _code, msg = ConcurrentGenerationError("already running").user_message()
+    assert msg == "already running"
+
+
+def test_steering_expr_error_carries_col_in_message():
+    """``SteeringExprError`` formats column info into ``str(self)``;
+    ``user_message`` shouldn't drop it."""
+    err = SteeringExprError("unexpected token", col=12)
+    _code, msg = err.user_message()
+    assert "col 12" in msg
+
+
+# ---------------------------------------------------------------------------
+# Server integration smoke — ensure the handler routes correctly.
+# ---------------------------------------------------------------------------
+
+
+def test_server_routes_user_message_status_codes():
+    """The server's exception handlers honor ``user_message()`` status."""
+    from fastapi.testclient import TestClient
+
+    from drowse.server import create_app
+    from tests.support.server import mock_session
+
+    # 409: ConcurrentGenerationError already pinned by test_server.py;
+    # we add coverage for one more family per status to confirm
+    # the handler doesn't regress when the table is removed.
+    cases: list[tuple[Exception, int]] = [
+        (ConcurrentGenerationError("busy"), 409),
+        (AmbiguousSelectorError("'x' matches a/x and b/x"), 400),
+        (HFError("network down"), 502),
+        (ManifoldInstallConflict("already exists"), 409),
+    ]
+
+    for exc, expected_status in cases:
+        session = mock_session()
+        session.generate.side_effect = exc
+        app = create_app(session)
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test/model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 4,
+            },
+        )
+        assert resp.status_code == expected_status, (
+            f"{type(exc).__name__} → got {resp.status_code}, expected {expected_status}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# The family invariant
+# ---------------------------------------------------------------------------
+
+
+def _public_exception_classes() -> list[type[BaseException]]:
+    """Every public exception class defined anywhere under ``drowse``."""
+    import importlib
+    import inspect
+    import pkgutil
+    import warnings
+
+    import drowse
+
+    modules = [drowse]
+    for info in pkgutil.walk_packages(drowse.__path__, prefix="drowse."):
+        # Underscore-private modules are internal; their classes are too.
+        if any(part.startswith("_") for part in info.name.split(".")[1:]):
+            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                modules.append(importlib.import_module(info.name))
+            except ImportError:
+                # An optional-dependency module (gguf, sae_lens, …) that
+                # isn't installed carries no reachable exception class.
+                continue
+
+    found: dict[type[BaseException], None] = {}
+    for module in modules:
+        for name, obj in vars(module).items():
+            if name.startswith("_") or not inspect.isclass(obj):
+                continue
+            if not issubclass(obj, BaseException) or issubclass(obj, Warning):
+                continue
+            # Only classes this module defines, so a re-export isn't
+            # attributed to every importer.
+            if obj.__module__ != module.__name__:
+                continue
+            found.setdefault(obj, None)
+    return list(found)
+
+
+def test_every_public_exception_is_a_drowse_error() -> None:
+    """AGENTS.md: "Every drowse exception subclasses ``DrowseError``".
+
+    The point is that ``except DrowseError`` catches the whole family, so one
+    escapee silently drops out of every caller written against the contract —
+    and out of the server's status mapping, landing as a 500.  Nothing
+    enforced the invariant until now; ``SaeTrainingCancelled`` and
+    ``ManifoldAuthoringChangedError`` had both escaped it.
+    """
+    classes = _public_exception_classes()
+    assert len(classes) > 40, "walk found suspiciously few exception classes"
+    escapees = sorted(
+        f"{cls.__module__}.{cls.__qualname__}"
+        for cls in classes
+        if not issubclass(cls, DrowseError)
+    )
+    assert not escapees, (
+        "public exception classes outside the DrowseError family (add "
+        "DrowseError to the bases, keeping the stdlib base first, and give "
+        "it a user_message()):\n  " + "\n  ".join(escapees)
+    )
+
+
+def test_every_request_error_is_a_400_carrying_its_text() -> None:
+    """A :class:`RequestError` is the server's "client input" family: it keeps
+    the ``ValueError`` base and answers 400 with its own text, so a subclass
+    that overrides ``user_message`` must not drift off either."""
+    classes = [cls for cls in _public_exception_classes() if issubclass(cls, RequestError)]
+    assert len(classes) > 20, "walk found suspiciously few request errors"
+    drift = []
+    for cls in classes:
+        status, message = cls("specific test payload").user_message()
+        # A runtime check: a subclass can rebase off ValueError.
+        is_value_error = issubclass(cls, ValueError)  # pyright: ignore[reportUnnecessaryIsInstance]
+        if not is_value_error or status != 400 or "specific test payload" not in message:
+            drift.append(f"{cls.__module__}.{cls.__qualname__} -> {status}")
+    assert not drift, "request errors off the 400 contract:\n  " + "\n  ".join(drift)
+
+
+def _stdlib_base_cases() -> list[tuple[type[BaseException], type[BaseException]]]:
+    from drowse.errors import (
+        AmbiguousVariantError,
+        ProfileError,
+        SaeBackendImportError,
+        SaeCoverageError,
+        SaeModelMismatchError,
+        SaeReleaseNotFoundError,
+        UnknownVariantError,
+    )
+    from drowse.model.role_templates import (
+        InvalidRoleError,
+        RoleSubstitutionUnsupportedError,
+        RoleTemplateDriftError,
+    )
+
+    return [
+        (ProfileError, ValueError),
+        (SaeBackendImportError, ImportError),
+        (SaeReleaseNotFoundError, ValueError),
+        (SaeModelMismatchError, ValueError),
+        (SaeCoverageError, ValueError),
+        (AmbiguousVariantError, ValueError),
+        (UnknownVariantError, KeyError),
+        (RoleSubstitutionUnsupportedError, ValueError),
+        (InvalidRoleError, ValueError),
+        (RoleTemplateDriftError, RuntimeError),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cls", "stdlib_base"), _stdlib_base_cases(), ids=lambda value: value.__name__,
+)
+def test_drowse_errors_keep_their_stdlib_base(
+    cls: type[BaseException], stdlib_base: type[BaseException],
+) -> None:
+    """Reparenting under ``DrowseError`` keeps the stdlib base, so existing
+    ``except ValueError`` (etc.) sites still catch it; the walker above
+    pins the ``DrowseError`` half for every public class."""
+    assert cls in _public_exception_classes()
+    assert issubclass(cls, stdlib_base)
+
+
+def test_cancellation_errors_agree_across_preparation_families() -> None:
+    """A cooperative cancel reports 409 on both background-job families."""
+    from drowse.lens.jlens import JacobianLensCancelled
+    from drowse.sae.training import SaeTrainingCancelled
+
+    for exc in (JacobianLensCancelled("stopped"), SaeTrainingCancelled("stopped")):
+        assert isinstance(exc, DrowseError)
+        assert isinstance(exc, RuntimeError)
+        assert exc.user_message()[0] == 409
+
+
+def test_manifold_authoring_conflict_is_a_retryable_409() -> None:
+    """Re-authoring under an in-flight fit is a conflict, not a server fault."""
+    from drowse.fit.publish import ManifoldAuthoringChangedError
+
+    exc = ManifoldAuthoringChangedError("authoring changed during fit")
+    assert isinstance(exc, DrowseError)
+    assert isinstance(exc, RuntimeError)
+    status, message = exc.user_message()
+    assert status == 409
+    assert "authoring changed" in message

@@ -11,8 +11,6 @@ export const TRIGGER_ORDER: Trigger[] = [
   "AFTER",
   "THINKING",
   "RESPONSE",
-  "PROMPT",
-  "GENERATED",
 ];
 
 export const TRIGGER_WORD: Record<Trigger, string> = {
@@ -21,18 +19,18 @@ export const TRIGGER_WORD: Record<Trigger, string> = {
   AFTER: "after",
   THINKING: "thinking",
   RESPONSE: "response",
-  PROMPT: "prompt",
-  GENERATED: "generated",
 };
 
+// Phases follow the engine presets (steering/triggers.py): ``before`` is
+// PROMPT_ONLY (the prompt prefill, no generated token), ``response`` is
+// GENERATED_ONLY (every generated token, thinking included), ``after`` is
+// AFTER_THINKING (the reply once thinking has closed).
 export const TRIGGER_LABEL: Record<Trigger, string> = {
-  BOTH: "both: steer the whole turn (default)",
-  BEFORE: "before: steer thinking and response",
-  AFTER: "after: steer the after-thinking response only",
-  THINKING: "thinking: steer the chain-of-thought only",
-  RESPONSE: "response: steer the generated response only",
-  PROMPT: "prompt (alias of before)",
-  GENERATED: "generated (alias of response)",
+  BOTH: "both: steer the prompt and every generated token (default)",
+  BEFORE: "before: steer the prompt prefill only; generated tokens are unsteered",
+  AFTER: "after: steer the reply after thinking ends, not the prompt or thinking",
+  THINKING: "thinking: steer the thinking tokens only",
+  RESPONSE: "response: steer every generated token, thinking included, not the prompt",
 };
 
 /** The next trigger in the cycle order — the pill's click step. */

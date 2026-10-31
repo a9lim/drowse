@@ -30,34 +30,13 @@ import type { DrawerName } from "../lib/types";
 import { runtimeClient } from "../lib/runtime/client";
 import { drawerAvailability } from "../lib/runtime/ui-capabilities";
 
-import AdvancedSamplingDrawer from "./AdvancedSamplingDrawer.svelte";
-import AppearanceDrawer from "./AppearanceDrawer.svelte";
-import CastDrawer from "./CastDrawer.svelte";
-import CompareDrawer from "./CompareDrawer.svelte";
-import CorrelationDrawer from "./CorrelationDrawer.svelte";
-import HealthDrawer from "./HealthDrawer.svelte";
-import HelpDrawer from "./HelpDrawer.svelte";
-import FeedbackDrawer from "./FeedbackDrawer.svelte";
-import LoadConversationDrawer from "./LoadConversationDrawer.svelte";
-import LocalRuntimeDrawer from "@runtime-local-drawer";
-import ManifoldBuilderDrawer from "./ManifoldBuilderDrawer.svelte";
-import SurfaceGeometryDrawer from "./SurfaceGeometryDrawer.svelte";
-import ManifoldMergeDrawer from "./ManifoldMergeDrawer.svelte";
-import ManifoldPacksDrawer from "./ManifoldPacksDrawer.svelte";
-import NodeCompareDrawer from "./NodeCompareDrawer.svelte";
-import ProbeInspectorDrawer from "./ProbeInspectorDrawer.svelte";
-import RackDrawer from "./RackDrawer.svelte";
-import SaveConversationDrawer from "./SaveConversationDrawer.svelte";
-import DownloadChatDrawer from "./DownloadChatDrawer.svelte";
-import SessionAdminDrawer from "@runtime-session-drawer";
-import SystemPromptDrawer from "./SystemPromptDrawer.svelte";
-import TemplateLabDrawer from "./TemplateLabDrawer.svelte";
-import TokenDrilldownDrawer from "./TokenDrilldownDrawer.svelte";
-import TranscriptDrawer from "./TranscriptDrawer.svelte";
 
 /** Each drawer owns its params; responsive drawers can consume the host's
- *  presentation and dismissal props. */
-export type DrawerComponent = Component<{ params: unknown; mobile?: boolean; onclose?: () => void }>;
+ *  presentation and dismissal props.  A drawer that needs none of them
+ *  declares no props (the host's are ignored). */
+export type DrawerComponent =
+  | Component<{ params: unknown; mobile?: boolean; onclose?: () => void }>
+  | Component<Record<string, never>>;
 
 /** Palette group keys.  Typing ``launcher.group`` as this union means a
  *  typo can't strand a tool in a group that never renders. */
@@ -71,8 +50,12 @@ export interface DrawerLauncher {
   keywords?: string;
 }
 
+/** Drawers load on first open: the registry is imported by the app shell,
+ *  so a static import here would put every drawer in the first paint. */
+type DrawerLoader = () => Promise<{ default: DrawerComponent }>;
+
 interface DrawerBase {
-  component: DrawerComponent;
+  load: DrawerLoader;
   /** Folded into ``drawerState.params`` before render — how one component
    *  serves two drawer names. */
   params?: Record<string, unknown>;
@@ -103,18 +86,13 @@ export const DRAWER_GROUPS: readonly { key: DrawerGroupKey; label: string }[] = 
 /** Declaration order is the palette order within a group. */
 export const DRAWERS: Record<DrawerName, DrawerEntry> = {
   appearance: {
-    component: AppearanceDrawer,
+    load: () => import("./AppearanceDrawer.svelte"),
     narrow: true,
     launcher: { group: "session", label: "Appearance…", keywords: "theme background wallpaper image pixel dither" },
   },
-  surface_geometry: {
-    component: SurfaceGeometryDrawer,
-    narrow: true,
-    launcher: { group: "analysis", label: "Inspect surface geometry…", keywords: "topology manifold Klein bottle projective plane sphere torus" },
-  },
   // ----------------------------------------------- palette-launched ----
   manifold_builder: {
-    component: ManifoldBuilderDrawer,
+    load: () => import("./ManifoldBuilderDrawer.svelte"),
     narrow: true,
     launcher: {
       group: "manifolds",
@@ -123,7 +101,7 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   manifold_merge: {
-    component: ManifoldMergeDrawer,
+    load: () => import("./ManifoldMergeDrawer.svelte"),
     launcher: {
       group: "manifolds",
       label: "Combine response controls…",
@@ -131,7 +109,7 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   manifold_pack: {
-    component: ManifoldPacksDrawer,
+    load: () => import("./ManifoldPacksDrawer.svelte"),
     launcher: {
       group: "manifolds",
       label: "Manage downloaded controls…",
@@ -139,7 +117,7 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   template_lab: {
-    component: TemplateLabDrawer,
+    load: () => import("./TemplateLabDrawer.svelte"),
     launcher: {
       group: "manifolds",
       label: "Test prompt templates…",
@@ -147,7 +125,7 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   cast: {
-    component: CastDrawer,
+    load: () => import("./CastDrawer.svelte"),
     launcher: {
       group: "manifolds",
       label: "Role settings…",
@@ -155,7 +133,7 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   correlation: {
-    component: CorrelationDrawer,
+    load: () => import("./CorrelationDrawer.svelte"),
     launcher: {
       group: "analysis",
       label: "Compare saved readings…",
@@ -163,7 +141,7 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   compare: {
-    component: CompareDrawer,
+    load: () => import("./CompareDrawer.svelte"),
     launcher: {
       group: "analysis",
       label: "Compare controls by layer…",
@@ -171,15 +149,15 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   health: {
-    component: HealthDrawer,
+    load: () => import("./HealthDrawer.svelte"),
     launcher: { group: "session", label: "Model health…", keywords: "device dtype" },
   },
   session_admin: {
-    component: SessionAdminDrawer,
+    load: () => import("@runtime-session-drawer"),
     launcher: { group: "session", label: "API access…", keywords: "auth api key bearer" },
   },
   local_runtime: {
-    component: LocalRuntimeDrawer,
+    load: () => import("@runtime-local-drawer"),
     launcher: {
       group: "session",
       label: "Model settings…",
@@ -187,7 +165,7 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   help: {
-    component: HelpDrawer,
+    load: () => import("./HelpDrawer.svelte"),
     launcher: {
       group: "session",
       label: "Help and shortcuts…",
@@ -196,28 +174,28 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
   },
 
   feedback: {
-    component: FeedbackDrawer,
+    load: () => import("./FeedbackDrawer.svelte"),
     narrow: true,
     launcher: { group: "session", label: "Submit Feedback…", keywords: "contact support bug suggestion feedback" },
   },
 
   // -------------------------------------------- opened in context -----
   subspace: {
-    component: RackDrawer,
+    load: () => import("./RackDrawer.svelte"),
     params: { family: "subspace" },
     narrow: true,
     launcher: null,
     via: 'the steering and probe racks\' "+ add" buttons',
   },
   manifolds: {
-    component: RackDrawer,
+    load: () => import("./RackDrawer.svelte"),
     params: { family: "manifold" },
     narrow: true,
     launcher: null,
     via: 'the steering and probe racks\' "+ add" buttons',
   },
   save_conversation: {
-    component: SaveConversationDrawer,
+    load: () => import("./SaveConversationDrawer.svelte"),
     narrow: true,
     launcher: {
       group: "session",
@@ -226,13 +204,13 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   download_chat: {
-    component: DownloadChatDrawer,
+    load: () => import("./DownloadChatDrawer.svelte"),
     narrow: true,
     launcher: null,
     via: "the workbench header download button",
   },
   load_conversation: {
-    component: LoadConversationDrawer,
+    load: () => import("./LoadConversationDrawer.svelte"),
     narrow: true,
     launcher: {
       group: "session",
@@ -241,33 +219,33 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
     },
   },
   system_prompt: {
-    component: SystemPromptDrawer,
+    load: () => import("./SystemPromptDrawer.svelte"),
     narrow: true,
     launcher: null,
     via: "the sampling strip's system-prompt button",
   },
   advanced_sampling: {
-    component: AdvancedSamplingDrawer,
+    load: () => import("./AdvancedSamplingDrawer.svelte"),
     launcher: null,
     via: "the sampling strip's advanced button",
   },
   token_drilldown: {
-    component: TokenDrilldownDrawer,
+    load: () => import("./TokenDrilldownDrawer.svelte"),
     launcher: null,
     via: "selecting a transcript or raw-buffer token",
   },
   probe_inspector: {
-    component: ProbeInspectorDrawer,
+    load: () => import("./ProbeInspectorDrawer.svelte"),
     launcher: null,
     via: "a probe card's ⓘ button",
   },
   node_compare: {
-    component: NodeCompareDrawer,
+    load: () => import("./NodeCompareDrawer.svelte"),
     launcher: null,
     via: "the loom sidebar's compare actions",
   },
   transcript: {
-    component: TranscriptDrawer,
+    load: () => import("./TranscriptDrawer.svelte"),
     launcher: {
       group: "analysis",
       label: "Conversation transcript…",
@@ -276,7 +254,24 @@ export const DRAWERS: Record<DrawerName, DrawerEntry> = {
   },
 };
 
-/** The props the host passes to ``DRAWERS[name].component``: whatever
+const loadedDrawers = new Map<DrawerName, DrawerComponent>();
+
+/** The drawer's component when it has already loaded, so reopening renders
+ *  synchronously. */
+export function loadedDrawer(name: DrawerName): DrawerComponent | undefined {
+  return loadedDrawers.get(name);
+}
+
+/** Load (once) and return the drawer's component. */
+export async function loadDrawer(name: DrawerName): Promise<DrawerComponent> {
+  const cached = loadedDrawers.get(name);
+  if (cached) return cached;
+  const component = (await DRAWERS[name].load()).default;
+  loadedDrawers.set(name, component);
+  return component;
+}
+
+/** The props the host passes to the drawer component: whatever
  *  ``openDrawer`` carried, with the registry's fixed params folded on
  *  top. */
 export function drawerParams(name: DrawerName, params: unknown): unknown {

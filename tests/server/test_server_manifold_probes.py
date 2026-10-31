@@ -1,0 +1,1286 @@
+"""Tests for the unified probe server surface (no GPU required).
+
+Covers the native ``/drowse/v1/sessions/{id}/probes`` route family (the
+post-unification collapse of the old vector-probe ``/probes`` +
+manifold-probe ``/manifold-probes`` split) plus the
+``x-drowse-probe-readings`` extension surfaced on OpenAI chat /
+completions and Ollama chat / generate responses (streaming and
+non-streaming), plus per-token ``probe_readings`` on the native WS
+``/drowse/v1/sessions/{id}/stream`` ``token`` frame.  All exercises mock
+the session — the goal is to pin the wire shape, not re-run engine
+integration.
+
+The monitor was unified (``a498895``): one ``session.monitor`` (methods
+``attached_probes()`` / ``probe_names``), one ``session.add_probe`` /
+``remove_probe``, and one ``ProbeReading`` collapsing the former
+``ManifoldAggregate`` + ``ManifoldTokenReading`` (so the per-token reading
+and the end-of-gen aggregate are the same shape — ``fraction`` /
+``coords`` / ``nearest`` / ``residual``, no ``fraction_mean`` /
+``residual_mean``).
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any, Callable, cast
+from unittest.mock import MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from drowse.generation.results import (
+    GenerationResult,
+    RunSet,
+    TokenEvent,
+)
+from drowse.readout.types import ProbeReading
+from tests.support.server import mock_session
+from tests.support.streams import FakeGenerationStream
+from tests.support.tokens import emit_token
+
+
+def manifold_json_stub(namespace: str, name: str, **extra: Any) -> dict[str, Any]:
+    """A complete ``ManifoldInfo`` body for routes that stub ``_manifold_json``.
+
+    The manifold routes declare a response schema, so a stub that carried
+    only the two or three keys a test asserts on is now a
+    ``ResponseValidationError`` — which is the point: a double that cannot
+    produce the contract is testing a shape the server cannot emit.  This
+    is the minimum complete body; tests layer their assertions on top via
+    ``extra``.
+    """
+    body: dict[str, Any] = {
+        "namespace": namespace,
+        "name": name,
+        "description": "",
+        "source": "local",
+        "tags": [],
+        "template_ref": None,
+        "fit_mode": "pca",
+        "is_discover": True,
+        "domain": {},
+        "domain_label": "discover-pca",
+        "intrinsic_dim": 0,
+        "min_nodes": None,
+        "node_count": 0,
+        "node_labels": [],
+        "node_coords": [],
+        "node_roles": [],
+        "node_kinds": [],
+        "hyperparams": {},
+        "fitted_models": [],
+        "tensor_variants": {},
+        "fitted_for_session": False,
+        "stale": False,
+        "resolved_fit_mode": None,
+    }
+    body.update(extra)
+    return body
+
+
+def _single_run(**kwargs: Any) -> RunSet:
+    return RunSet([GenerationResult(**kwargs)])
+
+# The single session id the native tree resolves to.
+_SID = "default"
+_PROBES = f"/drowse/v1/sessions/{_SID}/probes"
+
+
+# ---------------------------------------------------------------------------
+# Mock helpers
+# ---------------------------------------------------------------------------
+
+
+def _mock_domain(kind: str = "box", dim: int = 2) -> MagicMock:
+    domain = MagicMock()
+    domain.intrinsic_dim = dim
+    if kind == "box":
+        domain.to_spec.return_value = {
+            "type": "box",
+            "axes": [
+                {"name": f"axis_{i}", "periodic": False, "lo": 0.0, "hi": 1.0}
+                for i in range(dim)
+            ],
+        }
+    elif kind == "sphere":
+        domain.to_spec.return_value = {"type": "sphere", "dim": dim}
+    else:
+        domain.to_spec.return_value = {"type": "custom", "embed_dim": dim}
+    return domain
+
+
+def _mock_manifold(
+    name: str = "circumplex",
+    *,
+    domain_kind: str = "box",
+    intrinsic_dim: int = 2,
+    node_labels: list[str] | None = None,
+    layers: list[int] | None = None,
+) -> MagicMock:
+    manifold = MagicMock()
+    manifold.name = name
+    manifold.domain = _mock_domain(domain_kind, intrinsic_dim)
+    manifold.node_labels = node_labels or ["happy", "sad", "calm", "angry"]
+    manifold.layers = {idx: MagicMock() for idx in (layers or [4, 8, 12])}
+    manifold.feature_space = "raw"
+    return manifold
+
+
+def _mock_probe(name: str, manifold: MagicMock, top_n: int = 3) -> MagicMock:
+    probe = MagicMock()
+    probe.name = name
+    probe.manifold = manifold
+    probe.top_n = top_n
+    return probe
+
+
+def _mock_session():
+    return mock_session()
+
+
+@pytest.fixture
+def session_and_client():
+    from drowse.server import create_app
+    session = _mock_session()
+    app = create_app(session, default_steering=None)
+    return session, TestClient(app)
+
+
+# ---------------------------------------------------------------------------
+# /drowse/v1/sessions/{id}/probes route family
+# ---------------------------------------------------------------------------
+
+
+class TestProbeRoutes:
+    def test_list_empty(self, session_and_client: Any) -> None:
+        _, client = session_and_client
+        resp = client.get(_PROBES)
+        assert resp.status_code == 200
+        assert resp.json() == {"probes": []}
+
+    def test_post_attach_and_list_round_trip(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        manifold = _mock_manifold()
+        probe = _mock_probe("circumplex", manifold, top_n=3)
+
+        def _add(selector: str, *, as_name: str | None = None, top_n: int = 3) -> str:
+            registered = as_name or selector
+            session.monitor.probe_names = [registered]
+            session.monitor.attached_probes.return_value = {
+                registered: probe,
+            }
+            return registered
+
+        session.add_probe.side_effect = _add
+
+        resp = client.post(
+            _PROBES,
+            json={"selector": "default/circumplex"},
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["name"] == "default/circumplex"
+        assert body["manifold"] == "circumplex"
+        assert body["top_n"] == 3
+        assert body["layers"] == [4, 8, 12]
+        assert body["node_labels"] == ["happy", "sad", "calm", "angry"]
+        assert body["node_count"] == 4
+        assert body["intrinsic_dim"] == 2
+        assert body["domain"]["type"] == "box"
+        assert body["feature_space"] == "raw"
+
+        # List route surfaces the attached probe.
+        resp = client.get(_PROBES)
+        assert resp.status_code == 200
+        rows = resp.json()["probes"]
+        assert len(rows) == 1
+        assert rows[0]["name"] == "default/circumplex"
+
+    def test_post_with_name_and_top_n(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        manifold = _mock_manifold("personas", domain_kind="custom", intrinsic_dim=8)
+        probe = _mock_probe("my-probe", manifold, top_n=5)
+
+        def _add(selector: str, *, as_name: str | None = None, top_n: int = 3) -> str:
+            registered = as_name or selector
+            session.monitor.probe_names = [registered]
+            session.monitor.attached_probes.return_value = {
+                registered: probe,
+            }
+            return registered
+
+        session.add_probe.side_effect = _add
+
+        resp = client.post(
+            _PROBES,
+            json={
+                "selector": "default/personas",
+                "name": "my-probe",
+                "top_n": 5,
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["name"] == "my-probe"
+        assert resp.json()["top_n"] == 5
+        # Underlying session was called with the requested overrides.
+        session.add_probe.assert_called_once_with(
+            "default/personas", as_name="my-probe", top_n=5,
+        )
+
+    def test_post_rejects_empty_selector(self, session_and_client: Any) -> None:
+        _, client = session_and_client
+        resp = client.post(_PROBES, json={"selector": ""})
+        assert resp.status_code == 400
+
+    def test_post_404_on_unknown_selector(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.add_probe.side_effect = FileNotFoundError(
+            "manifold 'default/missing' not installed",
+        )
+        resp = client.post(
+            _PROBES,
+            json={"selector": "default/missing"},
+        )
+        assert resp.status_code == 404
+
+    def test_delete_round_trip(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.monitor.probe_names = ["circumplex"]
+
+        resp = client.delete(f"{_PROBES}/circumplex")
+        assert resp.status_code == 204
+        session.remove_probe.assert_called_once_with("circumplex")
+
+    def test_delete_404_on_unknown_name(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.monitor.probe_names = []
+        resp = client.delete(f"{_PROBES}/missing")
+        assert resp.status_code == 404
+        session.remove_probe.assert_not_called()
+
+    def test_delete_qualified_namespaced_name(self, session_and_client: Any) -> None:
+        """Probes attached by qualified selector (``default/personas``)
+        carry a registered name containing ``/`` — the DELETE route
+        must accept that via ``{name:path}`` or the webui ✕ button 404s.
+        """
+        session, client = session_and_client
+        session.monitor.probe_names = ["default/personas"]
+
+        # Both raw-slash and percent-encoded forms must reach the
+        # handler with the slash intact.  encodeURIComponent in the
+        # webui sends the percent-encoded form.
+        resp = client.delete(f"{_PROBES}/default/personas")
+        assert resp.status_code == 204
+        session.remove_probe.assert_called_once_with("default/personas")
+
+        session.remove_probe.reset_mock()
+        session.monitor.probe_names = ["default/personas"]
+        resp = client.delete(f"{_PROBES}/default%2Fpersonas")
+        assert resp.status_code == 204
+        session.remove_probe.assert_called_once_with("default/personas")
+
+
+# ---------------------------------------------------------------------------
+# /drowse/v1/manifolds/* route family (search / merge / install)
+# ---------------------------------------------------------------------------
+#
+# These ride the still-present ``manifold_routes`` module — unaffected by
+# the monitor unification — and pin the CRUD wire shapes the webui's HF
+# picker / builder consume.
+
+
+class TestManifoldCrudRoutes:
+    def test_search_route_returns_results(self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``GET /drowse/v1/manifolds/search`` proxies to
+        ``hf_manifolds.search_manifolds`` and returns the row shape the
+        webui's HF picker expects.  Mocks the HF call so the test runs
+        offline.
+        """
+        _, client = session_and_client
+        rows = [
+            {
+                "name": "personas",
+                "namespace": "a9lim",
+                "description": "100 persona archetypes",
+                "tags": ["drowse-manifold"],
+                "node_count": 100,
+                "domain_label": "discover-pca",
+                "fit_mode": "pca",
+                "tensor_models": ["google__gemma-3-4b-it"],
+            },
+        ]
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes.search_manifolds",
+            lambda _q: rows,
+        )
+        resp = client.get("/drowse/v1/manifolds/search?q=persona")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["results"] == rows
+
+    def test_search_route_503_when_hf_missing(
+        self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``huggingface_hub`` missing surfaces as 503 (not 500) so the
+        webui can render a friendly install hint."""
+        _, client = session_and_client
+
+        def _raise(_q: str) -> None:
+            raise ModuleNotFoundError("No module named 'huggingface_hub'", name="huggingface_hub")
+
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes.search_manifolds", _raise,
+        )
+        resp = client.get("/drowse/v1/manifolds/search?q=anything")
+        assert resp.status_code == 503
+
+    def test_merge_route_round_trip(self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``POST /drowse/v1/manifolds/merge`` orchestrates the discover-
+        merge under the session lock and returns the same manifold-detail
+        JSON ``GET /drowse/v1/manifolds/{ns}/{name}`` ships."""
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        session, client = session_and_client
+
+        captured: dict[str, Any] = {}
+
+        def _merge(*args: Any, **kwargs: Any) -> Any:
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            merged_dir = MagicMock(spec=Path)
+            merged_dir.parent.name = "local"
+            merged_dir.name = "combined"
+            return merged_dir
+
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes.merge_discover_manifolds",
+            _merge,
+        )
+        fake_folder = MagicMock()
+        fake_folder.name = "combined"
+        fake_folder.folder = Path("/tmp/.drowse/manifolds/local/combined")
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes._find_manifold",
+            lambda ns, name: fake_folder,
+        )
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes._manifold_json",
+            lambda mf, sess, *, full=False: manifold_json_stub(
+                mf.folder.parent.name, mf.name, fit_mode="pca",
+            ),
+        )
+
+        resp = client.post(
+            "/drowse/v1/manifolds/merge",
+            json={
+                "name": "combined",
+                "description": "fold heap",
+                "sources": [
+                    {"namespace": "local", "name": "a"},
+                    {"namespace": "local", "name": "b"},
+                ],
+                "fit_mode": "pca",
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json() == manifold_json_stub(
+            "local", "combined", fit_mode="pca",
+        )
+        # Inner call shape: target identity, source tuples, fit_mode
+        # ride through unchanged.
+        assert captured["args"] == ("local", "combined", "fold heap")
+        assert captured["kwargs"]["sources"] == [
+            ("local", "a"), ("local", "b"),
+        ]
+        assert captured["kwargs"]["fit_mode"] == "pca"
+
+    def test_merge_route_rejects_one_source(self, session_and_client: Any) -> None:
+        """Single-source merge fails fast at the route layer."""
+        _, client = session_and_client
+        resp = client.post(
+            "/drowse/v1/manifolds/merge",
+            json={
+                "name": "combined",
+                "sources": [{"namespace": "local", "name": "only"}],
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_install_route_round_trip(self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``POST /drowse/v1/manifolds/install`` orchestrates the HF
+        pull under the session lock and returns the same detail JSON
+        ``GET /drowse/v1/manifolds/{ns}/{name}`` ships.
+        """
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        session, client = session_and_client
+        installed_dir = MagicMock(spec=Path)
+        installed_dir.parent.name = "local"
+        installed_dir.name = "personas"
+        installed_dir.parent.parent = Path("/tmp/.drowse/manifolds")
+
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes.install_manifold",
+            lambda *_args, **_kwargs: installed_dir,
+        )
+        # _find_manifold + _manifold_json read the loaded folder back
+        # via ManifoldFolder.load — short-circuit both so we don't need
+        # an on-disk fixture.
+        fake_folder = MagicMock()
+        fake_folder.name = "personas"
+        fake_folder.folder = Path("/tmp/.drowse/manifolds/local/personas")
+        fake_folder.description = "100 personas"
+        fake_folder.domain = {"type": "custom", "embed_dim": 8}
+        fake_folder.node_labels = ["hacker", "caveman"]
+        fake_folder.node_coords = []
+        fake_folder.node_roles = [None, None]
+        fake_folder.fit_mode = "pca"
+        fake_folder.hyperparams = {}
+        fake_folder.tensor_models.return_value = []
+        fake_folder.nodes_sha256.return_value = "x"
+        fake_folder.is_discover = True
+        fake_folder.node_groups.return_value = {}
+        # Make `_find_manifold` return our fake folder.  It does
+        # ManifoldFolder.load(folder) where folder is via
+        # manifold_dir(ns, name); the simpler route is patching the
+        # _find_manifold helper itself.
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes._find_manifold",
+            lambda ns, name: fake_folder,
+        )
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes._manifold_json",
+            lambda mf, sess, *, full=False: manifold_json_stub(
+                mf.folder.parent.name, mf.name, fitted=[],
+            ),
+        )
+
+        resp = client.post(
+            "/drowse/v1/manifolds/install",
+            json={"target": "a9lim/personas"},
+        )
+        assert resp.status_code == 201
+        assert resp.json() == manifold_json_stub("local", "personas", fitted=[])
+
+    def test_install_route_streams_progress_over_sse(
+        self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``Accept: text/event-stream`` gets the same per-stage narration
+        the fit / generate routes ship — an HF pull is a long operation, so a
+        client must be able to show more than a spinner.
+        """
+        import json as _json
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        _session, client = session_and_client
+        installed_dir = MagicMock(spec=Path)
+        installed_dir.parent.name = "local"
+        installed_dir.name = "personas"
+
+        def _install(*_args: Any, on_progress: Any = None, **_kwargs: Any) -> Any:
+            assert on_progress is not None
+            on_progress("Downloading a9lim/personas from Hugging Face...")
+            on_progress("Validating staged a9lim/personas...")
+            return installed_dir
+
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes.install_manifold", _install,
+        )
+        fake_folder = MagicMock()
+        fake_folder.name = "personas"
+        fake_folder.folder = Path("/tmp/.drowse/manifolds/local/personas")
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes._find_manifold",
+            lambda ns, name: fake_folder,
+        )
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes._manifold_json",
+            lambda mf, sess, *, full=False: {
+                "namespace": mf.folder.parent.name, "name": mf.name,
+            },
+        )
+
+        with client.stream(
+            "POST", "/drowse/v1/manifolds/install",
+            json={"target": "a9lim/personas"},
+            headers={"Accept": "text/event-stream"},
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers["content-type"].startswith("text/event-stream")
+            body = "".join(resp.iter_text())
+
+        assert "event: progress" in body
+        assert "Downloading a9lim/personas" in body
+        assert "Validating staged a9lim/personas" in body
+        done = body.split("event: done\ndata: ")[1].split("\n\n")[0]
+        assert _json.loads(done)["name"] == "personas"
+
+    def test_install_route_sse_error_frame_is_typed(
+        self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A conflict surfaces its own safe message, not the generic scrub."""
+        from drowse.store.install import ManifoldInstallConflict
+
+        _session, client = session_and_client
+
+        def _install(*_args: Any, **_kwargs: Any) -> Any:
+            raise ManifoldInstallConflict("destination already exists")
+
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes.install_manifold", _install,
+        )
+        with client.stream(
+            "POST", "/drowse/v1/manifolds/install",
+            json={"target": "a9lim/personas"},
+            headers={"Accept": "text/event-stream"},
+        ) as resp:
+            body = "".join(resp.iter_text())
+        assert "event: error" in body
+        assert "destination already exists" in body
+        assert "ManifoldInstallConflict" in body
+
+    def test_install_route_json_branch_still_maps_conflict_to_409(
+        self, session_and_client: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The non-streaming branch keeps its typed status table."""
+        from drowse.store.install import ManifoldInstallConflict
+
+        _session, client = session_and_client
+
+        def _install(*_args: Any, **_kwargs: Any) -> Any:
+            raise ManifoldInstallConflict("destination already exists")
+
+        monkeypatch.setattr(
+            "drowse.server.manifold_routes.install_manifold", _install,
+        )
+        resp = client.post(
+            "/drowse/v1/manifolds/install", json={"target": "a9lim/personas"},
+        )
+        assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# OpenAI extension: x-drowse-probe-readings
+# ---------------------------------------------------------------------------
+
+
+def _attach_aggregate(session: Any, *, name: str = "circumplex") -> None:
+    manifold = _mock_manifold(name)
+    probe = _mock_probe(name, manifold)
+    session.monitor.probe_names = [name]
+    session.monitor.attached_probes.return_value = {name: probe}
+
+
+def _populate_last_result(session: Any, *, name: str = "circumplex") -> GenerationResult:
+    aggregate = ProbeReading(
+        fraction=0.42,
+        fraction_per_layer={4: 0.4, 8: 0.5},
+        nearest=[("happy", 0.13), ("calm", 0.22)],
+        coords=(0.61, 0.42),
+        coords_per_layer={4: (0.6, 0.4), 8: (0.62, 0.45)},
+        residual=0.07,
+        residual_per_layer={4: 0.05, 8: 0.09},
+    )
+    result = GenerationResult(
+        text="hi", tokens=[1], token_count=1, prompt_tokens=1,
+        tok_per_sec=5.0, elapsed=0.1,
+        probe_readings={name: aggregate},
+    )
+    session.last_result = result
+    return result
+
+
+class TestOpenAIProbeExtension:
+    def test_chat_completion_carries_extension_on_choice(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        _attach_aggregate(session)
+        result = _populate_last_result(session)
+        session.generate.return_value = RunSet([result])
+
+        resp = client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "Hi"}],
+        })
+        assert resp.status_code == 200
+        choice = resp.json()["choices"][0]
+        ext = choice.get("x-drowse-probe-readings")
+        assert ext is not None
+        assert "circumplex" in ext
+        assert ext["circumplex"]["fraction"] == pytest.approx(0.42)
+        assert ext["circumplex"]["coords"] == [pytest.approx(0.61), pytest.approx(0.42)]
+        assert ext["circumplex"]["nearest"] == [["happy", 0.13], ["calm", 0.22]]
+
+    def test_chat_completion_absent_when_no_probes(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.generate.return_value = _single_run(
+            text="hi", tokens=[1], token_count=1,
+            tok_per_sec=5.0, elapsed=0.1,
+        )
+        resp = client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "Hi"}],
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        choice = body["choices"][0]
+        assert "x-drowse-probe-readings" not in choice
+        assert "probe_readings" not in body
+
+    def test_text_completion_carries_extension_on_choice(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        _attach_aggregate(session)
+        result = _populate_last_result(session)
+        session.generate.return_value = RunSet([result])
+
+        resp = client.post("/v1/completions", json={"prompt": "x"})
+        assert resp.status_code == 200
+        ext = resp.json()["choices"][0].get("x-drowse-probe-readings")
+        assert ext is not None
+        assert ext["circumplex"]["fraction"] == pytest.approx(0.42)
+
+    def test_chat_stream_surfaces_aggregate_without_default_live_scores(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        _attach_aggregate(session)
+        result = _populate_last_result(session)
+        session.last_result = result
+
+        def _mock_stream(*args: Any, **kwargs: Any) -> Any:
+            assert kwargs.get("live_scores") is False
+            assert kwargs.get("live_readouts") is False
+            return FakeGenerationStream([
+                TokenEvent(text="Hi", token_id=1, index=0),
+                TokenEvent(text=" there", token_id=2, index=1),
+            ], result)
+
+        session.generate_stream.side_effect = _mock_stream
+
+        resp = client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True,
+        })
+        assert resp.status_code == 200
+        lines = [l for l in resp.text.strip().split("\n") if l.startswith("data: ")]
+        chunks = [
+            json.loads(l.removeprefix("data: "))
+            for l in lines if l != "data: [DONE]"
+        ]
+        token_chunks = [c for c in chunks if c["choices"][0].get("delta", {}).get("content")]
+        assert token_chunks
+        for c in token_chunks:
+            assert "x-drowse-probe-readings" not in c["choices"][0]
+
+        # Final chunk carries the aggregate.
+        final = next(
+            c for c in chunks
+            if c["choices"][0].get("finish_reason") == "stop"
+        )
+        agg = final["choices"][0].get("x-drowse-probe-readings")
+        assert agg is not None
+        assert agg["circumplex"]["fraction"] == pytest.approx(0.42)
+
+
+# ---------------------------------------------------------------------------
+# Ollama extension: x-drowse-probe-readings (top-level)
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaProbeExtension:
+    def test_chat_non_streaming_carries_extension(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        _attach_aggregate(session)
+        result = _populate_last_result(session)
+        session.generate.return_value = RunSet([result])
+
+        resp = client.post("/api/chat", json={
+            "model": "test/model",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": False,
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        ext = body.get("x-drowse-probe-readings")
+        assert ext is not None
+        assert ext["circumplex"]["fraction"] == pytest.approx(0.42)
+
+    def test_chat_non_streaming_absent_when_no_probes(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.generate.return_value = _single_run(
+            text="hi", tokens=[1], token_count=1, prompt_tokens=1,
+            tok_per_sec=5.0, elapsed=0.1,
+        )
+        resp = client.post("/api/chat", json={
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": False,
+        })
+        assert resp.status_code == 200
+        assert "x-drowse-probe-readings" not in resp.json()
+
+    def test_generate_non_streaming_carries_extension(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        _attach_aggregate(session)
+        result = _populate_last_result(session)
+        session.generate.return_value = RunSet([result])
+
+        resp = client.post("/api/generate", json={
+            "prompt": "x",
+            "stream": False,
+        })
+        assert resp.status_code == 200
+        ext = resp.json().get("x-drowse-probe-readings")
+        assert ext is not None
+        assert ext["circumplex"]["fraction"] == pytest.approx(0.42)
+
+    def test_chat_streaming_surfaces_aggregate_without_default_live_scores(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        _attach_aggregate(session)
+        result = _populate_last_result(session)
+        session.last_result = result
+
+        def _mock_stream(*args: Any, **kwargs: Any) -> Any:
+            assert kwargs.get("live_scores") is False
+            assert kwargs.get("live_readouts") is False
+            return FakeGenerationStream([
+                TokenEvent(text="Hi", token_id=1, index=0),
+            ], result)
+
+        session.generate_stream.side_effect = _mock_stream
+
+        resp = client.post("/api/chat", json={
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True,
+        })
+        assert resp.status_code == 200
+        chunks = [json.loads(l) for l in resp.text.strip().split("\n") if l]
+        # First chunk: compatible streams do not opt into live per-token readings.
+        first = chunks[0]
+        assert first["done"] is False
+        assert "x-drowse-probe-readings" not in first
+        # Final chunk: aggregate.
+        final = chunks[-1]
+        assert final["done"] is True
+        agg = final.get("x-drowse-probe-readings")
+        assert agg is not None
+        assert agg["circumplex"]["fraction"] == pytest.approx(0.42)
+
+
+# ---------------------------------------------------------------------------
+# Native WebSocket: per-token probe_readings on token frames
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketProbeReadings:
+    """The native ``/drowse/v1/sessions/{id}/stream`` WS must carry the 5.x
+    ``measurements`` envelope on every ``token`` frame when probes are attached,
+    and the final ``done`` event still carries the aggregate ``probe_readings``
+    (plus its own aggregate-scope ``measurements`` envelope).  Manifold readings
+    are supplied by the engine's token tap on each ``TokenEvent``; the WS
+    token-frame builder only forwards that event's envelope.
+
+    Regression for the Phase 3c bug where the webui mini-map cursor
+    stayed stuck at ``awaiting first token...`` because the WS ``token``
+    frame omitted the field entirely until ``done``.
+    """
+
+    def _attach_probe(self, session: Any, *, name: str = "circumplex") -> Any:
+        manifold = _mock_manifold(name)
+        probe = _mock_probe(name, manifold)
+        session.monitor.probe_names = [name]
+        session.monitor.attached_probes.return_value = {name: probe}
+
+        # Per-token reading the monitor returns each time the WS
+        # builder hits the inline-score branch.
+        reading = ProbeReading(
+            fraction=0.51,
+            nearest=[("happy", 0.18), ("calm", 0.31)],
+        )
+
+        def _score(hidden: Any) -> dict[str, Any]:
+            return {name: reading}
+
+        session.monitor.score_single_token.side_effect = _score
+        return reading
+
+    def _attach_generate(self, session: Any, tokens: Any, aggregate: Any = None) -> None:
+        """Install a fake ``session.generate`` that drives ``on_token``.
+
+        Mirrors the pattern in ``test_drowse_api.TestWebSocket``.  When
+        ``aggregate`` is provided it is stashed on the returned result's
+        ``probe_readings`` so the ``done`` event surfaces the aggregate
+        alongside the per-token frames.
+        """
+        def _gen(
+            input: Any, *, steering: Any = None, sampling: Any = None, stateless: bool = False,
+            raw: bool = False, thinking: Any = None, on_token: Callable[..., Any] | None = None,
+            parent_node_id: Any = None, n: int = 1, recipe_override: Any = None,
+        ) -> RunSet:
+            from drowse.readout.measurements import build_measurements
+
+            for i, tok in enumerate(tokens):
+                if on_token is not None:
+                    measurements = (
+                        build_measurements(
+                            scope="token",
+                            geometry_readings=(
+                                session.monitor.score_single_token({})
+                            ),
+                        )
+                        if getattr(session.monitor, "probe_names", None)
+                        else None
+                    )
+                    emit_token(
+                        on_token, tok, 1000 + i, index=i,
+                        measurements=cast(dict[str, Any] | None, measurements),
+                    )
+                time.sleep(0.001)
+            result = GenerationResult(
+                text="".join(tokens),
+                tokens=list(range(1000, 1000 + len(tokens))),
+                token_count=len(tokens), tok_per_sec=50.0, elapsed=0.05,
+                finish_reason="stop",
+                probe_readings=(
+                    {"circumplex": aggregate} if aggregate else {}
+                ),
+                measurements=cast(dict[str, Any] | None, build_measurements(
+                    scope="aggregate",
+                    geometry_readings=(
+                        {"circumplex": aggregate} if aggregate else None
+                    ),
+                )),
+            )
+            session.last_result = result
+            session.last_result = result
+            session.last_per_token_scores = None
+            session.last_per_token_scores = None
+            return RunSet([result])
+
+        session.generate.side_effect = _gen
+
+    def test_token_frame_carries_probe_readings(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        self._attach_probe(session)
+        self._attach_generate(session, ["Hello", " ", "world"])
+
+        with client.websocket_connect(
+            f"/drowse/v1/sessions/{_SID}/stream",
+        ) as ws:
+            ws.send_json({"type": "generate", "input": "hi"})
+            started = ws.receive_json()
+            assert started["type"] == "started"
+            token_frames = []
+            done = None
+            while True:
+                msg = ws.receive_json()
+                if msg["type"] == "token":
+                    token_frames.append(msg)
+                elif msg["type"] == "done":
+                    done = msg
+                    break
+
+        assert len(token_frames) == 3
+        for frame in token_frames:
+            envelope = frame.get("measurements")
+            assert envelope is not None, (
+                "per-token measurements missing on WS token frame — "
+                "regression of the Phase 3c stall bug"
+            )
+            geometry = envelope["instruments"]["geometry"]["readings"]
+            assert "circumplex" in geometry
+            assert geometry["circumplex"]["fraction"] == pytest.approx(0.51)
+            assert geometry["circumplex"]["nearest"] == [
+                ["happy", 0.18], ["calm", 0.31],
+            ]
+        assert done is not None
+        # The done event carries the aggregate only when the result
+        # actually has one — this happy-path test omits the aggregate
+        # to isolate the per-token wire.  The full round-trip is
+        # covered by ``test_done_frame_carries_probe_aggregate`` below.
+
+    def test_done_frame_carries_probe_aggregate(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        self._attach_probe(session)
+        aggregate = ProbeReading(
+            fraction=0.42,
+            fraction_per_layer={4: 0.4, 8: 0.5},
+            nearest=[("happy", 0.13), ("calm", 0.22)],
+            coords=(0.61, 0.42),
+            coords_per_layer={4: (0.6, 0.4), 8: (0.62, 0.45)},
+            residual=0.07,
+            residual_per_layer={4: 0.05, 8: 0.09},
+        )
+        self._attach_generate(session, ["Hello"], aggregate=aggregate)
+
+        with client.websocket_connect(
+            f"/drowse/v1/sessions/{_SID}/stream",
+        ) as ws:
+            ws.send_json({"type": "generate", "input": "hi"})
+            assert ws.receive_json()["type"] == "started"
+            while True:
+                msg = ws.receive_json()
+                if msg["type"] == "done":
+                    done = msg
+                    break
+
+        # The aggregate rides the 5.x envelope alone, split by family
+        # (geometry here).  The flat pre-5.x ``probe_readings`` block is gone
+        # from this frame — the same clean break the ``token`` frame made.
+        assert "probe_readings" not in done["result"]
+        assert "per_token_probes" not in done["result"]
+        agg_env = done["result"].get("measurements")
+        assert agg_env is not None
+        assert agg_env["scope"] == "aggregate"
+        geo = agg_env["instruments"]["geometry"]["readings"]["circumplex"]
+        assert geo["fraction"] == pytest.approx(0.42)
+        assert geo["coords"] == [pytest.approx(0.61), pytest.approx(0.42)]
+
+    def test_token_frame_omits_field_when_no_probes(
+        self, session_and_client: Any,
+    ) -> None:
+        """No probes attached → ``probe_readings`` omitted from every
+        token frame.  Legacy clients see the unchanged shape.
+        """
+        session, client = session_and_client
+        # Probe list stays empty; capture wiring left default so the
+        # inline branch never triggers.
+        session.monitor.probe_names = []
+        self._attach_generate(session, ["Hi"])
+
+        with client.websocket_connect(
+            f"/drowse/v1/sessions/{_SID}/stream",
+        ) as ws:
+            ws.send_json({"type": "generate", "input": "hi"})
+            assert ws.receive_json()["type"] == "started"
+            saw_token = False
+            while True:
+                msg = ws.receive_json()
+                if msg["type"] == "token":
+                    saw_token = True
+                    assert "probe_readings" not in msg
+                    assert "measurements" not in msg
+                elif msg["type"] == "done":
+                    break
+        assert saw_token
+
+
+# ---------------------------------------------------------------------------
+# Shared serializer (manifold_summary) + delete-helper reuse
+# ---------------------------------------------------------------------------
+#
+# These exercise the *real* ``_manifold_json`` against an on-disk authored
+# manifold (the route tests above monkeypatch ``_manifold_json``, so they
+# don't cover the refactor).  Pin two contracts:
+#  (a) the keys the GET route shares with ``store.manifold_lifecycle.manifold_summary``
+#      carry identical names + values — both consume the same serializer,
+#      so CLI ``manifold show -j`` and the server stay in lockstep;
+#  (b) the DELETE route routes its removal through the shared
+#      ``remove_manifold_folder`` helper (single source of truth with the
+#      CLI ``manifold rm``), and its response carries that helper's
+#      richer shape.
+
+
+def _author_manifold_on_disk(
+    home: Any,
+    *,
+    namespace: str = "local",
+    name: str = "mood",
+    labels: list[str] | None = None,
+) -> Any:
+    """Hand-author a current authored 1-D box manifold under ``$DROWSE_HOME``.
+
+    Mirrors the minimal fixture ``test_manifolds_io`` uses, but writes
+    into the live ``manifolds/<ns>/<name>/`` tree so the server routes
+    (which resolve through ``manifold_dir``) can find it.  Returns the
+    folder path.
+    """
+    import json as _json
+    from pathlib import Path
+
+    from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
+
+    labels = labels or ["calm", "uneasy", "afraid", "frantic"]
+    k = len(labels)
+    folder = Path(home) / "manifolds" / namespace / name
+    (folder / "nodes").mkdir(parents=True)
+    coords = [[i / (k - 1)] for i in range(k)]
+    nodes = [
+        {"label": lbl, "coords": coords[i], "role": None, "kind": None}
+        for i, lbl in enumerate(labels)
+    ]
+    for idx, node in enumerate(nodes):
+        statements = [f"{node['label']} statement {i}" for i in range(3)]
+        (folder / "nodes" / f"{idx:02d}_{node['label']}.json").write_text(
+            _json.dumps(statements)
+        )
+    meta = {
+        "format_version": MANIFOLD_FORMAT_VERSION,
+        "name": name,
+        "description": "a mood manifold",
+        "fit_mode": "authored",
+        "domain": {
+            "type": "box",
+            "axes": [{
+                "name": "t", "periodic": False, "period": 1.0,
+                "lo": 0.0, "hi": 1.0,
+            }],
+        },
+        "nodes": nodes,
+        "files": {},
+        "source": "local",
+        "tags": [],
+        "template_ref": None,
+    }
+    (folder / "manifold.json").write_text(_json.dumps(meta))
+    return folder
+
+
+class TestManifoldSharedSerializer:
+    """``GET /manifolds`` shares ``manifold_summary``'s session-independent keys."""
+
+    @pytest.fixture
+    def home_and_client(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
+        # Point $DROWSE_HOME at a tmp tree so manifold_dir resolves into
+        # an isolated, empty manifolds root (the mock session never runs
+        # bundled materialization).
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        from drowse.server import create_app
+
+        session = _mock_session()
+        app = create_app(session, default_steering=None)
+        return tmp_path, session, TestClient(app)
+
+    def test_get_one_shares_summary_keys(self, home_and_client: Any) -> None:
+        """Every key the GET-one route shares with ``manifold_summary``
+        carries an identical value — the refactor's core guarantee."""
+        from drowse.store.manifold_lifecycle import manifold_summary
+
+        home, _session, client = home_and_client
+        folder = _author_manifold_on_disk(home, namespace="local", name="mood")
+
+        summary = manifold_summary(folder)
+
+        resp = client.get("/drowse/v1/manifolds/local/mood")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        # All shared (session-independent) keys must match byte-for-byte.
+        for key, value in summary.items():
+            assert key in body, f"GET route dropped shared key {key!r}"
+            assert body[key] == value, (
+                f"shared key {key!r} diverged: "
+                f"summary={value!r} route={body[key]!r}"
+            )
+
+        # Session-only extras layered on top — present, not in the summary.
+        assert "fitted_for_session" in body
+        assert "stale" in body
+        assert body["fitted_for_session"] is False  # mock model has no tensor
+        assert body["stale"] is False
+        # ``full`` detail blocks the list route omits.
+        assert "nodes" in body
+        assert [n["label"] for n in body["nodes"]] == summary["node_labels"]
+
+    def test_get_one_skips_a_malformed_fit(self, home_and_client: Any) -> None:
+        """A bad fitted sidecar hides that fit, not the manifold (no 500)."""
+        import json
+
+        from drowse.base.paths import tensor_filename
+
+        home, _session, client = home_and_client
+        folder = _author_manifold_on_disk(home, namespace="local", name="mood")
+        tensor = folder / tensor_filename("other/model")
+        tensor.write_bytes(b"x")
+        tensor.with_suffix(".json").write_text(json.dumps({"format_version": 10}))
+
+        resp = client.get("/drowse/v1/manifolds/local/mood")
+        assert resp.status_code == 200
+        assert resp.json()["fitted"] == []
+
+    def test_list_shares_summary_keys(self, home_and_client: Any) -> None:
+        """The list route builds the same shared keys from the summary."""
+        from drowse.store.manifold_lifecycle import manifold_summary
+
+        home, _session, client = home_and_client
+        folder = _author_manifold_on_disk(home, namespace="local", name="mood")
+        summary = manifold_summary(folder)
+
+        resp = client.get("/drowse/v1/manifolds")
+        assert resp.status_code == 200
+        rows = resp.json()["manifolds"]
+        assert len(rows) == 1
+        row = rows[0]
+        for key, value in summary.items():
+            assert row[key] == value, f"list row diverged on {key!r}"
+        # List route is light — no per-node ``nodes`` / per-tensor ``fitted``.
+        assert "nodes" not in row
+        assert "fitted" not in row
+
+    def test_delete_routes_through_shared_helper(
+        self, home_and_client: Any,
+    ) -> None:
+        """DELETE removes the folder via ``remove_manifold_folder`` and
+        returns that helper's richer ``{namespace, name, source, removed,
+        rematerializes_on_restart}`` shape (superset of the historical
+        ``{namespace, name, removed}``)."""
+        home, _session, client = home_and_client
+        folder = _author_manifold_on_disk(home, namespace="local", name="doomed")
+        assert (folder / "manifold.json").exists()
+
+        resp = client.delete("/drowse/v1/manifolds/local/doomed")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["namespace"] == "local"
+        assert body["name"] == "doomed"
+        assert body["removed"] is True
+        # Shared-helper extras — a local manifold does not respawn.
+        assert body["source"] == "local"
+        assert body["rematerializes_on_restart"] is False
+        # Folder is actually gone.
+        assert not folder.exists()
+
+    def test_delete_bundled_flags_respawn(self, home_and_client: Any) -> None:
+        """A ``default/``-namespace folder flips ``rematerializes_on_restart``
+        through the shared helper — same signal the pack DELETE route emits."""
+        home, _session, client = home_and_client
+        folder = _author_manifold_on_disk(
+            home, namespace="default", name="circumplex",
+        )
+
+        resp = client.delete("/drowse/v1/manifolds/default/circumplex")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["removed"] is True
+        assert body["rematerializes_on_restart"] is True
+        assert not folder.exists()
+
+    def test_delete_missing_404(self, home_and_client: Any) -> None:
+        """DELETE on a folder that was never authored → 404 (pre-lock check)."""
+        _home, _session, client = home_and_client
+        resp = client.delete("/drowse/v1/manifolds/local/ghost")
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Cheap fitted-geometry read (list route)
+# ---------------------------------------------------------------------------
+#
+# ``GET /manifolds`` reports each discover folder's derived per-model
+# ``node_coords`` and its resolved flat/curved family.  Both live in the
+# safetensors header plus one small entry, so the route must not deserialize
+# the whole per-layer mean/basis/RBF payload once per installed manifold.
+
+
+def _fitted_discover_manifold(model_id: str, name: str = "heap") -> Any:
+    """Author a discover folder under ``$DROWSE_HOME`` and land a flat fit."""
+    import torch
+
+    from drowse.geometry.fold import fold_directions_to_subspace
+    from drowse.geometry.manifold import MANIFOLD_FIT_POLICY_VERSION
+    from drowse.store.manifold_tensors import save_manifold
+    from drowse.store.manifold_folder import ManifoldFolder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
+    from drowse.base.paths import tensor_filename
+    from tests.support.whitener import isotropic_whitener
+
+    folder = create_discover_manifold_folder(
+        "local", name, "a heap",
+        fit_mode="pca",
+        node_corpora={
+            "alpha": ["alpha one", "alpha two"],
+            "beta": ["beta one", "beta two"],
+        },
+    )
+    means = {0: torch.zeros(4)}
+    manifold = fold_directions_to_subspace(
+        name, {0: torch.tensor([1.0, 0.0, 0.0, 0.0])}, means, label="alpha",
+        feature_space="raw",
+        whitener=isotropic_whitener(means, 4),
+    )
+    mf = ManifoldFolder.load(folder, verify_manifest=False)
+    path = folder / tensor_filename(model_id)
+    save_manifold(manifold, path, {
+        "method": "manifold_pca",
+        "nodes_sha256": mf.nodes_sha256(),
+        "model_fingerprint": f"fp:{model_id}",
+        "fit_policy_version": MANIFOLD_FIT_POLICY_VERSION,
+    })
+    mf.update_file_hashes(path, path.with_suffix(".json"))
+    return folder, path
+
+
+class TestFittedGeometryRead:
+    @pytest.fixture
+    def home_and_client(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        from drowse.server import create_app
+
+        session = _mock_session()
+        app = create_app(session, default_steering=None)
+        return tmp_path, session, TestClient(app)
+
+    def test_matches_full_load(self, home_and_client: Any) -> None:
+        """The header read answers exactly what a full load would."""
+        from drowse.store.manifold_tensors import load_manifold
+        from drowse.server.manifold_routes import _fitted_geometry
+
+        _home, session, _client = home_and_client
+        _folder, path = _fitted_discover_manifold(session.model_id)
+
+        coords, is_affine = _fitted_geometry(path)
+        loaded = load_manifold(path)
+        assert coords == [
+            [float(x) for x in row] for row in loaded.node_coords.tolist()
+        ]
+        assert is_affine is loaded.is_affine
+
+    def test_curved_fit_reads_as_non_affine(self, tmp_path: Any) -> None:
+        """A ``layer_<L>.node_params`` entry is the curved marker."""
+        import torch
+        from safetensors.torch import save_file
+
+        from drowse.server.manifold_routes import _fitted_geometry
+
+        path = tmp_path / "curved.safetensors"
+        save_file({
+            "node_coords": torch.tensor([[0.0], [1.0]]),
+            "layer_0.mean": torch.zeros(4),
+            "layer_0.basis": torch.zeros(1, 4),
+            "layer_0.node_params": torch.tensor([[0.0], [1.0]]),
+        }, str(path))
+        coords, is_affine = _fitted_geometry(path)
+        assert coords == [[0.0], [1.0]]
+        assert is_affine is False
+
+    def test_missing_artifact_is_unresolved(self, tmp_path: Any) -> None:
+        from drowse.server.manifold_routes import _fitted_geometry
+
+        assert _fitted_geometry(tmp_path / "nope.safetensors") == ([], None)
+
+    def test_list_route_does_not_deserialize_the_payload(
+        self, home_and_client: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The list route derives both answers without ``load_manifold``."""
+        import drowse.store.manifold_tensors as manifold_tensors
+
+        from drowse.server.manifold_routes import _fitted_geometry
+
+        _home, session, client = home_and_client
+        _folder, path = _fitted_discover_manifold(session.model_id)
+        expected_coords, _affine = _fitted_geometry(path)
+
+        def _boom(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError(
+                "the list route fully deserialized a fitted manifold tensor"
+            )
+
+        monkeypatch.setattr(manifold_tensors, "load_manifold", _boom)
+
+        resp = client.get("/drowse/v1/manifolds")
+        assert resp.status_code == 200
+        rows = resp.json()["manifolds"]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["fitted_for_session"] is True
+        assert row["resolved_fit_mode"] == "pca"
+        assert row["node_coords"] == expected_coords
+        assert row["node_coords"]

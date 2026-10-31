@@ -123,9 +123,3 @@ export function tuningMessages(
   }
   return messages;
 }
-
-/** Pull the human-readable message out of an SSE progress event. */
-export function progressMessage(ev: { data?: unknown }): string | null {
-  if (!ev.data || typeof ev.data !== "object") return null;
-  return (ev.data as { message?: string }).message ?? null;
-}

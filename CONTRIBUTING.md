@@ -22,9 +22,9 @@ of the base install. `[cuda]` adds bitsandbytes and Hugging Face
 ## Running tests
 
 ```bash
-pytest -q -m "not gpu"             # CI-equivalent CPU suite
+pytest -q -m "not gpu"              # CI-equivalent CPU suite
 pytest -q tests/                    # everything available on this machine
-pytest -q tests/test_smoke.py       # real-model smoke tests
+pytest -q tests/gpu/test_smoke.py   # real-model smoke tests
 ```
 
 Tests marked `gpu` need CUDA or Apple Silicon MPS and may download model weights.
@@ -72,11 +72,11 @@ regenerating them here and updating the browser runtime in drowse.ai.
 
 ## Adding a new model architecture
 
-If you want to add another model's architecture, add an entry to `drowse/core/model.py:_ARCH_PROFILES`, keyed by the HuggingFace `model_type`: `_prof(accessor)`, or `_prof(accessor, tested=True)` once it has a real-model smoke result. The accessor takes a loaded model and returns the list of transformer blocks; `_LAYER_ACCESSORS` and `_TESTED_ARCHS` are derived views over that one registry. The rest of the code (`capture.py`, `hooks.py`, `monitor.py`) doesn't depend on the architecture.
+If you want to add another model's architecture, add an entry to `drowse/model/loading.py:_ARCH_PROFILES`, keyed by the HuggingFace `model_type`: `_prof(accessor)`, or `_prof(accessor, tested=True)` once it has a real-model smoke result. The accessor takes a loaded model and returns the list of transformer blocks; `_LAYER_ACCESSORS` and `_TESTED_ARCHS` are derived views over that one registry. The rest of the code (`capture.py`, `hooks.py`, `monitor.py`) doesn't depend on the architecture.
 
 If the model is quirky (multimodal text extraction, FP8 dequantization,
 nonstandard tokenizer behavior), inspect the existing text-only multimodal path
-and architecture-specific workarounds in `drowse/core/model.py`. Include a focused
+and architecture-specific workarounds in `drowse/model/loading.py`. Include a focused
 accessor test and a real-model smoke result when possible.
 
 ## PRs

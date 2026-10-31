@@ -1,0 +1,1183 @@
+"""Route tests for the unified ``/instruments`` family (no GPU required)."""
+
+from __future__ import annotations
+
+import math
+import threading
+import time
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from drowse.lens.instrument import LensInstrument
+from drowse.lens.jlens import resolve_token_atom
+from tests.support.geometry import stub_geometry_instrument
+from tests.support.lens import lens_kwargs
+from drowse.sae.instrument import SaeInstrument
+from drowse.server.instrument_routes import instrument_families
+from tests.support.sae import MockSaeBackend, make_resident, sae_instrument
+from tests.support.server import mock_session
+
+_SID = "default"
+_BASE = f"/drowse/v1/sessions/{_SID}/instruments"
+
+
+class _FakeLens(LensInstrument):
+    """The real lens instrument with only its artifact-touching surface
+    faked, so the routes exercise the genuine ``set_live`` / ``live_state``
+    / ``active_source`` / ``token_readout`` contract."""
+
+    def __init__(self, session: Any) -> None:
+        super().__init__(**lens_kwargs(replay=session.lens_replay))
+        # The lifecycle and the resident lens touch artifacts: mocked.  The
+        # token replay is the session's (``session.lens_replay``).
+        self.fit = MagicMock()  # type: ignore[method-assign]
+        self.select_source = MagicMock()  # type: ignore[method-assign]
+        self._require = MagicMock(return_value=object())  # type: ignore[method-assign]
+        self.runtime.resolve_layers = MagicMock(  # type: ignore[method-assign]
+            return_value=[12, 18],
+        )
+        # The token resolver reads the session tokenizer over a large vocab.
+        self.resolve_token = lambda word: resolve_token_atom(  # type: ignore[method-assign]
+            session.tokenizer, word, vocab_size=1 << 20,
+        )
+        self.layers: "list[int] | None" = None
+        self.source: "str | None" = None
+        self.default_layers = [10, 14, 18]
+        self.enable_calls: list[Any] = []
+        self.disable_calls = 0
+        self.enable_error: "BaseException | None" = None
+
+    def enable_live(self, *, layers: Any = None) -> list[int]:
+        self.enable_calls.append(layers)
+        if self.enable_error is not None:
+            raise self.enable_error
+        self.layers = list(layers) if layers else list(self.default_layers)
+        return list(self.layers)
+
+    def disable_live(self) -> None:
+        self.disable_calls += 1
+        self.layers = None
+
+    @property
+    def live_layers(self) -> "list[int] | None":
+        return list(self.layers) if self.layers is not None else None
+
+    @property
+    def active_source(self) -> "str | None":
+        return self.source
+
+
+class _FakeSae(SaeInstrument):
+    """The real SAE instrument with residency faked."""
+
+    layer = 14
+    source: "str | None" = None
+
+    def enable_live(self) -> dict[str, Any]:
+        self.live = {"layer": self.layer, "source": self.source}
+        return {"layer": self.layer}
+
+    def disable_live(self) -> None:
+        self.live = None
+
+    @property
+    def active_source(self) -> "str | None":
+        return self.source
+
+
+def _mock_session() -> Any:
+    """The shared mock session with real instruments over a faked source
+    lifecycle, keyed by the registry the routes validate ``{family}`` against."""
+    # The token-validate tests script the tokenizer per test.
+    session = mock_session(tokenizer=MagicMock())
+    session.model.config.model_type = "gemma2"
+    # The geometry instrument reads ``session._monitor`` per call, so a test
+    # can script the roster after construction.
+    session._monitor = MagicMock(probe_names=[])
+    # Each family's token replay is a mock the tests script
+    # (``session.<family>_replay``); the instruments build the envelope.
+    session.geometry_replay = MagicMock()
+    session.lens_replay = MagicMock()
+    session.sae_replay = MagicMock()
+    geometry = stub_geometry_instrument(session, replay=session.geometry_replay)
+    lens = _FakeLens(session)
+    # The SAE lifecycle the routes drive is mocked on the instrument.
+    sae = sae_instrument(session, cls=_FakeSae, replay=session.sae_replay)
+    for name in ("load", "unload", "train", "validate_feature", "fetch_meta"):
+        setattr(sae, name, MagicMock(name=f"sae.{name}"))
+    session.instruments = {
+        "geometry": geometry, "lens": lens, "sae": sae,
+    }
+    session.geometry = geometry
+    session.lens = lens
+    session.sae = sae
+
+    return session
+
+
+def _wait_idle(client: Any, family: str, timeout: float = 2.0) -> None:
+    """Let a background preparation's worker finish."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if client.get(f"{_BASE}/{family}/preparations").json()["state"] != "running":
+            return
+        time.sleep(0.01)
+
+
+def _pin(corpus: Any) -> Any:
+    """A stand-in Hub pin: every part fixed to one fake commit, no network."""
+    from dataclasses import replace
+
+    from drowse.lens.corpus import LensCorpusMix
+
+    def _one(part: Any) -> Any:
+        return replace(part, config=part.config or "default", revision="a" * 40)
+
+    if isinstance(corpus, LensCorpusMix):
+        return replace(corpus, parts=tuple(_one(part) for part in corpus.parts))
+    return _one(corpus)
+
+
+class _FinishedCorpusWorker:
+    """A corpus worker process (and its pipe end) that already sent ``result``."""
+
+    def __init__(self, result: Any) -> None:
+        self.result = result
+
+    def is_alive(self) -> bool:
+        return False
+
+    def join(self, timeout: float = 0) -> None:
+        del timeout
+
+    def poll(self, timeout: float) -> bool:
+        del timeout
+        return True
+
+    def recv(self) -> Any:
+        return ("ok", self.result)
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def corpus_pins(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """The lens fit route pins an unpinned Hub corpus first, in the isolated
+    corpus worker.  The worker is faked (no spawn, no network) and records
+    each corpus it pinned; a Hub call in the server process itself fails."""
+    pins: list[Any] = []
+
+    def _start(job: Any, *args: Any) -> tuple[Any, Any]:
+        assert job.__name__ == "_pin_in_process", job
+        (corpus,) = args
+        pins.append(corpus)
+        worker = _FinishedCorpusWorker(_pin(corpus))
+        return worker, worker
+
+    def _in_process_hub(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("Hub resolution must not run in the server process")
+
+    monkeypatch.setattr("drowse.lens.corpus._start_lens_corpus_process", _start)
+    monkeypatch.setattr("drowse.base.hf._hf_api", _in_process_hub)
+    return pins
+
+
+@pytest.fixture
+def session_and_client():
+    from drowse.server import create_app
+    session = _mock_session()
+    app = create_app(session, default_steering=None)
+    with TestClient(app) as client:
+        yield session, client
+
+
+# ---------------------------------------------------------------------------
+# The per-family block ``session_info.instruments`` embeds
+# ---------------------------------------------------------------------------
+
+class TestListing:
+    def test_enumerates_three_families(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        session, client = session_and_client
+        # The listing answers from the canonical active-source resolver, the
+        # same one that stamps lens measurement bindings.
+        session.lens.source = "local:default"
+        session.lens.probes["jlens/fake"] = {"word": "fake"}
+        session.sae.source = "saelens:scope"
+        fams = {f["family"]: f for f in instrument_families(session)}
+        assert set(fams) == {"geometry", "lens", "sae"}
+
+        geo = fams["geometry"]
+        assert geo["live"] == {"enabled": True}
+        assert geo["source"] is None
+        assert geo["capabilities"] == {
+            "sources": False, "preparations": [],
+            "token_readout": True, "source_switch": False,
+        }
+
+        lens = fams["lens"]
+        assert lens["live"] == {"enabled": False, "layers": None}
+        assert lens["source"] == "local:default"
+        assert lens["probes"] == ["jlens/fake"]
+        assert lens["capabilities"] == {
+            "sources": True, "preparations": ["fetch", "fit"],
+            "token_readout": True, "source_switch": True,
+        }
+
+        sae = fams["sae"]
+        assert sae["live"] == {
+            "enabled": False, "layer": None, "source": None,
+        }
+        assert sae["source"] == "saelens:scope"
+        assert sae["capabilities"] == {
+            "sources": True, "preparations": ["fetch", "train"],
+            "token_readout": True, "source_switch": False,
+        }
+
+    def test_source_survives_a_missing_prepared_artifact(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        """The listing reports the active pointer, not the on-disk scan.
+
+        ``list_lens_sources`` only emits rows whose manifest/binding file
+        still exists, so an active pointer naming a removed artifact drops
+        out of it entirely.  Answering the listing from that scan made the
+        dashboard say ``source: null`` while every persisted measurement
+        binding still carried the label.
+        """
+        session, client = session_and_client
+        monkeypatch.setattr(
+            "drowse.lens.sources.list_lens_sources", lambda _m: [],
+        )
+        session.lens.source = "local:default"
+        fams = {f["family"]: f for f in instrument_families(session)}
+        assert fams["lens"]["source"] == "local:default"
+
+    def test_live_states_reflect_runtime(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.geometry.set_live(False)
+        session.lens.enable_live(layers=[10, 14])
+        session.sae.source = "saelens:x"
+        session.sae.enable_live()
+        fams = {f["family"]: f for f in instrument_families(session)}
+        assert fams["geometry"]["live"] == {"enabled": False}
+        assert fams["lens"]["live"] == {"enabled": True, "layers": [10, 14]}
+        assert fams["sae"]["live"] == {
+            "enabled": True, "layer": 14, "source": "saelens:x",
+        }
+
+
+# ---------------------------------------------------------------------------
+# POST /instruments/{family}/live — uniform live toggle
+# ---------------------------------------------------------------------------
+
+class TestLiveToggle:
+    def test_geometry_toggle(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        resp = client.post(f"{_BASE}/geometry/live", json={"enabled": False})
+        assert resp.status_code == 200
+        assert resp.json() == {"enabled": False}
+        assert session.geometry.live_state.enabled is False
+
+    def test_geometry_rejects_layers(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/geometry/live", json={"enabled": True, "layers": [1, 2]},
+        )
+        assert resp.status_code == 400
+
+    def test_geometry_rejects_top_k(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/geometry/live", json={"enabled": True, "top_k": 5},
+        )
+        assert resp.status_code == 400
+
+    def test_lens_enable_returns_layers(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        resp = client.post(f"{_BASE}/lens/live", json={"enabled": True})
+        assert resp.status_code == 200
+        assert resp.json() == {"enabled": True, "layers": [10, 14, 18]}
+        assert session.lens.enable_calls == [None]
+
+    def test_lens_disable(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.lens.enable_live()
+        resp = client.post(f"{_BASE}/lens/live", json={"enabled": False})
+        assert resp.status_code == 200
+        assert resp.json() == {"enabled": False, "layers": None}
+        assert session.lens.disable_calls == 1
+
+    def test_lens_not_fitted_404(self, session_and_client: Any) -> None:
+        from drowse.lens.jlens import LensNotFittedError
+        session, client = session_and_client
+        session.lens.enable_error = LensNotFittedError("no lens")
+        resp = client.post(f"{_BASE}/lens/live", json={"enabled": True})
+        assert resp.status_code == 404
+
+    def test_lens_rejects_top_k(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/lens/live", json={"enabled": True, "top_k": 4},
+        )
+        assert resp.status_code == 400
+
+    def test_sae_enable(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.sae.source = "saelens:scope"
+        resp = client.post(f"{_BASE}/sae/live", json={"enabled": True})
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "enabled": True, "layer": 14, "source": "saelens:scope",
+        }
+
+    def test_sae_disable(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.sae.enable_live()
+        resp = client.post(f"{_BASE}/sae/live", json={"enabled": False})
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "enabled": False, "layer": None, "source": None,
+        }
+        assert session.sae.live is None
+
+    def test_sae_rejects_layers(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/sae/live", json={"enabled": True, "layers": [1]},
+        )
+        assert resp.status_code == 400
+
+    def test_sae_rejects_top_k(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/sae/live", json={"enabled": True, "top_k": 12},
+        )
+        assert resp.status_code == 400
+
+    def test_unknown_family_404(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        resp = client.post(f"{_BASE}/nope/live", json={"enabled": True})
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /instruments/{family}/sources
+# ---------------------------------------------------------------------------
+
+class TestSources:
+    def test_geometry_404(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        resp = client.get(f"{_BASE}/geometry/sources")
+        assert resp.status_code == 404
+        assert "source lifecycle" in resp.json()["detail"]
+
+    def test_lens_lists_prepared(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        _session, client = session_and_client
+        monkeypatch.setattr(
+            "drowse.lens.sources.list_lens_sources",
+            lambda _m: [{
+                "source": "local:j", "kind": "local", "name": "j",
+                "active": True, "path": "/tmp/x.json",
+            }],
+        )
+        resp = client.get(f"{_BASE}/lens/sources")
+        assert resp.status_code == 200
+        rows = resp.json()["sources"]
+        assert rows[0]["source"] == "local:j"
+        assert "path" not in rows[0]  # path stripped
+
+    def test_sae_merges_prepared_and_releases(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        _session, client = session_and_client
+        monkeypatch.setattr(
+            "drowse.sae.sources.list_sae_sources",
+            lambda _m: [{
+                "source": "local:mine", "kind": "local", "name": "mine",
+                "active": True, "path": "/tmp/m.json", "layer": 14,
+                "features": 4096,
+            }],
+        )
+        monkeypatch.setattr(
+            "drowse.sae.backend.list_sae_releases",
+            # A release row is keyed by ``release`` and carries ``layers``
+            # (plural) — the registry's own shape, not the prepared-source
+            # shape above.
+            lambda _m: [{
+                "release": "scope", "model": "test/model", "layers": [14],
+                "repo_id": None, "neuronpedia": False, "source": "saelens",
+            }],
+        )
+        resp = client.get(f"{_BASE}/sae/sources")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["sources"][0]["source"] == "local:mine"
+        assert "path" not in body["sources"][0]
+        assert body["releases"][0]["release"] == "scope"
+
+
+# ---------------------------------------------------------------------------
+# PUT /instruments/{family}/source
+# ---------------------------------------------------------------------------
+
+class TestSourceSwitch:
+    def test_lens_switch(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.lens.default_layers = [10, 11]
+        resp = client.put(
+            f"{_BASE}/lens/source", json={"source": "neuronpedia"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"source": "neuronpedia", "live_layers": [10, 11]}
+        assert session.lens.disable_calls == 1
+        session.lens.select_source.assert_called_once_with("neuronpedia")
+
+    def test_unfitted_lens_switch_is_a_409(self, session_and_client: Any) -> None:
+        """Regression: the error-policy collapse turned this route's 409 into
+        ``LensNotFittedError``'s generic 404."""
+        from drowse.lens.jlens import LensNotFittedError
+
+        session, client = session_and_client
+        session.lens.enable_error = LensNotFittedError("no fitted J-lens for test/model")
+        resp = client.put(f"{_BASE}/lens/source", json={"source": "local:default"})
+        assert resp.status_code == 409
+        assert resp.json() == {"detail": "no fitted J-lens for test/model"}
+
+    def test_unavailable_source_keeps_its_message(self, session_and_client: Any) -> None:
+        """Regression: the registry's path-free "not available" text was
+        scrubbed to the generic filesystem message."""
+        session, client = session_and_client
+        session.lens.select_source.side_effect = FileNotFoundError(
+            "J-lens source local:gone is not available",
+        )
+        resp = client.put(f"{_BASE}/lens/source", json={"source": "local:gone"})
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "J-lens source local:gone is not available"}
+
+    def test_os_level_miss_on_switch_stays_scrubbed(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.lens.select_source.side_effect = FileNotFoundError(
+            2, "No such file or directory", "/secret/home/.drowse/models/x/jlens/active.json",
+        )
+        resp = client.put(f"{_BASE}/lens/source", json={"source": "local:default"})
+        assert resp.status_code == 404
+        assert "/secret" not in resp.text
+
+    def test_sae_409_points_at_preparations(
+        self, session_and_client: Any,
+    ) -> None:
+        _session, client = session_and_client
+        resp = client.put(f"{_BASE}/sae/source", json={"source": "saelens:x"})
+        assert resp.status_code == 409
+        assert "preparation" in resp.json()["detail"]
+
+    def test_geometry_404(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        resp = client.put(f"{_BASE}/geometry/source", json={"source": "x"})
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST/GET/DELETE /instruments/{family}/preparations
+# ---------------------------------------------------------------------------
+
+class TestPreparations:
+    def test_lens_fit_request_defaults_to_the_r_lens(self) -> None:
+        from pydantic import ValidationError
+
+        from drowse.server.instrument_routes import LensFitRequest
+
+        assert LensFitRequest().kind == "r"
+        assert LensFitRequest(kind="j").kind == "j"
+        stale_bodies: list[dict[str, Any]] = [{"kind": "k"}, {"relp": True}]
+        for stale in stale_bodies:
+            with pytest.raises(ValidationError):
+                LensFitRequest(**stale)
+
+    def test_geometry_404(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        assert client.get(f"{_BASE}/geometry/preparations").status_code == 404
+        assert client.post(
+            f"{_BASE}/geometry/preparations", json={"operation": "fit"},
+        ).status_code == 404
+        assert client.delete(f"{_BASE}/geometry/preparations").status_code == 404
+
+    def test_idle_status_before_any_op(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        body = client.get(f"{_BASE}/lens/preparations").json()
+        assert body["state"] == "idle"
+        assert body["operation"] is None
+
+    def test_unknown_operation_400(self, session_and_client: Any) -> None:
+        _session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/lens/preparations", json={"operation": "load"},
+        )
+        assert resp.status_code == 400  # 'load' is an sae op, not lens
+
+    def test_invalid_op_fields_render_a_string_detail(
+        self, session_and_client: Any,
+    ) -> None:
+        """Op bodies are re-parsed after the envelope split — flatten those.
+
+        The per-operation models are validated by hand here, so their failure
+        arrives as a raw ``exc.errors()`` list; the native envelope's
+        ``detail`` is always a string.
+        """
+        _session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/lens/preparations",
+            json={"operation": "fit", "prompts": 999_999},
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert isinstance(detail, str)
+        assert "prompts" in detail
+
+    def test_lens_fit_status_mapping_and_mutual_exclusion(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        session, client = session_and_client
+        started = threading.Event()
+        release = threading.Event()
+
+        def _blocking_fit(*_a: Any, **_k: Any) -> None:
+            started.set()
+            assert release.wait(timeout=2.0)
+
+        session.lens.fit.side_effect = _blocking_fit
+        monkeypatch.setattr(
+            "drowse.lens.corpus.stream_lens_corpus",
+            lambda _n, _corpus, *, cancel_event=None: (
+                ["a long enough prompt."], "spec",
+            ),
+        )
+        resp = client.post(
+            f"{_BASE}/lens/preparations",
+            json={"operation": "fit", "prompts": 1, "layers": "workspace"},
+        )
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["operation"] == "fit"
+        assert body["state"] == "running"
+        assert body["progress"] == {
+            "current": 0, "total": 1, "unit": "prompts",
+        }
+        assert body["cancellable"] is True
+
+        assert started.wait(timeout=2.0)
+        try:
+            # fetch shares the mutual-exclusion group → 409 while fit runs
+            second = client.post(
+                f"{_BASE}/lens/preparations", json={"operation": "fetch"},
+            )
+            assert second.status_code == 409
+            # DELETE cancels the running fit
+            cancel = client.delete(f"{_BASE}/lens/preparations")
+            assert cancel.status_code == 200
+            assert cancel.json()["message"] == "cancelling…"
+        finally:
+            release.set()
+
+    def test_lens_fit_streams_the_requested_hub_corpus(
+        self, session_and_client: Any, monkeypatch: Any, corpus_pins: list[Any],
+    ) -> None:
+        from drowse.lens.corpus import HfLensCorpus, LensCorpusMix
+
+        session, client = session_and_client
+        streamed: list[tuple[int, Any]] = []
+
+        def _stream(
+            n: int, corpus: Any, *, cancel_event: Any = None,
+        ) -> tuple[list[str], str]:
+            streamed.append((n, corpus))
+            return ["a long enough prompt."], "hf:org/data/cfg@sha"
+
+        monkeypatch.setattr("drowse.lens.corpus.stream_lens_corpus", _stream)
+        resp = client.post(
+            f"{_BASE}/lens/preparations",
+            json={
+                "operation": "fit", "prompts": 3, "layers": "workspace",
+                "hf_corpus": [
+                    "org/data:cfg@main,text_field=body,weight=2",
+                    "org/zh:cmn,files=8,seed=1",
+                ],
+            },
+        )
+        assert resp.status_code == 202
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if client.get(f"{_BASE}/lens/preparations").json()["state"] != "running":
+                break
+            time.sleep(0.01)
+        requested = LensCorpusMix((
+            HfLensCorpus("org/data", "cfg", "main", "body"),
+            HfLensCorpus("org/zh", "cmn", files=8, seed=1),
+        ), (2, 1))
+        # The unpinned mix resolves in the corpus worker, and the stream
+        # reads the pinned corpus the no-op proof checked.
+        assert corpus_pins == [requested]
+        assert streamed == [(3, _pin(requested))]
+        assert session.lens.fit.call_args.kwargs["corpus_spec"] == (
+            "hf:org/data/cfg@sha"
+        )
+        assert session.lens.fit.call_args.kwargs["kind"] == "R"
+
+    def test_lens_fit_skips_a_proven_noop_without_streaming(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        """Like ``lens fit``: a durable fit of the same pinned corpus and
+        exact model source is proven before the stream, so nothing streams
+        or fits, and the proven artifact becomes the live source."""
+        from drowse.lens.corpus import DEFAULT_LENS_CORPUS
+
+        session, client = session_and_client
+        proofs: list[tuple[str, str, dict[str, Any]]] = []
+
+        def _prove(model_id: str, name: str, **kwargs: Any) -> dict[str, Any]:
+            proofs.append((model_id, name, kwargs))
+            return {"n_prompts": 3}
+
+        def _stream(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("a proven no-op must not stream")
+
+        monkeypatch.setattr("drowse.lens.lifecycle.prove_lens_fit_noop", _prove)
+        monkeypatch.setattr("drowse.lens.corpus.stream_lens_corpus", _stream)
+        resp = client.post(
+            f"{_BASE}/lens/preparations",
+            json={"operation": "fit", "prompts": 3, "layers": "workspace", "seq_len": 64},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "lens")
+        status = client.get(f"{_BASE}/lens/preparations").json()
+        assert status["state"] == "done", status
+        ((model_id, name, kwargs),) = proofs
+        assert (model_id, name) == (session.lens.model_id, "r")
+        assert kwargs["corpus_spec"] == _pin(DEFAULT_LENS_CORPUS).spec
+        assert kwargs["prompt_count"] == 3
+        assert kwargs["requested"] == "workspace" and kwargs["seq_len"] == 64
+        session.lens.fit.assert_not_called()
+        session.lens.select_source.assert_called_once_with("local:r")
+        assert session.lens.live_layers == session.lens.default_layers
+        assert status["message"] == "done"
+
+    def test_lens_fit_resolves_the_default_corpus_in_the_corpus_worker(
+        self, session_and_client: Any, monkeypatch: Any, corpus_pins: list[Any],
+    ) -> None:
+        """The default corpus names no commit, so every server fit resolves
+        it first, in the corpus worker (the fixture fails any Hub call made
+        in the server process)."""
+        from drowse.lens.corpus import DEFAULT_LENS_CORPUS
+
+        session, client = session_and_client
+        streamed: list[Any] = []
+
+        def _stream(n: int, corpus: Any, *, cancel_event: Any = None) -> Any:
+            streamed.append(corpus)
+            return ["a long enough prompt."], corpus.spec
+
+        monkeypatch.setattr("drowse.lens.corpus.stream_lens_corpus", _stream)
+        resp = client.post(f"{_BASE}/lens/preparations", json={"operation": "fit", "prompts": 1})
+        assert resp.status_code == 202
+        _wait_idle(client, "lens")
+        assert client.get(f"{_BASE}/lens/preparations").json()["state"] == "done"
+        assert corpus_pins == [DEFAULT_LENS_CORPUS]
+        assert streamed == [_pin(DEFAULT_LENS_CORPUS)]
+        session.lens.fit.assert_called_once()
+
+    def test_lens_fit_of_a_pinned_corpus_starts_no_resolver(
+        self, session_and_client: Any, monkeypatch: Any, corpus_pins: list[Any],
+    ) -> None:
+        from drowse.lens.corpus import HfLensCorpus
+
+        session, client = session_and_client
+        streamed: list[Any] = []
+
+        def _stream(n: int, corpus: Any, *, cancel_event: Any = None) -> Any:
+            streamed.append(corpus)
+            return ["a long enough prompt."], corpus.spec
+
+        monkeypatch.setattr("drowse.lens.corpus.stream_lens_corpus", _stream)
+        resp = client.post(
+            f"{_BASE}/lens/preparations",
+            json={"operation": "fit", "prompts": 1, "hf_corpus": [f"org/data:cfg@{'c' * 40}"]},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "lens")
+        assert client.get(f"{_BASE}/lens/preparations").json()["state"] == "done"
+        assert corpus_pins == []
+        assert streamed == [HfLensCorpus("org/data", "cfg", "c" * 40)]
+        session.lens.fit.assert_called_once()
+
+    def test_proven_noop_survives_a_live_enable_failure(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        """Like the fit path: once the proven artifact is selected, a failed
+        live-enable is logged, not reported as a failed preparation."""
+        session, client = session_and_client
+        monkeypatch.setattr(
+            "drowse.lens.lifecycle.prove_lens_fit_noop",
+            lambda *_a, **_k: {"n_prompts": 1},
+        )
+        session.lens.enable_error = RuntimeError("live readout unavailable")
+        resp = client.post(f"{_BASE}/lens/preparations", json={"operation": "fit", "prompts": 1})
+        assert resp.status_code == 202
+        _wait_idle(client, "lens")
+        status = client.get(f"{_BASE}/lens/preparations").json()
+        assert status["state"] == "done", status
+        assert status["message"] == "done"
+        session.lens.select_source.assert_called_once_with("local:r")
+        assert session.lens.enable_calls == [None]
+        assert session.lens.live_layers is None
+        session.lens.fit.assert_not_called()
+
+    def test_forced_lens_fit_skips_the_noop_proof(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        session, client = session_and_client
+
+        def _prove(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("a forced fit never proves a no-op")
+
+        monkeypatch.setattr("drowse.lens.lifecycle.prove_lens_fit_noop", _prove)
+        monkeypatch.setattr(
+            "drowse.lens.corpus.stream_lens_corpus",
+            lambda _n, _corpus, *, cancel_event=None: (["a long enough prompt."], "spec"),
+        )
+        resp = client.post(
+            f"{_BASE}/lens/preparations",
+            json={"operation": "fit", "prompts": 1, "force": True},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "lens")
+        assert client.get(f"{_BASE}/lens/preparations").json()["state"] == "done"
+        assert session.lens.fit.call_args.kwargs["force"] is True
+
+    def test_lens_fit_rejects_a_malformed_hub_corpus(
+        self, session_and_client: Any,
+    ) -> None:
+        _session, client = session_and_client
+        for fields, needle in (
+            ({"hf_corpus": ["org/data@"]}, "REPO"),
+            ({"hf_corpus": ["org/data,weight=2"]}, "only to a mix"),
+            ({"hf_corpus": "org/data"}, "hf_corpus"),
+            ({"hf_corpus": []}, "hf_corpus"),
+            ({"text_field": "body"}, "text_field"),
+        ):
+            resp = client.post(
+                f"{_BASE}/lens/preparations",
+                json={"operation": "fit", **fields},
+            )
+            assert resp.status_code == 400
+            assert needle in resp.json()["detail"]
+
+    def test_lens_delete_without_running_fit_409(
+        self, session_and_client: Any,
+    ) -> None:
+        _session, client = session_and_client
+        resp = client.delete(f"{_BASE}/lens/preparations")
+        assert resp.status_code == 409
+
+    def test_sae_train_status_mapping(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        session, client = session_and_client
+        session.sae.train.return_value = {
+            "runtime": {}, "metrics": {"tokens_trained": 100}, "source": "local:s",
+        }
+        monkeypatch.setattr(
+            "drowse.lens.corpus.stream_lens_corpus",
+            lambda _n, **_k: (["p"], "spec"),
+        )
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "train", "name": "mine", "tokens": 1000},
+        )
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["operation"] == "train"
+        assert body["progress"]["unit"] == "tokens"
+        assert body["cancellable"] is True
+        # let the worker finish
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            st = client.get(f"{_BASE}/sae/preparations").json()
+            if st["state"] != "running":
+                break
+            time.sleep(0.01)
+
+    def test_sae_load_no_denominator_progress_null(
+        self, session_and_client: Any,
+    ) -> None:
+        session, client = session_and_client
+        session.sae.load.return_value = {"layer": 14, "width": 4096}
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "fetch", "release": "saelens:scope"},
+        )
+        assert resp.status_code == 202
+        assert resp.json()["operation"] == "fetch"
+        assert resp.json()["progress"] is None
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            st = client.get(f"{_BASE}/sae/preparations").json()
+            if st["state"] != "running":
+                break
+            time.sleep(0.01)
+        session.sae.load.assert_called_once_with("scope", layer=None)
+
+    @pytest.mark.parametrize(
+        ("source", "release"),
+        [("saelens:scope", "scope"), ("local:mine", "local:mine")],
+    )
+    def test_sae_fetch_parses_the_public_source_grammar(
+        self, session_and_client: Any, source: str, release: str,
+    ) -> None:
+        session, client = session_and_client
+        session.sae.load.return_value = {"layer": 14, "width": 4096}
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "fetch", "release": f"  {source} "},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "sae")
+        session.sae.load.assert_called_once_with(release, layer=None)
+
+    @pytest.mark.parametrize("source", ["scope", "saelens:", "local:Bad Name"])
+    def test_sae_fetch_rejects_a_malformed_source(
+        self, session_and_client: Any, source: str,
+    ) -> None:
+        """The public grammar is ``local:NAME`` / ``saelens:RELEASE``; the
+        route used to strip ``saelens:`` by hand and load anything else
+        verbatim."""
+        session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "fetch", "release": source},
+        )
+        assert resp.status_code == 400
+        assert "SAE source must be" in resp.json()["detail"]
+        session.sae.load.assert_not_called()
+
+    def test_sae_train_default_layer_matches_the_cli(
+        self, session_and_client: Any, monkeypatch: Any,
+    ) -> None:
+        """The default hook layer is ``select_runtime_layer`` over every
+        model layer, as ``drowse sae train`` picks it (a 31-layer model's
+        65% depth is the 19/20 tie, which the CLI breaks low)."""
+        from drowse.sae.backend import select_runtime_layer
+
+        session, client = session_and_client
+        session.layers = [MagicMock() for _ in range(31)]
+        session.sae.train.return_value = {
+            "runtime": {}, "metrics": {"tokens_trained": 1}, "source": "local:s",
+        }
+        monkeypatch.setattr(
+            "drowse.lens.corpus.stream_lens_corpus",
+            lambda _n, **_k: (["p"], "spec"),
+        )
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "train", "name": "mine", "tokens": 1000},
+        )
+        assert resp.status_code == 202
+        _wait_idle(client, "sae")
+        layer = session.sae.train.call_args.kwargs["layer"]
+        assert layer == select_runtime_layer(frozenset(range(31)), 31) == 19
+
+        session.sae.train.reset_mock()
+        resp = client.post(
+            f"{_BASE}/sae/preparations",
+            json={"operation": "train", "name": "mine", "layer": 31},
+        )
+        assert resp.status_code == 400
+        assert "outside model layers 0..30" in resp.json()["detail"]
+        session.sae.train.assert_not_called()
+
+    def test_sae_delete_unloads_when_no_train(
+        self, session_and_client: Any,
+    ) -> None:
+        session, client = session_and_client
+        resp = client.delete(f"{_BASE}/sae/preparations")
+        assert resp.status_code == 200
+        session.sae.unload.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# GET /instruments/{family}/token-readout — measurements replay envelope
+# ---------------------------------------------------------------------------
+
+class TestTokenReadout:
+    # The lens read hands back per-layer PROBABILITIES p_l — the unit the
+    # aggregate's ``strength`` averages — plus the aggregate chips.
+    _LENS_READ = (
+        {
+            18: [(" b", 0.6, 7), (" c", 0.3, 9)],
+            12: [(" a", 0.78, 5), (" d", 0.13, 3)],
+        },
+        [(" a", 0.41, 0.31, 0.05), (" b", 0.2, 0.8, 0.1)],
+    )
+
+    @staticmethod
+    def _token(steering: "str | None") -> Any:
+        from drowse.readout.replay import ReplayedToken
+
+        return ReplayedToken(
+            node_id="n1", raw_index=3, token_id=42, token_text=" magic",
+            steering=steering,
+        )
+
+    @staticmethod
+    def _geometry_readings() -> dict[str, Any]:
+        from drowse.readout.types import ProbeReading
+
+        return {
+            "formal.casual": ProbeReading(
+                fraction=0.4,
+                nearest=[("formal", 1.2)],
+                coords=(0.7,),
+                residual=0.0,
+            ),
+        }
+
+    def test_geometry_replay_envelope(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session._monitor.probe_names = ["formal.casual"]
+        session.geometry_replay.return_value = (
+            self._token("0.3 formal.casual"), self._geometry_readings(),
+        )
+        resp = client.get(
+            f"{_BASE}/geometry/token-readout",
+            params={"node_id": "n1", "raw_index": 3},
+        )
+        assert resp.status_code == 200
+        m = resp.json()["measurements"]
+        assert m["scope"] == "replay"
+        assert m["provenance"] == "replayed"
+        geo = m["instruments"]["geometry"]
+        assert geo["binding"] == {
+            "source": None, "steering": "0.3 formal.casual",
+        }
+        reading = geo["readings"]["formal.casual"]
+        assert reading["coords"] == [0.7]
+        assert m["scores"]["formal.casual"] == 0.7
+        args, kwargs = session.geometry_replay.call_args
+        assert args == ("n1", 3)
+        assert kwargs["apply_steering"] is True
+        assert kwargs["raw"] is False
+
+    def test_geometry_unsteered_nulls_binding_steering(
+        self, session_and_client: Any,
+    ) -> None:
+        session, client = session_and_client
+        session._monitor.probe_names = ["formal.casual"]
+        session.geometry_replay.return_value = (
+            self._token(None), self._geometry_readings(),
+        )
+        resp = client.get(
+            f"{_BASE}/geometry/token-readout",
+            params={"node_id": "n1", "raw_index": 3, "steered": "false"},
+        )
+        assert resp.status_code == 200
+        geo = resp.json()["measurements"]["instruments"]["geometry"]
+        assert geo["binding"] == {"source": None, "steering": None}
+        call = session.geometry_replay.call_args
+        assert call.kwargs["apply_steering"] is False
+
+    def test_geometry_no_probes_400(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        # No geometry probe attached: refused before any replay.
+        resp = client.get(
+            f"{_BASE}/geometry/token-readout",
+            params={"node_id": "n1", "raw_index": 0},
+        )
+        assert resp.status_code == 400
+        assert "no geometry probes attached" in resp.text
+        session.geometry_replay.assert_not_called()
+
+    def test_geometry_unknown_node_404(self, session_and_client: Any) -> None:
+        from drowse.loom.errors import UnknownNodeError
+
+        session, client = session_and_client
+        session._monitor.probe_names = ["formal.casual"]
+        session.geometry_replay.side_effect = UnknownNodeError("gone")
+        resp = client.get(
+            f"{_BASE}/geometry/token-readout",
+            params={"node_id": "nope", "raw_index": 0},
+        )
+        assert resp.status_code == 404
+
+    def test_lens_replay_envelope(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.lens.source = "local:default"
+        session.lens_replay.return_value = (
+            self._token("0.3 formal.casual"), self._LENS_READ,
+        )
+        session.lens.token_readout = MagicMock(  # type: ignore[method-assign]
+            wraps=session.lens.token_readout,
+        )
+        resp = client.get(
+            f"{_BASE}/lens/token-readout",
+            params={"node_id": "n1", "raw_index": 3, "top_k": 2},
+        )
+        assert resp.status_code == 200
+        m = resp.json()["measurements"]
+        assert m["scope"] == "replay"
+        assert m["provenance"] == "replayed"
+        lens = m["instruments"]["lens"]
+        assert lens["binding"]["source"] == "local:default"
+        assert lens["binding"]["steering"] == "0.3 formal.casual"
+        assert [row["layer"] for row in lens["readout"]["layers"]] == [12, 18]
+        assert lens["readout"]["aggregate"][0]["token"] == " a"
+        assert session.lens.token_readout.call_args.kwargs["top_k"] == 2
+        # The replay captures the layers the lens resolved.
+        assert session.lens_replay.call_args.kwargs["layers"] == [12, 18]
+        # ONE conversion on the whole path: the read's p_l reaches the
+        # envelope untouched and ``build_measurements`` logs it exactly once,
+        # so exponentiating the wire value returns the original probability.
+        by_layer = {
+            row["layer"]: row["tokens"] for row in lens["readout"]["layers"]
+        }
+        for layer, rows in self._LENS_READ[0].items():
+            for wire, (token, p_l, token_id) in zip(by_layer[layer], rows):
+                assert wire["token"] == token
+                assert wire["id"] == token_id
+                assert math.exp(wire["logprob"]) == pytest.approx(p_l)
+
+    def test_lens_unsteered_nulls_binding_steering(
+        self, session_and_client: Any,
+    ) -> None:
+        session, client = session_and_client
+        session.lens_replay.return_value = (self._token(None), self._LENS_READ)
+        resp = client.get(
+            f"{_BASE}/lens/token-readout",
+            params={"node_id": "n1", "raw_index": 3, "steered": "false"},
+        )
+        assert resp.status_code == 200
+        binding = resp.json()["measurements"]["instruments"]["lens"]["binding"]
+        assert binding["steering"] is None
+        assert session.lens_replay.call_args.kwargs["apply_steering"] is False
+
+    def test_lens_not_fitted_404(self, session_and_client: Any) -> None:
+        from drowse.lens.jlens import LensNotFittedError
+        session, client = session_and_client
+        session.lens._require.side_effect = LensNotFittedError("nope")
+        resp = client.get(
+            f"{_BASE}/lens/token-readout",
+            params={"node_id": "n1", "raw_index": 0},
+        )
+        assert resp.status_code == 404
+        session.lens_replay.assert_not_called()
+
+    def test_sae_replay_envelope(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.sae.source = "saelens:scope"
+        make_resident(
+            session.sae.runtime,
+            MockSaeBackend(layers=frozenset({14}), d_model=64),
+            layer=14,
+            feature_meta={"42": {"label": "fruit", "max_act": 121.1}},
+        )
+        session.sae_replay.return_value = (self._token(None), [(42, 3.5)])
+        resp = client.get(
+            f"{_BASE}/sae/token-readout",
+            params={"node_id": "n1", "raw_index": 2},
+        )
+        assert resp.status_code == 200
+        sae = resp.json()["measurements"]["instruments"]["sae"]
+        assert sae["binding"]["source"] == "saelens:scope"
+        assert sae["binding"]["layer"] == 14
+        assert sae["readout"]["features"][0]["id"] == 42
+        assert sae["readout"]["features"][0]["label"] == "fruit"
+        args, kwargs = session.sae_replay.call_args
+        assert args == ("n1", 2)
+        assert kwargs["layers"] == [14]
+
+
+# ---------------------------------------------------------------------------
+# Family extras
+# ---------------------------------------------------------------------------
+
+class TestExtras:
+    def test_lens_token_validate(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.tokenizer.encode.return_value = [42]
+        session.tokenizer.decode.return_value = " magic"
+        resp = client.post(
+            f"{_BASE}/lens/token/validate", json={"word": "  magic  "},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"word": "magic", "token_id": 42}
+
+    def test_lens_token_validate_accepts_the_id_form(
+        self, session_and_client: Any,
+    ) -> None:
+        """``#<id>`` addresses a vocab id directly, like the steering atom;
+        it used to be tokenized as the text "#6"."""
+        session, client = session_and_client
+        session.tokenizer.encode.return_value = [3, 4]
+        resp = client.post(f"{_BASE}/lens/token/validate", json={"word": "#6"})
+        assert resp.status_code == 200
+        assert resp.json() == {"word": "#6", "token_id": 6}
+        session.tokenizer.encode.assert_not_called()
+
+    def test_lens_token_validate_multi_token_400(
+        self, session_and_client: Any,
+    ) -> None:
+        session, client = session_and_client
+        session.tokenizer.encode.return_value = [3, 4]
+        session.tokenizer.decode.side_effect = lambda ids: {
+            3: "anti", 4: "dis",
+        }[ids[0]]
+        resp = client.post(
+            f"{_BASE}/lens/token/validate", json={"word": "antidis"},
+        )
+        assert resp.status_code == 400
+
+    def test_sae_feature_validate(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        # The double emits the full contract ``SaeFeatureValidationJSON`` —
+        # ``max_act`` is the strength unit and rides every real response, so a
+        # double that omits it would test a shape the server cannot produce.
+        session.sae.validate_feature.return_value = {
+            "id": 42, "label": "fruit", "layer": 14, "max_act": None,
+        }
+        resp = client.post(
+            f"{_BASE}/sae/features/validate", json={"id": 42},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "id": 42, "label": "fruit", "layer": 14, "max_act": None,
+        }
+        session.sae.validate_feature.assert_called_once_with(42)
+
+    def test_sae_features_metadata(self, session_and_client: Any) -> None:
+        session, client = session_and_client
+        session.sae.fetch_meta.return_value = {
+            "42": {"label": "fruit", "max_act": 121.1},
+        }
+        resp = client.post(
+            f"{_BASE}/sae/features/metadata", json={"ids": [42, 42, 7]},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "features": {"42": {"label": "fruit", "max_act": 121.1}},
+        }
+        session.sae.fetch_meta.assert_called_once_with([42, 42, 7])
+
+    def test_sae_features_metadata_oversized_400(
+        self, session_and_client: Any,
+    ) -> None:
+        _session, client = session_and_client
+        resp = client.post(
+            f"{_BASE}/sae/features/metadata", json={"ids": list(range(65))},
+        )
+        assert resp.status_code == 400

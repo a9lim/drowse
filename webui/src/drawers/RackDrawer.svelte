@@ -46,8 +46,7 @@
     refreshManifoldList,
     refreshProbeList,
     refreshVectorList,
-    setManifoldLabel,
-    setSubspaceLabel,
+    setSteerLabel,
   } from "../lib/stores.svelte";
   import {
     pushToast,
@@ -61,6 +60,7 @@
     type Category,
   } from "../lib/concepts";
   import DiagnosticsPanel from "../lib/manifolds/DiagnosticsPanel.svelte";
+  import { fitGeometry, isDiscoverFit } from "../lib/manifolds/fitKind";
   import { drawerAvailability, runtimeOperationAvailability } from "../lib/runtime/ui-capabilities";
   import { runtimeClient } from "../lib/runtime/client";
   import Select from "../lib/Select.svelte";
@@ -170,7 +170,7 @@
   }
 
   function selectorOptions(m: ManifoldInfo): ManifoldSelectorOption[] {
-    return manifoldSelectorOptions(m, sessionState.info?.model_id ?? null, browserMode);
+    return manifoldSelectorOptions(m, sessionState.info?.model_id ?? null);
   }
 
   function selectorChoice(m: ManifoldInfo): ManifoldSelectorOption | null {
@@ -253,14 +253,8 @@
    *  belongs to *both* families until a fit pins it — otherwise an
    *  unfitted auto manifold (personas / emotions) shows in neither drawer. */
   function inFamily(m: ManifoldInfo): boolean {
-    let fm: string = m.fit_mode;
-    if (fm === "auto") {
-      const resolved = m.resolved_fit_mode;
-      if (resolved == null) return true; // unresolved → show in both drawers
-      fm = resolved;
-    }
-    if (family === "subspace") return fm === "pca" || fm === "baked";
-    return fm === "spectral" || fm === "authored";
+    const geometry = fitGeometry(m);
+    return geometry === "unresolved" || geometry === (family === "subspace" ? "flat" : "curved");
   }
 
   const fitted = $derived(
@@ -359,13 +353,9 @@
       return;
     }
     const key = rowKey(m);
-    if (family === "subspace") {
-      addSubspaceToRack(key, choice.variant);
-      setSubspaceLabel(key, label);
-    } else {
-      addManifoldToRack(key, choice.variant);
-      setManifoldLabel(key, label);
-    }
+    if (family === "subspace") addSubspaceToRack(key, choice.variant);
+    else addManifoldToRack(key, choice.variant);
+    setSteerLabel(key, label);
     closeDrawer();
   }
 
@@ -582,10 +572,6 @@
     return (m.node_roles ?? []).some((r) => r);
   }
 
-  function isDiscoverMode(m: ManifoldInfo): boolean {
-    return m.fit_mode === "pca" || m.fit_mode === "spectral";
-  }
-
   async function toggleInspect(m: ManifoldInfo): Promise<void> {
     const key = rowKey(m);
     if (inspectKeys.has(key)) {
@@ -760,10 +746,10 @@
               <p class="error">{detailErrors.get(key)}</p>
             {:else if detailCache.has(key)}
               {@const detail = detailCache.get(key)!}
-              {#if isDiscoverMode(detail)}
+              {#if isDiscoverFit(detail)}
                 <DiagnosticsPanel manifold={detail} />
               {:else}
-                <p class="muted">authored · {detail.domain_label} · dim {detail.intrinsic_dim}</p>
+                <p class="muted">{detail.fit_mode} · {detail.domain_label} · dim {detail.intrinsic_dim}</p>
               {/if}
             {/if}
           </div>
@@ -868,7 +854,6 @@
       <span class="build-hint">{launcherHint}</span>
     </button>
     {/if}
-    <button type="button" class="build-btn" onclick={() => openDrawer("surface_geometry")}>Inspect surface geometry</button>
 
     {#if familyTotal > 0}
       <div class="search-row">

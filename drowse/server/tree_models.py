@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, cast
 
-from drowse.core.session import DrowseSession
-from drowse.server.native_common import NativeRequest
+from drowse.session.session import DrowseSession
+from drowse.server.runtime import NativeRequest
 from drowse.server.response_models import (
     ActivePathJSON,
     CastMemberJSON,
@@ -115,7 +115,7 @@ def active_path_json(session: DrowseSession) -> ActivePathJSON:
 
 
 def node_json(session: DrowseSession, node_id: str) -> LoomNodeDetailJSON:
-    node = session.tree.get(node_id)
-    out = cast(LoomNodeDetailJSON, node.to_dict(include_tokens=True))
-    out["children"] = list(session.tree.children_of.get(node_id, []))
+    tree = session.tree
+    out = cast(LoomNodeDetailJSON, tree.node_to_dict(node_id, include_tokens=True))
+    out["children"] = [child.id for child in tree.children(node_id)]
     return out

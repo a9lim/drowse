@@ -13,7 +13,7 @@ Usage::
     python scripts/generate_webui_types.py --check    # fail on drift
     python scripts/generate_webui_types.py --stdout   # print, write nothing
 
-``--check`` is what CI and ``tests/test_webui_types_parity.py`` run: it
+``--check`` is what CI and ``tests/invariants/test_webui_types_parity.py`` run: it
 regenerates in memory and diffs against the committed file, so an unmirrored
 route change fails the build instead of the dashboard.
 

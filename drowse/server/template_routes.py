@@ -1,6 +1,6 @@
 """Native template route group — ``/drowse/v1/templates/*``.
 
-The standalone templated-completion artifact (``drowse.io.templates``): a slot, a
+The standalone templated-completion artifact (``drowse.store.templates``): a slot, a
 set of candidate values, and one or more multi-turn contexts. Lifecycle routes
 (list / get / create / delete) are pure-IO; ``score`` runs the loaded model under
 the session lock to return the per-context restricted-choice value distribution
@@ -14,20 +14,16 @@ from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request
 
-from drowse.io.templates import (
-    AmbiguousTemplateError,
+from drowse.store.templates import (
     TemplateFolder,
-    TemplateFormatError,
-    TemplateNotFoundError,
     create_template_folder,
     iter_template_folders,
     remove_template_folder,
     resolve_template,
     template_dir,
 )
-from drowse.server.streaming import run_in_thread
-from drowse.server.sse import ProgressCallback, sse_or_json
-from drowse.server.native_common import NativeRequest
+from drowse.server.operations import ProgressCallback, run_operation
+from drowse.server.runtime import NativeRequest, run_in_thread
 from drowse.server.response_models import (
     ScoreTemplateResponse,
     TemplateContextJSON,
@@ -111,16 +107,11 @@ def register_template_routes(app: FastAPI) -> None:
             {"turns": [t.model_dump() for t in c.turns], "assistant": c.assistant}
             for c in req.contexts
         ]
-        try:
-            t = create_template_folder(
-                req.namespace, req.name,
-                slot=req.slot, values=list(req.values), contexts=contexts,
-                description=req.description, tags=list(req.tags), force=req.force,
-            )
-        except FileExistsError as e:
-            raise HTTPException(409, str(e)) from e
-        except TemplateFormatError as e:
-            raise HTTPException(400, str(e)) from e
+        t = create_template_folder(
+            req.namespace, req.name,
+            slot=req.slot, values=list(req.values), contexts=contexts,
+            description=req.description, tags=list(req.tags), force=req.force,
+        )
         return _template_detail(t)
 
     @app.delete("/drowse/v1/templates/{namespace}/{name}", status_code=200)
@@ -136,18 +127,10 @@ def register_template_routes(app: FastAPI) -> None:
     async def score_template_route(
         namespace: str, name: str, req: ScoreTemplateRequest, request: Request,
     ) -> ScoreTemplateResponse:
-        try:
-            tmpl = resolve_template(f"{namespace}/{name}")
-        except (TemplateNotFoundError, AmbiguousTemplateError) as e:
-            raise HTTPException(404, str(e)) from e
+        tmpl = resolve_template(f"{namespace}/{name}")
 
         async def score(_progress: ProgressCallback) -> ScoreTemplateResponse:
-            try:
-                per_ctx = await run_in_thread(
-                    session.score_template, tmpl, steering=req.steering,
-                )
-            except Exception as e:  # steering-expr / scoring failure → 400
-                raise HTTPException(400, f"scoring failed: {type(e).__name__}") from e
+            per_ctx = await run_in_thread(session.score_template, tmpl, steering=req.steering)
             return {
                 "template": tmpl.name,
                 "namespace": namespace,
@@ -155,7 +138,4 @@ def register_template_routes(app: FastAPI) -> None:
                 "contexts": [sc.to_dict() for sc in per_ctx],
             }
 
-        return cast(ScoreTemplateResponse, await sse_or_json(
-            request, session, score,
-            error_message="scoring failed", log_message="template scoring failed",
-        ))
+        return cast(ScoreTemplateResponse, await run_operation(request, score, failure="Template scoring failed"))

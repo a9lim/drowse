@@ -43,7 +43,7 @@ import torch
 # DROWSE_HOME is overridden to a tempdir before any from_pretrained call so the
 # session's bundled materialization doesn't touch ~/.drowse; the manifold
 # folders themselves are written to explicit package-tree paths (env-independent,
-# resumable across a kill).  io/paths.py reads os.environ at call time, so the
+# resumable across a kill).  base/paths.py reads os.environ at call time, so the
 # deferred drowse imports below are safe.
 
 REPO = Path(__file__).resolve().parent.parent
@@ -350,8 +350,8 @@ def main() -> None:
     ]
     do_neutral = NEUTRAL_TARGET in targets
 
-    from drowse.io.atomic import write_json_atomic
-    from drowse.io.manifolds import (
+    from drowse.base.atomic import write_json_atomic
+    from drowse.store.manifold_authoring import (
         append_discover_manifold_node,
         plan_discover_generation,
     )
@@ -439,7 +439,7 @@ def main() -> None:
     if need_model or need_authored or neutral_pending:
         with tempfile.TemporaryDirectory(prefix="drowse-bundled-regen-") as tmp:
             os.environ["DROWSE_HOME"] = tmp
-            from drowse.core.session import DrowseSession
+            from drowse.session.session import DrowseSession
 
             print(f"loading generator model: {args.model}")
             session = DrowseSession.from_pretrained(
@@ -447,32 +447,19 @@ def main() -> None:
             )
             for name in need_model:
                 spec, plan = _SPEC_BY_NAME[name], plans[name]
-                folder = out_root / name
-                poles = list(plan.pending)
-                tot = len(plan.index_of)
                 print(
-                    f"\n[{name}] generating {len(poles)} node(s) as "
+                    f"\n[{name}] generating {len(plan.pending)} node(s) as "
                     f"{spec.kind!r} ({args.samples_per_prompt} response(s) per "
                     f"baseline prompt each)..."
                 )
                 t0 = time.time()
-                for label in poles:
-                    corpora = session.generate_responses(
-                        [label], [spec.kind],
-                        custom_system=spec.system,
-                        samples_per_prompt=args.samples_per_prompt,
-                        on_progress=lambda msg, _n=name: print(
-                            f"  [{_n}] {msg}", flush=True,
-                        ),
-                    )
-                    append_discover_manifold_node(
-                        folder, plan.index_of[label], label, corpora[label],
-                    )
-                    print(
-                        f"  [{name}] [{plan.index_of[label] + 1}/{tot}] wrote "
-                        f"node {label!r} ({len(corpora[label])} responses)",
-                        flush=True,
-                    )
+                session.generate_manifold(
+                    plan, custom_system=spec.system,
+                    samples_per_prompt=args.samples_per_prompt,
+                    on_progress=lambda msg, _n=name: print(
+                        f"  [{_n}] {msg}", flush=True,
+                    ),
+                )
                 print(f"[{name}] generation finished in {time.time() - t0:.1f}s")
 
             # Authored manifolds: fill nodes/ only; manifold.json is preserved.

@@ -183,10 +183,6 @@ export interface InstrumentSourceJSON {
   [key: string]: unknown;
 }
 
-export interface InstrumentsResponse {
-  instruments: InstrumentFamilyBlock[];
-}
-
 export interface JointLogprobRowJSON {
   a_index: number;
   b_index: number;
@@ -498,11 +494,6 @@ export interface PreparationStatusJSON {
   info?: SaeRuntimeInfo | null;
 }
 
-/** ``GET .../probes/defaults`` — ``{tag: [manifold name]}``. */
-export interface ProbeDefaultsResponse {
-  defaults: Record<string, string[]>;
-}
-
 export interface ProbeGeometryResponse {
   name: string;
   manifold: string;
@@ -795,16 +786,6 @@ export interface SteeringValidationResponse {
   valid: boolean;
   expression: string;
   error: string | null;
-}
-
-export interface SurfaceEvidence {
-  candidate: string | null;
-  reason: string;
-  betti_mod2?: [number, number, number] | null;
-  betti_mod3?: [number, number, number] | null;
-  scale_interval?: [number, number] | null;
-  relative_persistence?: number;
-  sample_count?: number;
 }
 
 export interface TemplateContextJSON {

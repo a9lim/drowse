@@ -1,9 +1,6 @@
 <script lang="ts">
   import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
   import { closeDrawer } from "../lib/stores.svelte";
-
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => void _drawerProps.params);
 </script>
 
 <section class="drawer-shell" aria-label="Unavailable runtime drawer">

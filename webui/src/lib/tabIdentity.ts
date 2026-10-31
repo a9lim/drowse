@@ -119,7 +119,9 @@ export function createTabIcon() {
     const appearance = theme();
     const selected = document.documentElement.dataset.chatAccent;
     const palette = chatAccentPalette(isChatAccent(selected) ? selected : "purple");
-    const fallback = `${faviconPath(state, frame, appearance)}?v=fluent`;
+    // Only the static first frame ships as a raster: animated states are drawn
+    // on a canvas, and the raster stands in when that fails.
+    const fallback = `${faviconPath(state, 0, appearance)}?v=fluent`;
     if (palette.id === "purple" && (!animatedStates.has(state) || motion.matches || document.hidden)) link.setAttribute("href", fallback);
     else void coloredIcon(palette[appearance], appearance).then(href => {
       if (!disposed && ticket === revision) link.setAttribute("href", href);

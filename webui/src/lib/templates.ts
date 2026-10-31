@@ -2,7 +2,7 @@
 //
 // THE one validator for every template-authoring surface (TemplateLabDrawer's
 // build tab, ManifoldBuilderDrawer's templated tab).  It reproduces
-// ``drowse/io/templates.py::_validate_body`` / ``_validate_context``
+// ``drowse/store/templates.py::_validate_body`` / ``_validate_context``
 // one-for-one so a draft that passes here is a draft the server accepts —
 // the point is that the form goes red where it is wrong instead of filling
 // out cleanly and 400-ing on submit.
@@ -10,7 +10,7 @@
 // Keep this in lockstep with the engine when the invariants move.  The
 // server stays the authority; this only saves the round trip.
 
-/** Template value → node label.  Mirrors ``io/templates.py::_slug_value``:
+/** Template value → node label.  Mirrors ``store/templates.py::_slug_value``:
  *  ``[^a-z0-9]+ -> _`` over the lowercased value, edge underscores
  *  trimmed.  Note this is stricter than the manifold *name* slug — a
  *  template value's slug becomes a node label, which admits no ``.``. */
@@ -21,7 +21,7 @@ export function slugTemplateValue(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-/** Mirrors ``io/templates.py::_LABEL_REGEX``. */
+/** Mirrors ``store/templates.py::_LABEL_REGEX``. */
 const LABEL_REGEX = /^[a-z][a-z0-9_-]{0,63}$/;
 
 export type TemplateDraftRole = "system" | "user" | "assistant";

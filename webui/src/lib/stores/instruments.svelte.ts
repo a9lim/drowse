@@ -677,9 +677,9 @@ let replayLensIdentity: string | null = null;
 let replaySaeIdentity: string | null = null;
 
 /** Rehydrate every family's live/source state from ONE server
- *  representation — the same per-family blocks ``GET .../instruments``
- *  lists.  Called from ``refreshSession``; a page reload must reflect the
- *  server exactly. */
+ *  representation — session info's per-family ``instruments`` blocks.
+ *  Called from ``refreshSession``; a page reload must reflect the server
+ *  exactly. */
 export function rehydrateInstrumentsFromSession(): void {
   const lens = instrumentFamily("lens");
   const sae = instrumentFamily("sae");

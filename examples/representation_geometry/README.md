@@ -20,7 +20,7 @@ Everything here is model-free to author — a template's node corpora are just i
 ## The machinery
 
 A **template** is a slot, a set of candidate values, and a few neutral elicitation
-contexts (`drowse/io/templates.py`). A **discover manifold** derived from it
+contexts (`drowse/store/templates.py`). A **discover manifold** derived from it
 (`manifold from-template`) lays the per-value centroids out in a per-model subspace
 at fit time, choosing flat/curved/periodic geometry automatically. The same
 template feeds two consumers: the manifold fit (a steering surface, and the layout

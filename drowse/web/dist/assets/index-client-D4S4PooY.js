@@ -1,1 +1,0 @@
-export{J as tick}from"./index-client-2OdH6IQp.js";

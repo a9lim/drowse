@@ -13,7 +13,7 @@ Two conventions carry the whole file:
 - **Names match the dashboard.**  Each TypedDict is named exactly as the
   TypeScript interface the generator emits, so a schema change lands in the
   webui under the name consumers already import.  The one family that keeps
-  its engine names is :mod:`drowse.core.measurements` — the generator
+  its engine names is :mod:`drowse.readout.measurements` — the generator
   carries a small explicit rename table for it rather than renaming the
   engine's own vocabulary.
 - **Open where the producer is not this module.**  ``_Open`` marks a shape
@@ -438,12 +438,6 @@ class ProbeListResponse(TypedDict):
     probes: list[ProbeInfo]
 
 
-class ProbeDefaultsResponse(TypedDict):
-    """``GET .../probes/defaults`` — ``{tag: [manifold name]}``."""
-
-    defaults: dict[str, list[str]]
-
-
 class ProbeOverlay(TypedDict):
     """A curved fit's curve/surface overlay, sampled into the whitened frame."""
 
@@ -692,10 +686,6 @@ class ScoreTemplateResponse(TypedDict):
 
 
 # -------------------------------------------------------------- instruments --
-
-class InstrumentsResponse(TypedDict):
-    instruments: list[InstrumentFamilyBlock]
-
 
 class SaeDescriptionSourceJSON(TypedDict):
     model: str

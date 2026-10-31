@@ -229,16 +229,25 @@ function upsertLoomNode(raw: LoomNodeJSON & { children?: string[] }): LoomNodeJS
  *  flowing in via WS keep accumulating on it.  This is the bridge
  *  between "tree is authoritative" and "live tokens land on an existing
  *  turn object." */
+// The node record each chat turn was last hydrated from.  Tree nodes keep
+// their identity until a delta or snapshot replaces them, so a turn whose
+// node is unchanged (a star, note, or navigation elsewhere in the tree)
+// keeps its token arrays: re-converting them would hand every finished turn
+// fresh arrays and re-render the whole transcript on each mutation.
+let hydratedFrom = new Map<string, LoomNodeJSON>();
+
 export function syncChatLogFromTree(preserveLiveTokens = true): void {
   if (!loomTree.loaded) return;
   const path = loomTree.activePath;
   if (path.length === 0) {
     chatLog.turns = [];
     chatLog.pendingIndex = null;
+    hydratedFrom = new Map();
     return;
   }
   const out: ChatTurn[] = [];
   const previousTurns = new Map(chatLog.turns.map((turn) => [turn.nodeId, turn]));
+  const nextHydratedFrom = new Map<string, LoomNodeJSON>();
   let pendingIdx: number | null = null;
   for (const nid of path) {
     const node = loomTree.nodes.get(nid);
@@ -257,30 +266,33 @@ export function syncChatLogFromTree(preserveLiveTokens = true): void {
       prev.nodeId === nid
     ) {
       // Mutate-in-place so the streaming token arrays survive.
-      prev.nodeId = nid;
       if (loomTree.pendingNodeId !== nid || !genStatus.active || node.finish_reason !== null) {
         prev.text = node.text;
       }
-      prev.generated = node.recipe !== null;
-      prev.appliedSteering = node.applied_steering ?? null;
-      prev.aggregateReadings = node.aggregate_readings ?? prev.aggregateReadings;
-      prev.finishReason = node.finish_reason ?? prev.finishReason;
-      // Server-shipped node tokens are authoritative. Preserve the live
-      // arrays only until the finalized node snapshot carries them.
-      if (node.finish_reason !== null || (prev.tokens?.length ?? 0) === 0) {
-        const fromNode = nodeToTurn(node);
-        if (fromNode.tokens || fromNode.thinkingTokens) {
-          prev.tokens = fromNode.tokens;
-          prev.thinkingTokens = fromNode.thinkingTokens;
+      if (hydratedFrom.get(nid) !== node) {
+        prev.generated = node.recipe !== null;
+        prev.appliedSteering = node.applied_steering ?? null;
+        prev.aggregateReadings = node.aggregate_readings ?? prev.aggregateReadings;
+        prev.finishReason = node.finish_reason ?? prev.finishReason;
+        // Server-shipped node tokens are authoritative. Preserve the live
+        // arrays only until the finalized node snapshot carries them.
+        if (node.finish_reason !== null || (prev.tokens?.length ?? 0) === 0) {
+          const fromNode = nodeToTurn(node);
+          if (fromNode.tokens || fromNode.thinkingTokens) {
+            prev.tokens = fromNode.tokens;
+            prev.thinkingTokens = fromNode.thinkingTokens;
+          }
         }
       }
       turn = prev;
     } else {
       turn = nodeToTurn(node);
     }
+    nextHydratedFrom.set(nid, node);
     if (loomTree.pendingNodeId === nid) pendingIdx = out.length;
     out.push(turn);
   }
+  hydratedFrom = nextHydratedFrom;
   chatLog.turns = out;
   chatLog.pendingIndex = pendingIdx;
 }

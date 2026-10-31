@@ -105,7 +105,7 @@ def _staged_authoring_folder(source: Path):
 
 
 def _run_jlens(args: argparse.Namespace) -> None:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     prompts = _load_prompts(args.corpus, args.prompts)
     with DrowseSession.from_pretrained(
@@ -122,12 +122,12 @@ def _run_jlens(args: argparse.Namespace) -> None:
             }
             _measure(
                 "jlens_force_fit",
-                lambda: session.fit_jlens(prompts, force=True, **fit_kwargs),
+                lambda: session.lens.fit(prompts, force=True, **fit_kwargs),
                 counters, report_process_peak=True,
             )
             _measure(
                 "jlens_exact_cache_repeat",
-                lambda: session.fit_jlens(prompts, force=False, **fit_kwargs),
+                lambda: session.lens.fit(prompts, force=False, **fit_kwargs),
                 counters,
             )
         finally:
@@ -135,7 +135,7 @@ def _run_jlens(args: argparse.Namespace) -> None:
 
 
 def _run_manifold(args: argparse.Namespace) -> None:
-    from drowse.core.session import DrowseSession
+    from drowse.session.session import DrowseSession
 
     with _staged_authoring_folder(args.folder) as staged:
         with DrowseSession.from_pretrained(

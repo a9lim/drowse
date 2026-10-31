@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack, type Snippet } from "svelte";
   import { SHEET_STOPS, canScrollSheetContent, nearestSheetStop, releaseSheet, rubberBandSheet, sampleSheetVelocity, sheetPositions, sheetSpring, sheetSpringVelocity, type SheetStop, type VelocitySample } from "../bottomSheet";
+  import { containTab } from "../focusTrap";
 
   let { enabled, open, onclose, children }: { enabled: boolean; open: boolean; onclose: () => void; children: Snippet<[() => void]> } = $props();
   let surface: HTMLDivElement;
@@ -21,7 +22,6 @@
   let gesture: { x: number; y: number; sheetY: number; start: SheetStop; target: Element; samples: VelocitySample[]; active: boolean; handle: boolean; pointer: number | null } | null = null;
   const positions = $derived(sheetPositions(viewportHeight, safeTop));
   const expansion = $derived(Math.max(0, Math.min(1, (viewportHeight - y) / Math.max(1, viewportHeight))));
-  const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
   function viewport() {
     viewportHeight = Math.min(window.innerHeight, window.visualViewport?.height ?? window.innerHeight);
@@ -166,14 +166,7 @@
   function keydown(event: KeyboardEvent) {
     if (!enabled || !open || event.defaultPrevented) return;
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); dismiss(); return; }
-    if (event.key !== "Tab") return;
-    const items = [...surface.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(el => el.offsetParent !== null && !el.closest('[inert]'));
-    const first = items[0];
-    const last = items.at(-1);
-    if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
-      event.preventDefault();
-      (event.shiftKey ? last : first)?.focus({ preventScroll: true });
-    }
+    containTab(event, surface);
   }
 
   onMount(() => {

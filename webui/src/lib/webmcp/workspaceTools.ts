@@ -32,6 +32,7 @@ import { encodeChatBackup, importChatBackup, downloadPreparedChatBackup, chatBac
 import { CHAT_ACCENTS, type ChatAccent } from "../chatAccent";
 import { getWorkspaceController, getComposerController, getRawBufferController, getCastController, getSystemPromptController, getInterfaceController, type ComposerDraft, type WorkspaceNavigation } from "../workspaceController";
 import { serializeExpression } from "../expression";
+import { fitGeometry } from "../manifolds/fitKind";
 import { setTheme } from "../theme";
 import { SURPRISE_TARGET, ENTROPY_TARGET, PROBABILITY_TARGET } from "../tokens";
 import type { DrawerName, SteerEntry, Trigger, Variant, ProbeSortMode } from "../types";
@@ -221,7 +222,6 @@ export function createWorkspaceTools(): AppTool[] {
       if (typeof input.drawer === "string") {
         const availability = drawerAvailability(input.drawer as DrawerName);
         if (!availability.available) throw new ToolError("UNAVAILABLE", availability.reason ?? "This tool is unavailable.");
-        if (input.drawer === "surface_geometry" && context.runtime?.mode !== "http") throw new ToolError("UNAVAILABLE", "Surface geometry inspection is available on the Python server.");
         if (input.drawer === "system_prompt" && effectiveRawMode()) throw new ToolError("UNAVAILABLE", "Raw completion does not use system messages.");
         drawerParams = validateDrawerContext(input.drawer as DrawerName, input.params);
       }
@@ -381,7 +381,7 @@ export function createWorkspaceTools(): AppTool[] {
       action: choice(["upsert", "remove", "clear", "strength"], "Card mutation or shared flat strength."), selector: string("Exact namespace/name, jlens/word, or sae/feature_id; pass geometry variant separately.", 256),
       variant: string("Geometry variant such as raw, sae-release, role-name, from-model.", 256), label: nullable(string("Target node label; null uses coordinates.", 256)), coords: { type: "array", items: number("Authoring coordinate."), minItems: 1, maxItems: 64 },
       subspace_along: number("Shared slide coefficient for EVERY flat card; 0 disables their push."), along: number("Curved card slide coefficient."), onto: number("Curved residual collapse; zero leaves it unchanged.", 0, 1), alpha: number("Lens/SAE atom coefficient. Values are model dependent; start modestly."),
-      enabled: boolean("Include this card in the expression."), ablate: boolean("Mean-ablate a flat concept or atom instead of pushing."), trigger: choice(["BOTH", "BEFORE", "AFTER", "THINKING", "RESPONSE", "PROMPT", "GENERATED"], "Trigger phase; BOTH is the default."),
+      enabled: boolean("Include this card in the expression."), ablate: boolean("Mean-ablate a flat concept or atom instead of pushing."), trigger: choice(["BOTH", "BEFORE", "AFTER", "THINKING", "RESPONSE"], "Trigger phase: BOTH (default) steers the prompt and every generated token, BEFORE only the prompt prefill, AFTER the reply after thinking, THINKING only thinking tokens, RESPONSE every generated token."),
     }, ["action"]), async (input, context) => editRack(input, context), { surfaces: ["subspace", "manifolds", "RecipeBar", "SteeringRack", "JLensPanel", "SaePanel"] }),
     tool("drowse_attach_probe", "Attach a reading", "Attach a geometry, lens-token, or SAE-feature probe and synchronize the visible probe rack. Reading measures the current representation; attaching does not apply steering.", objectSchema({ selector: string("Full geometry selector, jlens/word, or sae/feature_id.", 256), name: string("Optional unique display/channel name.", 256), top_n: integer("Number of nearest geometry labels to retain.", 1, 1000) }, ["selector"]), async (input, context) => {
       assertWorkspaceIdle(context);
@@ -476,7 +476,7 @@ async function editRack(input: Record<string, unknown>, context: ToolContext) {
         else {
           const info = steerRack.catalog.find(row => `${row.namespace}/${row.name}` === selector);
           if (!info) throw new ToolError("NOT_FOUND", "Choose an exact namespace/name from the control catalog.");
-          const curved = ["spectral", "authored"].includes(info.resolved_fit_mode ?? info.fit_mode);
+          const curved = fitGeometry(info) === "curved";
           const label = !curved && info.node_count === 2 ? info.node_labels[0] : null;
           const common = { coords: label ? [...info.node_coords[0]] : manifoldCentroid(info), label, variant: "raw" as Variant, enabled: true, trigger: "BOTH" as Trigger };
           return curved ? { ...common, mode: "manifold", blend: 0.5, onto: 0 } : { ...common, mode: "subspace", ablate: false };

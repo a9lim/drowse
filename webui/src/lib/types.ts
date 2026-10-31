@@ -38,19 +38,15 @@ import type {
 
 /** Per-term trigger keyword from the steering-expression grammar.
  *
- * Wire/UI form mirrors ``_TRIGGER_PRESETS`` in steering_expr.py.  ``BOTH`` is
- * the default; the canonical render of each preset goes back through the
- * formatter (``before``/``after``/``both``/``thinking``/``response``).
- * ``prompt`` and ``generated`` are accepted as aliases on parse but
- * normalize to ``before`` and ``response`` respectively at format time. */
+ * Wire/UI form mirrors the canonical presets of ``_TRIGGER_PRESETS`` in
+ * steering/grammar.py (``both``/``before``/``after``/``thinking``/``response``).
+ * The grammar's ``prompt``/``generated`` aliases are not UI values. */
 export type Trigger =
   | "BOTH"
-  | "BEFORE" // == prompt
-  | "AFTER" // after-thinking
+  | "BEFORE" // prompt prefill only
+  | "AFTER" // reply after thinking
   | "THINKING"
-  | "RESPONSE" // == generated
-  | "PROMPT" // alias of BEFORE
-  | "GENERATED"; // alias of RESPONSE
+  | "RESPONSE"; // every generated token
 
 /** Tensor variant suffix from the shared steering grammar. */
 export type Variant =
@@ -120,9 +116,7 @@ export interface SaeTokenReadoutJSON {
 // replay endpoint (wrapped in ``{measurements}``).  It replaces the former
 // ``captured`` record and the six top-level per-token aliases (``scores`` /
 // ``per_layer_scores`` / ``probe_readings`` / ``lens_readout`` /
-// ``lens_aggregate`` / ``sae_readout``); see drowse.core.measurements.
-
-export type TokenReadoutProvenance = "captured" | "replayed";
+// ``lens_aggregate`` / ``sae_readout``); see drowse.readout.measurements.
 
 /** Either family's reading shape, as it arrives inside the envelope. */
 export type AnyReadingJSON = ProbeReadingJSON | ScalarReadingJSON;
@@ -184,7 +178,7 @@ export interface ManifoldNodeSpec {
 }
 
 /** PCA discover-fit diagnostics block surfaced in the inspector.
- *  Wire-shape mirror of ``drowse.core.manifold.PcaDiagnostics``.  Tensor
+ *  Wire-shape mirror of ``drowse.geometry.manifold.PcaDiagnostics``.  Tensor
  *  fields are flattened to plain number[]'s server-side; everything
  *  else is a primitive. */
 export interface ManifoldPcaDiagnostics {
@@ -195,7 +189,7 @@ export interface ManifoldPcaDiagnostics {
 }
 
 /** Spectral (Laplacian-eigenmaps) discover-fit diagnostics block.
- *  Wire-shape mirror of ``drowse.core.manifold.SpectralDiagnostics``. */
+ *  Wire-shape mirror of ``drowse.geometry.manifold.SpectralDiagnostics``. */
 export interface ManifoldSpectralDiagnostics {
   eigenvalues: number[];
   picked_k: number;
@@ -320,10 +314,10 @@ export interface CreateTemplateRequest {
 /** Body for POST /drowse/v1/manifolds/generate.
  *
  *  LLM-author a discover-mode manifold from a flat concept list: the
- *  server runs ``DrowseSession.generate_responses`` (A2 conversational
- *  extraction — each concept answers the shared baseline prompts in
- *  character, one corpus per node) and writes a fresh discover folder
- *  ready for ``POST .../fit``. */
+ *  server plans the folder and runs ``DrowseSession.generate_manifold``
+ *  (each concept answers the shared baseline prompts in character, one
+ *  corpus per node), leaving a fresh discover folder ready for
+ *  ``POST .../fit``. */
 export interface GenerateManifoldRequest {
   namespace?: string;
   name: string;
@@ -337,6 +331,9 @@ export interface GenerateManifoldRequest {
   custom_system?: string;
   /** In-character responses generated per shared baseline prompt. */
   samples_per_prompt?: number;
+  /** Seeds the sampler: each node's corpus is reproducible from the seed
+   *  and its node index.  Omitted or null: unseeded. */
+  seed?: number | null;
   fit_mode?: "pca" | "spectral" | "auto";
   hyperparams?: Record<string, number | string>;
   force?: boolean;
@@ -564,7 +561,7 @@ export interface WSGenerationProgressEvent {
 }
 
 /** Logit-pass (v2.3): one alternative the model considered at this
- *  position.  Wire-shape mirror of ``drowse.core.results.TokenAlt``.
+ *  position.  Wire-shape mirror of ``drowse.generation.results.TokenAlt``.
  *  ``logprob`` is the post-sampler natural-log probability under the
  *  post-temperature / post-top-p / post-top-k distribution sampling
  *  actually drew from. */
@@ -657,12 +654,12 @@ export interface WSErrorEvent {
 
 // ----------------------------------------------------- loom (v2.3) --
 
-/** Wire-shape mirror of drowse.core.loom.LoomNode.  Optional fields are
+/** Wire-shape mirror of drowse.loom.tree.LoomNode.  Optional fields are
  * absent on the wire when null/empty server-side to keep payloads slim. */
 /** One token-row inside a node's ``tokens`` / ``thinking_tokens`` array.
  *  Server-side token rows have required identity/score fields plus
  *  feature-dependent optional capture channels; the
- *  fields below are the ones :meth:`session._token_tap` stamps and the
+ *  fields below are the ones the engine's ``TokenTap`` stamps and the
  *  ones the webui knows how to consume.  All optional because the engine
  *  legitimately omits some on certain paths (e.g. ``top_alts`` only when
  *  ``return_top_k > 0``; ``probes`` / ``per_layer_scores`` only when the
@@ -1040,15 +1037,6 @@ export interface PendingAction {
   awaitsGen: boolean;
   rebuild: ((newText: string) => PendingAction) | null;
   createdAt: number;
-  /** Predicted active-node role after this action drains.  Drives the
-   *  input box's role-aware placeholder + send-button label: a queued
-   *  ``commit_user`` (this field = ``true``) flips the next message into
-   *  prefill / commit-assistant mode even though the live active node
-   *  hasn't moved yet.  ``null`` for actions that don't change the
-   *  active node (rack mutations, sampling tweaks).  ``false`` for
-   *  actions that land an assistant or root active node (send, prefill,
-   *  commit_assistant, regen, /clear). */
-  endsOnUserNode?: boolean | null;
   /** Coalesce tag for fold-into-tail batching.  When a fresh action
    *  carries the same ``coalesceKey`` as the *current queue tail*, its
    *  ``apply`` is chained onto that tail item instead of appending a
@@ -1080,7 +1068,6 @@ export type DrawerName =
   /** Manifold authoring form — domain step + node editor.  Reached
    *  from the "+ build manifold" button inside ``manifolds``. */
   | "manifold_builder"
-  | "surface_geometry"
   /** Discover-mode node-union merge.  Unions the node corpora of two or
    *  more discover-mode manifolds into a fresh discover folder; restricted
    *  to discover sources by design. Reached from the command palette. */

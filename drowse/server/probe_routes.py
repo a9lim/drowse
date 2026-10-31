@@ -1,7 +1,7 @@
 """Native probe route group — the read-side counterpart to manifold steering.
 
 One unified collection under ``/drowse/v1/sessions/{id}/probes`` covering every
-probe shape.  A Monitor probe is a :class:`~drowse.core.manifold.Manifold` — a
+probe shape.  A Monitor probe is a :class:`~drowse.geometry.manifold.Manifold` — a
 2-node concept axis is the rank-1 case, a discover / curved fit the rank-R case
 — attached via ``add_probe`` / ``remove_probe``; a ``jlens/<word>`` or
 ``sae/<id>`` selector lands on the session's readout-channel registries instead
@@ -18,16 +18,12 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
-from drowse.core.errors import DrowseError
-from drowse.core.manifold import manifold_is_affine
-from drowse.core.monitor_attach import AttachedManifoldProbe
-from drowse.core.session import DrowseSession
-from drowse.io.probes_bootstrap import load_default_manifolds
-from drowse.server.native_common import NativeRequest, resolve_session_id
+from drowse.errors import DrowseError
+from drowse.readout.monitor_attach import AttachedManifoldProbe
+from drowse.server.runtime import NativeRequest, session_router
 from drowse.server.response_models import (
     GeometryProbeInfo,
     LensProbeInfo,
-    ProbeDefaultsResponse,
     ProbeGeometryResponse,
     ProbeInfo,
     ProbeListResponse,
@@ -56,7 +52,7 @@ def _probe_info(name: str, probe: AttachedManifoldProbe) -> GeometryProbeInfo:
     intrinsic_dim = int(manifold.domain.intrinsic_dim)
     nc = manifold.node_coords
     node_coords = nc.tolist() if nc is not None else None
-    is_affine = manifold_is_affine(manifold)
+    is_affine = manifold.is_affine
     return {
         "family": "geometry",
         "name": name,
@@ -100,11 +96,6 @@ def _lens_probe_info(name: str, spec: dict[str, Any]) -> LensProbeInfo:
     }
 
 
-def _lens_probe_specs(session: DrowseSession) -> dict[str, dict[str, Any]]:
-    """Snapshot the session's pinned lens-probe registry."""
-    return session.lens.specs()
-
-
 def _sae_probe_info(name: str, spec: dict[str, Any]) -> SaeProbeInfo:
     """Serialize one pinned SAE feature probe (encoder readout channel).
 
@@ -126,95 +117,57 @@ def _sae_probe_info(name: str, spec: dict[str, Any]) -> SaeProbeInfo:
     }
 
 
-def _sae_probe_specs(session: DrowseSession) -> dict[str, dict[str, Any]]:
-    return session.sae.specs()
-
-
 def register_probe_routes(app: FastAPI) -> None:
-    """Mount the unified probe listing + defaults + geometry + attach / detach."""
+    """Mount the unified probe listing + geometry + attach / detach."""
     session = app.state.session
+    router = session_router()
 
-    @app.get("/drowse/v1/sessions/{session_id}/probes")
-    def list_probes(session_id: str) -> ProbeListResponse:
-        resolve_session_id(session_id)
-        attached = session.monitor.attached_probes()
+    @router.get("/probes")
+    def list_probes() -> ProbeListResponse:
         rows: list[ProbeInfo] = [
-            _probe_info(name, probe) for name, probe in attached.items()
+            _probe_info(name, probe) for name, probe in session.monitor.attached_probes().items()
         ]
-        rows.extend(
-            _lens_probe_info(name, spec)
-            for name, spec in _lens_probe_specs(session).items()
-        )
-        rows.extend(
-            _sae_probe_info(name, spec)
-            for name, spec in _sae_probe_specs(session).items()
-        )
+        rows.extend(_lens_probe_info(name, spec) for name, spec in session.lens.specs().items())
+        rows.extend(_sae_probe_info(name, spec) for name, spec in session.sae.specs().items())
         return {"probes": rows}
 
-    @app.get("/drowse/v1/sessions/{session_id}/probes/defaults")
-    def list_default_probes(session_id: str) -> ProbeDefaultsResponse:
-        resolve_session_id(session_id)
-        return {"defaults": load_default_manifolds()}
-
-    @app.get("/drowse/v1/sessions/{session_id}/probes/{name:path}/geometry")
-    def probe_geometry(session_id: str, name: str) -> ProbeGeometryResponse:
+    @router.get("/probes/{name:path}/geometry")
+    def probe_geometry(name: str) -> ProbeGeometryResponse:
         """Static geometry for the dashboard probe-inspector plot.
 
         Per-layer node centroids + neutral + (rank>=3) a top-3 PCA rotation +
         the curve/surface overlay for a curved fit — all in the whitened frame
         the reads use, so the per-token live point (the reading's
-        ``subspace_coords_per_layer``) overlays directly.  ``defaults`` is
-        registered before this greedy ``{name:path}`` route so it still resolves.
+        ``subspace_coords_per_layer``) overlays directly.
         """
-        resolve_session_id(session_id)
         try:
             return session.monitor.probe_geometry(name)
         except KeyError as e:
             raise HTTPException(404, f"probe '{name}' not attached") from e
 
-    @app.post("/drowse/v1/sessions/{session_id}/probes", status_code=201)
-    def add_probe(session_id: str, req: ProbeRequest) -> ProbeInfo:
-        resolve_session_id(session_id)
-        if not req.selector or not req.selector.strip():
+    @router.post("/probes", status_code=201)
+    def add_probe(req: ProbeRequest) -> ProbeInfo:
+        if not req.selector.strip():
             raise HTTPException(400, "selector must not be empty")
-        top_n = req.top_n if req.top_n and req.top_n > 0 else 3
         try:
             registered = session.add_probe(
-                req.selector, as_name=req.name, top_n=top_n,
+                req.selector, as_name=req.name, top_n=req.top_n if req.top_n and req.top_n > 0 else 3,
             )
-        except FileNotFoundError as e:
-            raise HTTPException(404, str(e)) from e
-        except (KeyError, ValueError) as e:
-            raise HTTPException(400, str(e)) from e
-        except DrowseError as e:
-            # e.g. LensNotFittedError from a jlens/<word> probe → 404 with
-            # the fit command.
-            status, text = e.user_message()
-            raise HTTPException(status, text) from e
-        lens_specs = _lens_probe_specs(session)
-        if registered in lens_specs:
-            return _lens_probe_info(registered, lens_specs[registered])
-        sae_specs = _sae_probe_specs(session)
-        if registered in sae_specs:
-            return _sae_probe_info(registered, sae_specs[registered])
-        attached = session.monitor.attached_probes()
-        probe = attached.get(registered)
-        if probe is None:
-            raise HTTPException(
-                500, f"probe '{registered}' attach did not register",
-            )
-        return _probe_info(registered, probe)
+        except KeyError as e:
+            if isinstance(e, DrowseError):
+                raise
+            raise HTTPException(400, f"unknown probe selector {req.selector!r}") from e
+        if (spec := session.lens.specs().get(registered)) is not None:
+            return _lens_probe_info(registered, spec)
+        if (spec := session.sae.specs().get(registered)) is not None:
+            return _sae_probe_info(registered, spec)
+        return _probe_info(registered, session.monitor.attached_probes()[registered])
 
-    @app.delete(
-        "/drowse/v1/sessions/{session_id}/probes/{name:path}", status_code=204,
-    )
-    def remove_probe(session_id: str, name: str):
-        resolve_session_id(session_id)
-        if (
-            name not in session.monitor.probe_names
-            and name not in _lens_probe_specs(session)
-            and name not in _sae_probe_specs(session)
-        ):
+    @router.delete("/probes/{name:path}", status_code=204)
+    def remove_probe(name: str):
+        if name not in session.monitor.probe_names and name not in session.lens.names and name not in session.sae.names:
             raise HTTPException(404, f"probe '{name}' not attached")
         session.remove_probe(name)
         return Response(status_code=204)
+
+    app.include_router(router)

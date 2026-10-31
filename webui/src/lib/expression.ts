@@ -1,6 +1,6 @@
 // Serialization of the unified steering-expression rack.
 //
-// Mirrors drowse/core/steering_expr.py (serialize direction only):
+// Mirrors drowse/steering/grammar.py (serialize direction only):
 //
 //   expr     := term (("+" | "-") term)*
 //   term     := [coeff "*"?] ["!"] selector ["@" trigger]
@@ -35,18 +35,14 @@ import type {
 
 // ----------------------------------------------- triggers ----------------
 
-/** Map UI Trigger values to the keyword the formatter emits.  Aliases
- * (PROMPT->before, GENERATED->response) collapse onto the canonical
- * render so round-trips are deterministic.  BOTH is the default and is
- * omitted from the output. */
+/** Map UI Trigger values to the keyword the formatter emits.  BOTH is the
+ * default and is omitted from the output. */
 const TRIGGER_TO_KEYWORD: Record<Trigger, string | null> = {
   BOTH: null,
   BEFORE: "before",
   AFTER: "after",
   THINKING: "thinking",
   RESPONSE: "response",
-  PROMPT: "before",
-  GENERATED: "response",
 };
 
 // ----------------------------------------------- formatter ---------------
@@ -131,7 +127,7 @@ function formatTriggerSuffix(trigger: Trigger): string {
 
 /** Render one J-lens token term — the plain atom ``<alpha> jlens/<word>``
  *  plus an optional ``@trigger``.  The rack key is the full atom (the
- *  engine resolves it through ``register_jlens_direction``); per-chip
+ *  engine resolves it through ``lens.register_direction``); per-chip
  *  ``alpha`` because lens atoms run hotter than concept vectors. */
 export function formatJLensTerm(name: string, entry: JLensSteerEntry): string {
   return `${formatCoeff(entry.alpha)} ${entry.ablate ? "!" : ""}${name}${formatTriggerSuffix(entry.trigger)}`;

@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { states, animatedStates, frameCount } from "./tab-icon-artwork.mjs";
+import { requiredDashboardIcons, shipsInDashboard } from "./dashboard-assets.mjs";
 
 // The dashboard bundle ships in the wheel; the hosted site (drowse.ai) builds
 // the same app with its own PWA, WebGPU runtime, and assets.  None of those
@@ -22,28 +22,29 @@ async function walk(directory, prefix = "") {
 }
 await walk(root);
 
-const sharedIcons = new Set(["drowse-192", "drowse-512", "drowse-maskable-512", "apple-touch-icon"].map((name) => `icons/${name}.png`));
-for (const state of states) {
-  const frames = animatedStates.has(state) ? frameCount : 1;
-  for (let frame = 0; frame < frames; frame++) {
-    const suffix = animatedStates.has(state) ? `-${frame}` : "";
-    for (const theme of ["light", "dark"]) sharedIcons.add(`icons/tab-${state}-${theme}${suffix}.png`);
-    if (frame < 3) sharedIcons.add(`icons/tab-${state}${suffix}.png`);
-  }
-}
 const forbidden = paths.filter((path) =>
   path === "_headers" ||
   path === "manifest.webmanifest" ||
   path === "sw.js" ||
-  (path.startsWith("icons/") && !sharedIcons.has(path)) ||
+  !shipsInDashboard(path) ||
   path.startsWith("wasm/") ||
   path.endsWith(".wasm") ||
   /(?:^|\/)(?:mlc|webllm)/i.test(path)
 );
 if (forbidden.length) throw new Error(`hosted assets leaked into dashboard build: ${forbidden.join(", ")}`);
+const missing = requiredDashboardIcons.filter((icon) => !paths.includes(icon));
+if (missing.length) throw new Error(`dashboard icons missing from the build: ${missing.join(", ")}`);
+// A local SAELens gemma-scope-2 release labels its features offline from the
+// published-description indexes (src/lib/saeDescriptions.ts).
+const descriptionIndexes = ["270m", "1b", "4b"].map((size) => `assets/gemma-3-${size}-it.json`);
+const missingIndexes = descriptionIndexes.filter((path) => !paths.includes(path));
+if (missingIndexes.length) throw new Error(`SAE description indexes missing from the build: ${missingIndexes.join(", ")}`);
 const index = await readFile(resolve(root, "index.html"), "utf8");
 if (/manifest\.webmanifest|serviceWorker|registerSW/.test(index)) {
   throw new Error("dashboard bootstraps hosted PWA behavior");
+}
+for (const match of index.matchAll(/(?:href|src)="\/([^"?#]+)/g)) {
+  if (!paths.includes(match[1])) throw new Error(`index.html references a file the build omits: /${match[1]}`);
 }
 
 console.log(`dashboard build isolation passed (${paths.length} files)`);

@@ -1,35 +1,23 @@
-"""Native ``/instruments`` route family — the unified read-side surface.
+"""Native ``/instruments`` routes — the unified read-side surface.
 
-One route tree over the three read families the engine exposes as
-``session.instruments`` (``geometry`` / ``lens`` / ``sae``).  It replaces the
-former per-family ``/lens/*`` and ``/sae/*`` route groups and the
-``POST /probes/live`` toggle:
+One route tree under ``/drowse/v1/sessions/{id}/instruments`` over the three
+read families ``session.instruments`` registers (``geometry`` / ``lens`` /
+``sae``):
 
-- ``GET  .../instruments`` — enumerate the three families (live state, active
-  source, attached probes, capabilities).
-- ``POST .../instruments/{family}/live`` — uniform live toggle (geometry =
-  the CAA per-token monitor scoring switch; lens = the workspace readout;
-  sae = the feature-discovery readout).
-- ``GET  .../instruments/{family}/sources`` — prepared sources (lens) /
-  prepared + provider-candidate releases (sae); geometry 404s (no source
-  lifecycle).
-- ``PUT  .../instruments/{family}/source`` — synchronous source switch
-  (lens only; sae 409 → use preparations; geometry 404).
-- ``POST/GET/DELETE .../instruments/{family}/preparations`` — the unified
-  background-job resource (lens ``fetch``/``fit``, sae ``load``/``train``),
-  polled (never SSE), with a common status shape.
-- ``GET  .../instruments/{family}/token-readout`` — the loom token-drilldown
-  readout, wrapped in the 5.x ``measurements`` replay envelope.
-- Family extras: ``POST .../instruments/lens/token/validate``,
-  ``POST .../instruments/sae/features/metadata``,
-  ``POST .../instruments/sae/features/validate``.
+- ``POST {family}/live`` — uniform live toggle.
+- ``GET {family}/sources`` — prepared sources (lens) / prepared sources plus
+  provider release candidates (sae).
+- ``PUT {family}/source`` — synchronous source switch (lens only).
+- ``POST/GET/DELETE {family}/preparations`` — polled background preparations
+  (lens ``fetch``/``fit``, sae ``fetch``/``train``), one status shape.
+- ``GET {family}/token-readout`` — the loom token-drilldown replay, wrapped in
+  the ``measurements`` replay envelope the instrument builds.
+- Family extras: ``lens/token/validate``, ``sae/features/validate``,
+  ``sae/features/metadata``.
 
-Auth / locking / error-scrubbing discipline is copied verbatim from the
-per-family routes this file supersedes (``acquire_session_lock``, the typed
-``DrowseError.user_message()`` mapping, ``background_job.scrub_job_error``).
+What a family supports is declared once in :data:`CAPABILITIES`; the same
+declaration rides every ``session_info`` instrument block.
 """
-
-# pyright: reportUnusedFunction=false
 
 from __future__ import annotations
 
@@ -37,31 +25,22 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException
-from pydantic import Field, ValidationError
+from pydantic import Field
 
-from drowse.core.errors import DrowseError
-from drowse.core.jlens import LensNotFittedError, resolve_word_token
-from drowse.core.loom import InvalidNodeOperationError, UnknownNodeError
-from drowse.core.measurements import MeasurementsEnvelope
-from drowse.server.streaming import run_in_thread
-from drowse.server.app import acquire_session_lock
-from drowse.server.background_job import (
-    BackgroundJob,
-    make_progress_hook,
-    scrub_job_error,
-)
-from drowse.server.native_common import NativeRequest, resolve_session_id
+from drowse.lens.jlens import JacobianLensCancelled, LensNotFittedError
+from drowse.model.layers import parse_layer_selector
+from drowse.readout.measurements import MeasurementsEnvelope
+from drowse.sae.training import SaeTrainingCancelled
+from drowse.server.operations import Preparation, PreparationGroup
 from drowse.server.response_models import (
     InstrumentCapabilities,
     InstrumentFamilyBlock,
     InstrumentLiveState,
     InstrumentSourceJSON,
-    InstrumentsResponse,
     LensTokenValidationJSON,
-    PreparationProgress,
     PreparationStatusJSON,
     SaeFeatureMetaResponse,
     SaeFeatureValidationJSON,
@@ -69,35 +48,15 @@ from drowse.server.response_models import (
     SourceSwitchResponse,
     SourcesResponse,
 )
-
-if TYPE_CHECKING:
-    from drowse.io.lens import LensCorpus
+from drowse.server.runtime import NativeRequest, run_in_thread, session_lock, session_router
 
 log = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Response shapes
-# ---------------------------------------------------------------------------
-# The wire contract used to be maintained by hand in TypeScript.  It now
-# lives in ``server/response_models.py`` as the Python-side declaration every
-# non-streaming native route annotates: FastAPI emits a real OpenAPI response
-# schema from it, ``scripts/generate_webui_types.py`` renders
-# ``webui/src/lib/types.gen.ts`` from that schema, and
-# ``tests/test_measurements_envelope.py`` pins the exact key sets — so a shape
-# change that isn't mirrored fails a test or the parity check rather than a
-# dashboard.
-
 @dataclass(frozen=True)
 class FamilyCapabilities:
-    """What a read family supports over HTTP — ONE declaration.
+    """What one read family supports over HTTP, and why not when it doesn't.
 
-    The route dispatch, the ``GET /instruments`` listing's ``capabilities``
-    block, and ``session_info``'s per-family block all read this, so an
-    unsupported operation answers from the declaration rather than from a
-    hand-written ``if family == …`` branch.  ``*_error`` carries the status
-    and message an unsupported operation returns, so a family that *can't*
-    do something says why in one place.
+    ``*_error`` is the ``(status, message)`` an unsupported operation returns.
     """
 
     sources: bool
@@ -117,23 +76,18 @@ class FamilyCapabilities:
         }
 
 
-_NO_SOURCE_LIFECYCLE = (
-    404,
-    "geometry has no source lifecycle (Monitor probes attach directly; "
-    "there is nothing to fetch or switch)",
-)
-
-#: Per-family capability declaration, keyed by the same family names
-#: ``session.instruments`` uses (the route layer validates ``{family}``
-#: against the registry, so this table and the registry cannot disagree
-#: about which families exist).
+#: Per-family capability declaration, keyed like ``session.instruments``.
 CAPABILITIES: dict[str, FamilyCapabilities] = {
     "geometry": FamilyCapabilities(
         sources=False,
         preparations=(),
         token_readout=True,
         source_switch=False,
-        sources_error=_NO_SOURCE_LIFECYCLE,
+        sources_error=(
+            404,
+            "geometry has no source lifecycle (Monitor probes attach directly; "
+            "there is nothing to fetch or switch)",
+        ),
         source_switch_error=(404, "geometry has no source to switch"),
         preparations_error=(404, "geometry has no background preparations"),
     ),
@@ -150,31 +104,23 @@ CAPABILITIES: dict[str, FamilyCapabilities] = {
         source_switch=False,
         source_switch_error=(
             409,
-            "switching the SAE source loads weights — run it as a "
-            "background preparation (POST .../instruments/sae/preparations "
-            "with operation='fetch')",
+            "switching the SAE source loads weights — run it as a background "
+            "preparation (POST .../instruments/sae/preparations with operation='fetch')",
         ),
     ),
 }
 
 
 def family_block(session: Any, family: str) -> InstrumentFamilyBlock:
-    """The per-family wire block: ``{family, live, source, probes,
-    capabilities}``.
+    """``{family, live, source, probes, capabilities}`` — the one per-family wire block.
 
-    THE one builder — ``GET /instruments`` lists it for every family and
-    ``session_info`` embeds the same list, so the dashboard hydrates one
-    representation of instrument state instead of two that drift.
+    ``source`` is ``instrument.active_source``, the same resolver that stamps
+    every measurement binding, so the block agrees with persisted rows.
     """
     instrument = session.instruments[family]
     return {
         "family": family,
         "live": instrument.live_state.to_dict(),
-        # The active-source accessor is the same resolver that stamps the
-        # source onto every measurement binding — a listing that answered
-        # from the prepared-sources scan instead would report ``null`` for
-        # an active pointer whose artifact is gone while persisted rows
-        # still carry its label.
         "source": instrument.active_source,
         "probes": list(instrument.names),
         "capabilities": CAPABILITIES[family].to_dict(),
@@ -186,20 +132,28 @@ def instrument_families(session: Any) -> list[InstrumentFamilyBlock]:
     return [family_block(session, family) for family in session.instruments]
 
 
-def require_family(session: Any, family: str) -> str:
+def _capabilities(session: Any, family: str) -> FamilyCapabilities:
     """404 unless ``family`` names a registered read instrument."""
     if family not in session.instruments:
         raise HTTPException(
             404,
-            f"unknown instrument family {family!r} "
-            f"(want one of {', '.join(session.instruments)})",
+            f"unknown instrument family {family!r} (want one of {', '.join(session.instruments)})",
         )
-    return family
+    return CAPABILITIES[family]
 
-#: ``fit_jacobian_lens`` per-prompt progress line — "prompt 12/100 (…)".
-_FIT_PROGRESS_RE = re.compile(r"prompt (\d+)/(\d+)")
-#: ``train_residual_sae`` token-progress line — "trained 12,345/1,000,000 tokens".
-_TRAIN_PROGRESS_RE = re.compile(r"trained ([\d,]+)/([\d,]+) tokens")
+
+def _refuse(error: "tuple[int, str] | None", fallback: str) -> None:
+    status, message = error if error is not None else (404, fallback)
+    raise HTTPException(status, message)
+
+
+def _parse_layers(layers: str | None) -> list[int] | str | None:
+    """``"3,7,11"`` → ``[3, 7, 11]``; ``workspace`` / ``sample`` / ``all`` pass
+    through (:func:`~drowse.model.layers.parse_layer_selector`)."""
+    try:
+        return parse_layer_selector(layers)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -207,11 +161,10 @@ _TRAIN_PROGRESS_RE = re.compile(r"trained ([\d,]+)/([\d,]+) tokens")
 # ---------------------------------------------------------------------------
 
 class InstrumentLiveRequest(NativeRequest):
-    """Uniform body for ``POST .../instruments/{family}/live``.
+    """Body for ``POST .../instruments/{family}/live``.
 
-    ``layers`` applies to the lens family. Readout width is generation state
-    shared with ``return_top_k`` / alts, so ``top_k`` is rejected for every
-    family rather than silently creating an instrument-local width.
+    ``layers`` applies to the lens.  Readout width is generation state shared
+    with ``return_top_k``, so ``top_k`` is refused for every family.
     """
 
     enabled: bool
@@ -220,30 +173,28 @@ class InstrumentLiveRequest(NativeRequest):
 
 
 class SourceRequest(NativeRequest):
-    """Body for ``PUT .../instruments/{family}/source``."""
-
     source: str = Field(min_length=1)
 
 
 class LensTokenValidationRequest(NativeRequest):
-    """Body for ``POST .../instruments/lens/token/validate``."""
-
     word: str
 
 
 class SaeFeatureRequest(NativeRequest):
-    """Body for ``POST .../instruments/sae/features/validate``."""
-
     id: int = Field(ge=0)
 
 
 class SaeFeatureMetaRequest(NativeRequest):
-    """Body for ``POST .../instruments/sae/features/metadata``."""
-
     ids: list[int] = Field(min_length=1, max_length=64)
 
 
-# -- preparation operation bodies (re-parsed from the {operation, ...} POST) --
+class PreparationRequest(NativeRequest):
+    """The ``{operation, …fields}`` envelope; fields re-parse per operation."""
+
+    model_config = NativeRequest.model_config | {"extra": "allow"}
+
+    operation: str
+
 
 class LensFetchRequest(NativeRequest):
     source: str = "neuronpedia"
@@ -251,10 +202,11 @@ class LensFetchRequest(NativeRequest):
 
 
 class LensFitRequest(NativeRequest):
-    """Defaults mirror CLI ``lens fit`` (all source layers).  A matching
-    partial fit resumes by default; ``force`` restarts.  ``hf_corpus`` lists
-    ``--hf-corpus REPO[:CONFIG][@REV][,KEY=VALUE…]`` sources, several making
-    a weighted mix; unset, the fit streams the default web-text sample."""
+    """Defaults mirror CLI ``lens fit``.  ``kind`` is the estimator (``r`` =
+    the RelP R-lens at ``local:r``, ``j`` = the standard J-lens at
+    ``local:j``).  A matching partial fit resumes unless ``force``;
+    ``hf_corpus`` lists ``REPO[:CONFIG][@REV][,KEY=VALUE…]`` sources (several
+    make a weighted mix), else the default web-text sample."""
 
     prompts: int = Field(default=100, ge=1, le=5000)
     hf_corpus: list[str] | None = Field(default=None, min_length=1, max_length=16)
@@ -262,7 +214,7 @@ class LensFitRequest(NativeRequest):
     prompt_batch: int | None = Field(default=None, ge=1, le=64)
     layers: str = "all"
     force: bool = False
-    relp: bool = True
+    kind: Literal["r", "j"] = "r"
 
 
 class SaeFetchRequest(NativeRequest):
@@ -285,548 +237,205 @@ class SaeTrainRequest(NativeRequest):
     force: bool = False
 
 
-def _parse_layers(layers: str | None) -> list[int] | str | None:
-    """``"3,7,11"`` → ``[3, 7, 11]``; named modes pass through."""
-    if layers is None or not layers.strip():
-        return None
-    lowered = layers.strip().lower()
-    if lowered in {"workspace", "band", "sample", "all"}:
-        return lowered
-    try:
-        return [int(part) for part in layers.split(",") if part.strip()]
-    except ValueError as e:
-        raise HTTPException(
-            400,
-            f"malformed layers list: {layers!r} "
-            "(want csv, workspace, sample, or all)",
-        ) from e
-
-
-def _validation_message(exc: ValidationError) -> str:
-    """Flatten a pydantic ``ValidationError`` into one ``detail`` string.
-
-    The preparation bodies are re-parsed into per-operation models after the
-    ``{operation, …}`` envelope is split, so their failures arrive as a raw
-    ``exc.errors()`` list.  The native envelope's ``detail`` is always a
-    string, so render the field paths here rather than shipping the list.
-    """
-    parts: list[str] = []
-    for err in exc.errors():
-        loc = ".".join(str(p) for p in err.get("loc", ()))
-        msg = str(err.get("msg", "invalid value"))
-        parts.append(f"{loc}: {msg}" if loc else msg)
-    return "; ".join(parts) or "invalid preparation fields"
+#: ``fit_jacobian_lens`` per-prompt progress — "prompt 12/100 (…)".
+_FIT_PROGRESS_RE = re.compile(r"prompt (\d+)/(\d+)")
+#: ``train_residual_sae`` token progress — "trained 12,345/1,000,000 tokens".
+_TRAIN_PROGRESS_RE = re.compile(r"trained ([\d,]+)/([\d,]+) tokens")
 
 
 def register_instrument_routes(app: FastAPI) -> None:
-    """Mount the unified ``/drowse/v1/sessions/{id}/instruments`` route tree."""
     session = app.state.session
+    router = session_router()
 
-    # -- background jobs (shared 409 groups; app.state-backed status dicts) ---
-    _LENS_BUSY = "a J-lens artifact operation is already running"
-    lens_fit_job = BackgroundJob(
-        app,
-        "lens_fit",
-        {
-            "running": False,
-            "prompts_done": 0,
-            "prompts_total": 0,
-            "message": None,
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
-            "live_layers": None,
-        },
-        busy_message=_LENS_BUSY,
-        cancellable=True,
-        not_running_message="no lens fit is running",
+    lens_fetch = Preparation("fetch", label="J-lens fetch", fields=("source", "live_layers"))
+    lens_fit = Preparation(
+        "fit", label="lens fit", fields=("live_layers",),
+        cancel_exc=JacobianLensCancelled, progress_unit="prompts", progress_pattern=_FIT_PROGRESS_RE,
     )
-    lens_fetch_job = BackgroundJob(
-        app,
-        "lens_fetch",
-        {
-            "running": False,
-            "source": None,
-            "message": None,
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
-            "live_layers": None,
-        },
-        busy_message=_LENS_BUSY,
+    sae_fetch = Preparation("fetch", label="SAE fetch", fields=("release", "info"))
+    sae_train = Preparation(
+        "train", label="SAE training", fields=("name", "info"),
+        cancel_exc=SaeTrainingCancelled, progress_unit="tokens", progress_pattern=_TRAIN_PROGRESS_RE,
     )
-    lens_fit_job.share_group(lens_fetch_job)
-
-    _SAE_BUSY = "an SAE artifact operation is already running"
-    sae_load_job = BackgroundJob(
-        app,
-        "sae_load",
-        {
-            "running": False,
-            "release": None,
-            "message": None,
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
-            "info": None,
-        },
-        busy_message=_SAE_BUSY,
-    )
-    sae_train_job = BackgroundJob(
-        app,
-        "sae_train",
-        {
-            "running": False,
-            "name": None,
-            "tokens_done": 0,
-            "tokens_total": 0,
-            "message": None,
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
-            "info": None,
-        },
-        busy_message=_SAE_BUSY,
-        cancellable=True,
-        not_running_message="no SAE training is running",
-    )
-    sae_load_job.share_group(sae_train_job)
-
-    async def _stop_lens_fit() -> None:
-        await lens_fit_job.stop()
-        await lens_fetch_job.stop()
-
-    async def _stop_sae_train() -> None:
-        await sae_train_job.stop()
-        await sae_load_job.stop()
-
-    app.router.on_shutdown.append(_stop_lens_fit)
-    app.router.on_shutdown.append(_stop_sae_train)
-
-    # -- job → common preparation-status shape --------------------------------
-
-    def _map_job_status(
-        job: BackgroundJob,
-        operation: str,
-        *,
-        unit: str | None,
-        done_field: str | None,
-        total_field: str | None,
-        extras: tuple[str, ...],
-    ) -> PreparationStatusJSON:
-        st = job.status()
-        running = bool(st.get("running"))
-        error = st.get("error")
-        finished = st.get("finished_at")
-        if running:
-            state = "running"
-        elif error:
-            state = "error"
-        elif finished:
-            state = "done"
-        else:
-            state = "idle"
-        progress: PreparationProgress | None = None
-        if unit is not None and done_field is not None and total_field is not None:
-            progress = {
-                "current": st.get(done_field),
-                "total": st.get(total_field),
-                "unit": unit,
-            }
-        common: PreparationStatusJSON = {
-            "state": state,
-            "operation": operation,
-            "progress": progress,
-            "message": st.get("message"),
-            "error": error,
-            "started_at": st.get("started_at"),
-            "finished_at": finished,
-            "cancellable": job.cancellable,
-        }
-        for key in extras:
-            common[key] = st.get(key)
-        return common
-
-    _JOB_SPECS = {
-        "lens": (
-            (lens_fetch_job, "fetch", None, None, None, ("source", "live_layers")),
-            (lens_fit_job, "fit", "prompts", "prompts_done", "prompts_total",
-             ("live_layers",)),
-        ),
-        "sae": (
-            (sae_load_job, "fetch", None, None, None, ("release", "info")),
-            (sae_train_job, "train", "tokens", "tokens_done", "tokens_total",
-             ("name", "info")),
-        ),
+    preparations = {
+        "lens": PreparationGroup("a J-lens artifact operation is already running", lens_fetch, lens_fit),
+        "sae": PreparationGroup("an SAE artifact operation is already running", sae_fetch, sae_train),
     }
 
-    def _idle_status() -> PreparationStatusJSON:
-        return {
-            "state": "idle",
-            "operation": None,
-            "progress": None,
-            "message": None,
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
-            "cancellable": False,
-        }
+    async def stop_preparations() -> None:
+        for group in preparations.values():
+            await group.stop()
 
-    def _prep_status(family: str) -> PreparationStatusJSON:
-        specs = _JOB_SPECS.get(family)
-        if not specs:
-            return _idle_status()
-        running = [s for s in specs if s[0].running]
-        if running:
-            job, op, unit, done, total, extras = running[0]
-        else:
-            started = [s for s in specs if s[0].state.get("started_at")]
-            if not started:
-                return _idle_status()
-            job, op, unit, done, total, extras = max(
-                started,
-                key=lambda s: (
-                    s[0].state.get("finished_at")
-                    or s[0].state.get("started_at")
-                    or 0
-                ),
-            )
-        return _map_job_status(
-            job, op, unit=unit, done_field=done, total_field=total, extras=extras,
-        )
+    app.router.on_shutdown.append(stop_preparations)
 
-    # -- shared lens-source activation ---------------------------------------
+    async def enable_lens_live() -> list[int]:
+        return list((await run_in_thread(session.lens.set_live, True)).layers or ())
 
-    async def _activate_lens_source(source: str) -> list[int]:
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise RuntimeError("session locked")
-            session.lens.set_live(False)
-            await run_in_thread(session.select_jlens_source, source)
-            state = await run_in_thread(session.lens.set_live, True)
-            return list(state.layers or ())
+    async def enable_live_after(preparation: Preparation, enable: Any) -> None:
+        """Best-effort: turn the family's live readout on once its artifact landed.
 
-    # =====================================================================
-    # GET /instruments — enumerate the three families
-    # =====================================================================
-
-    @app.get("/drowse/v1/sessions/{session_id}/instruments")
-    def list_instruments(session_id: str) -> InstrumentsResponse:
-        """Enumerate the read families over ``session.instruments``."""
-        resolve_session_id(session_id)
-        return {"instruments": instrument_families(session)}
-
-    # =====================================================================
-    # POST /instruments/{family}/live — uniform live toggle
-    # =====================================================================
-
-    @app.post("/drowse/v1/sessions/{session_id}/instruments/{family}/live")
-    async def instrument_live(
-        session_id: str, family: str, body: InstrumentLiveRequest,
-    ) -> InstrumentLiveState:
-        """Uniform live toggle: ``instrument.set_live(enabled, **extras)``.
-
-        Family extras travel as keyword arguments and the *instrument*
-        rejects the ones it can't honor (``TypeError`` -> 400), so there is
-        one rejection rule instead of three separately-worded branches.
-        ``top_k`` is refused for every family up front — readout width is
-        generation state shared with ``return_top_k``/alts, never an
-        instrument-local dial.
+        The preparation itself succeeded, so a busy lock or a live-toggle
+        failure is logged rather than reported as a failed preparation.
         """
-        resolve_session_id(session_id)
-        require_family(session, family)
+        try:
+            async with session_lock(app):
+                await enable()
+        except Exception:  # noqa: BLE001 - the artifact is in place; live is optional
+            log.exception("could not enable live readout after %s", preparation.label)
+
+    async def select_lens_source(source: str) -> None:
+        """Make ``source`` the lens's runtime source with live readout off.
+
+        The caller holds the session lock.
+        """
+        session.lens.set_live(False)
+        try:
+            await run_in_thread(session.lens.select_source, source)
+        except FileNotFoundError as exc:
+            if exc.filename is not None:
+                raise  # an OS-level miss names a path: scrubbed by the policy
+            # The source registry's own "<kind>:<name> is not available".
+            raise HTTPException(404, str(exc)) from None
+
+    async def activate_lens_source(source: str) -> list[int]:
+        async with session_lock(app):
+            await select_lens_source(source)
+            return await enable_lens_live()
+
+    # -- live / sources / source -------------------------------------------
+
+    @router.post("/instruments/{family}/live")
+    async def instrument_live(family: str, body: InstrumentLiveRequest) -> InstrumentLiveState:
+        """``instrument.set_live(enabled, **extras)``; the instrument rejects an
+        extra it cannot honor (``TypeError`` → 400)."""
+        _capabilities(session, family)
         if body.top_k is not None:
             raise HTTPException(
-                400,
-                "live takes no top_k; readout width follows the "
-                "generation's alternatives (return_top_k)",
+                400, "live takes no top_k; readout width follows the generation's alternatives (return_top_k)",
             )
-        extras: dict[str, Any] = {}
-        if body.layers is not None:
-            extras["layers"] = body.layers
-        instrument = session.instruments[family]
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
+        extras = {"layers": body.layers} if body.layers is not None else {}
+        async with session_lock(app):
             try:
-                state = await run_in_thread(
-                    instrument.set_live, body.enabled, **extras,
-                )
-            except LensNotFittedError as e:
-                raise HTTPException(404, str(e)) from e
-            except (TypeError, ValueError) as e:
+                state = await run_in_thread(session.instruments[family].set_live, body.enabled, **extras)
+            except TypeError as e:
                 raise HTTPException(400, str(e)) from e
-            except DrowseError as e:
-                status, text = e.user_message()
-                raise HTTPException(status, text) from e
         return state.to_dict()
 
-    # =====================================================================
-    # GET /instruments/{family}/sources
-    # =====================================================================
+    @router.get("/instruments/{family}/sources")
+    async def instrument_sources(family: str) -> SourcesResponse:
+        caps = _capabilities(session, family)
+        if not caps.sources:
+            _refuse(caps.sources_error, f"{family} has no source lifecycle")
+        if family == "lens":
+            from drowse.lens.sources import list_lens_sources
 
-    async def _lens_sources() -> SourcesResponse:
-        from drowse.io.lens_sources import list_lens_sources
-
-        return {
-            "sources": [
-                cast(InstrumentSourceJSON, {
-                    k: v for k, v in row.items() if k != "path"
-                })
-                for row in list_lens_sources(session.model_id)
-            ],
-        }
-
-    async def _sae_sources() -> SourcesResponse:
-        """Prepared sources AND provider release candidates, so the
-        dashboard sees both prepared and still-needs-fetching rows."""
-        from drowse.core.sae import list_sae_releases
-        from drowse.io.sae import list_sae_sources
+            rows = list_lens_sources(session.model_id)
+            return {"sources": [
+                cast(InstrumentSourceJSON, {k: v for k, v in row.items() if k != "path"}) for row in rows
+            ]}
+        from drowse.sae.backend import list_sae_releases
+        from drowse.sae.sources import list_sae_sources
 
         rows = await run_in_thread(list_sae_sources, session.model_id)
-        sources = [
-            cast(InstrumentSourceJSON, {
-                k: v for k, v in row.items() if k != "path"
-            })
-            for row in rows
-        ]
-        try:
-            releases = await run_in_thread(
-                list_sae_releases, session.model_id,
-            )
-        except DrowseError as exc:
-            status, message = exc.user_message()
-            raise HTTPException(status, message) from exc
+        releases = await run_in_thread(list_sae_releases, session.model_id)
         return {
-            "sources": sources,
+            "sources": [
+                cast(InstrumentSourceJSON, {k: v for k, v in row.items() if k != "path"}) for row in rows
+            ],
             "releases": cast(list[SaeReleaseJSON], releases),
         }
 
-    _SOURCE_LISTERS = {"lens": _lens_sources, "sae": _sae_sources}
-
-    def _refuse(spec: "tuple[int, str] | None", fallback: str) -> None:
-        status, message = spec if spec is not None else (404, fallback)
-        raise HTTPException(status, message)
-
-    @app.get("/drowse/v1/sessions/{session_id}/instruments/{family}/sources")
-    async def instrument_sources(
-        session_id: str, family: str,
-    ) -> SourcesResponse:
-        resolve_session_id(session_id)
-        require_family(session, family)
-        caps = CAPABILITIES[family]
-        if not caps.sources:
-            _refuse(caps.sources_error, f"{family} has no source lifecycle")
-        return await _SOURCE_LISTERS[family]()
-
-    # =====================================================================
-    # PUT /instruments/{family}/source — synchronous source switch (lens)
-    # =====================================================================
-
-    @app.put("/drowse/v1/sessions/{session_id}/instruments/{family}/source")
-    async def instrument_source(
-        session_id: str, family: str, body: SourceRequest,
-    ) -> SourceSwitchResponse:
-        resolve_session_id(session_id)
-        require_family(session, family)
-        caps = CAPABILITIES[family]
+    @router.put("/instruments/{family}/source")
+    async def instrument_source(family: str, body: SourceRequest) -> SourceSwitchResponse:
+        caps = _capabilities(session, family)
         if not caps.source_switch:
-            _refuse(
-                caps.source_switch_error,
-                f"{family} has no synchronous source switch",
-            )
-        # lens: the old POST /lens/use semantics
-        lens_fit_job.refuse_if_busy()
+            _refuse(caps.source_switch_error, f"{family} has no synchronous source switch")
+        preparations["lens"].refuse_if_busy()
         try:
-            layers = await _activate_lens_source(body.source)
-        except FileNotFoundError as exc:
-            raise HTTPException(404, str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            layers = await activate_lens_source(body.source)
         except LensNotFittedError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        except DrowseError as exc:
-            status, text = exc.user_message()
-            raise HTTPException(status, text) from exc
-        except RuntimeError as exc:
-            raise HTTPException(503, str(exc)) from exc
-        response: SourceSwitchResponse = {
-            "source": body.source, "live_layers": layers,
-        }
-        return response
+            # The route exists and the source is selected, but its artifact
+            # cannot load for this model: a conflict with the artifact state.
+            raise HTTPException(409) from exc
+        return {"source": body.source, "live_layers": layers}
 
-    # =====================================================================
-    # POST/GET/DELETE /instruments/{family}/preparations — background jobs
-    # =====================================================================
+    # -- preparations ---------------------------------------------------------
 
-    async def _lens_fetch_body(body: LensFetchRequest) -> None:
-        from drowse.io.lens_sources import (
-            NEURONPEDIA_BINDING,
-            WORKSPACE_ARMS,
-            fetch_lens_source,
-        )
+    async def lens_fetch_body(body: LensFetchRequest) -> None:
+        from drowse.lens.sources import fetch_lens_source
 
-        st = lens_fetch_job.state
-        if body.source != NEURONPEDIA_BINDING and body.source not in WORKSPACE_ARMS:
-            raise ValueError(
-                "J-lens source must be one of "
-                + ", ".join([NEURONPEDIA_BINDING, *sorted(WORKSPACE_ARMS)])
-            )
-        st["message"] = "fetching external lens into the Hugging Face cache…"
+        lens_fetch.report("fetching external lens into the Hugging Face cache…")
         binding = await run_in_thread(
-            fetch_lens_source,
-            session.model_id,
-            body.source,
-            force=body.force,
-            activate=False,
+            fetch_lens_source, session.model_id, body.source, force=body.force, activate=False,
         )
-        st["message"] = "activating…"
-        st["live_layers"] = await _activate_lens_source(binding.name)
-        st["message"] = (
-            f"active: {binding.name} ({len(binding.source_layers)} layers)"
-        )
-        st["error"] = None
-
-    def _lens_fetch_on_error(exc: BaseException) -> None:
-        st = lens_fetch_job.state
-        if isinstance(exc, FileNotFoundError):
-            st["error"] = str(exc)
-            st["message"] = "official lens unavailable"
-        elif isinstance(exc, (ValueError, RuntimeError)):
-            st["error"] = str(exc)
-            st["message"] = "fetch failed"
-        else:
-            log.exception("J-lens fetch failed")
-            st["error"] = f"J-lens fetch failed ({type(exc).__name__})"
-            st["message"] = "fetch failed"
-
-    async def _lens_fit_body(
-        body: LensFitRequest,
-        source_layers: "list[int] | str",
-        corpus: "LensCorpus",
-    ) -> None:
-        from drowse.io.lens import stream_lens_corpus
-
-        st = lens_fit_job.state
-        st["message"] = f"streaming {body.prompts} documents from {corpus}…"
-        docs, spec = await run_in_thread(
-            stream_lens_corpus,
-            body.prompts,
-            corpus,
-            cancel_event=lens_fit_job.cancel_event,
-        )
-        on_progress = make_progress_hook(
-            st, _FIT_PROGRESS_RE,
-            done_field="prompts_done", total_field="prompts_total",
-        )
-        st["message"] = "fitting…"
-        await run_in_thread(
-            session.fit_jlens,
-            docs,
-            corpus_spec=spec,
-            source_layers=source_layers,
-            seq_len=body.seq_len,
-            prompt_batch=body.prompt_batch,
-            force=body.force,
-            backward_rules="relp" if body.relp else "standard",
-            on_progress=on_progress,
-            cancel_event=lens_fit_job.cancel_event,
-        )
-        async with acquire_session_lock(session) as acquired:
-            if acquired:
-                st["live_layers"] = list(
-                    (
-                        await run_in_thread(session.lens.set_live, True)
-                    ).layers or ()
-                )
-        st["message"] = "done"
-        st["error"] = None
-
-    async def _sae_fetch_body(body: SaeFetchRequest, source: str, release: str) -> None:
-        st = sae_load_job.state
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise RuntimeError("session locked")
-            info = await run_in_thread(
-                session.load_sae, release, layer=body.layer,
-            )
-            await run_in_thread(session.sae.set_live, True)
-        st["info"] = info
-        st["message"] = (
-            f"loaded {source} · live at L{info.get('layer')} "
-            f"({info.get('width')} features)"
+        lens_fetch.report("activating…")
+        lens_fetch.state["live_layers"] = await activate_lens_source(binding.name)
+        lens_fetch.report(
+            f"active: {binding.name} ({len(binding.files[binding.key].layers)} layers)"
         )
 
-    def _sae_fetch_on_error(exc: BaseException) -> None:
-        st = sae_load_job.state
-        if isinstance(exc, DrowseError):
-            _code, message = exc.user_message()
-        else:
-            message = str(exc)
-        st["error"] = message
-        st["message"] = "load failed"
+    def start_lens_fetch(fields: dict[str, Any]) -> None:
+        from drowse.lens.sources import LENS_PROVIDERS
 
-    async def _sae_train_body(body: SaeTrainRequest, layer: int) -> None:
-        from drowse.io.lens import stream_lens_corpus
-
-        st = sae_train_job.state
-        n_docs = max(1, math.ceil(body.tokens / body.seq_len))
-        st["message"] = f"streaming {n_docs:,} corpus documents…"
-        docs, spec = await run_in_thread(stream_lens_corpus, n_docs)
-        on_progress = make_progress_hook(
-            st, _TRAIN_PROGRESS_RE,
-            done_field="tokens_done", total_field="tokens_total",
-        )
-        result = await run_in_thread(
-            session.train_sae,
-            body.name,
-            docs,
-            layer=layer,
-            corpus_spec=spec,
-            tokens=body.tokens,
-            seq_len=body.seq_len,
-            batch_size=body.batch_size,
-            d_sae=body.width,
-            expansion=body.expansion,
-            learning_rate=body.learning_rate,
-            l1_coefficient=body.l1,
-            dead_feature_threshold=body.dead_threshold,
-            seed=body.seed,
-            force=body.force,
-            on_progress=on_progress,
-            cancel_event=sae_train_job.cancel_event,
-        )
-        st["info"] = result["runtime"]
-        st["tokens_done"] = int(result["metrics"]["tokens_trained"])
-        st["message"] = f"active: {result['source']}"
-        st["error"] = None
-        try:
-            async with acquire_session_lock(session) as acquired:
-                if acquired:
-                    await run_in_thread(session.sae.set_live, True)
-        except Exception:
-            log.exception("could not auto-enable live SAE after training")
-
-    def _start_lens_fetch(fields: dict[str, Any]) -> PreparationStatusJSON:
         body = LensFetchRequest(**fields)
-        lens_fetch_job.refuse_if_busy()
-        lens_fetch_job.start(
-            message="starting…", source=body.source, live_layers=None,
-        )
-        lens_fetch_job.launch(
-            lambda: _lens_fetch_body(body), _lens_fetch_on_error,
-        )
-        return _prep_status("lens")
+        if body.source not in LENS_PROVIDERS:
+            raise HTTPException(
+                400, "J-lens source must be one of " + ", ".join(sorted(LENS_PROVIDERS)),
+            )
+        lens_fetch.start(lambda: lens_fetch_body(body), message="starting…", source=body.source, live_layers=None)
 
-    def _start_lens_fit(fields: dict[str, Any]) -> PreparationStatusJSON:
-        from drowse.core.jlens import JacobianLensCancelled
-        from drowse.io.lens import parse_lens_corpus
+    async def lens_fit_body(body: LensFitRequest, source_layers: list[int] | str, corpus: Any) -> None:
+        from drowse.lens.corpus import pin_lens_corpus, stream_lens_corpus
+
+        kind = body.kind.upper()
+
+        async def enable() -> None:
+            lens_fit.state["live_layers"] = await enable_lens_live()
+
+        # Pin first, as ``lens fit`` does: the no-op proof and the stream
+        # then name the same Hub commit.  An unpinned corpus resolves in the
+        # isolated corpus worker, never in the server process.
+        if not corpus.pinned:
+            lens_fit.report(f"resolving {corpus}…")
+        corpus = await run_in_thread(
+            pin_lens_corpus, corpus, cancel_event=lens_fit.cancel_event,
+        )
+        if not body.force and await run_in_thread(
+            session.lens.fit_is_noop, body.prompts,
+            kind=kind, corpus_spec=corpus.spec,
+            source_layers=source_layers, seq_len=body.seq_len,
+        ) is not None:
+            # Nothing to fit: skip the stream and make the proven artifact
+            # the source, as a publishing fit leaves it; live readout is the
+            # same best-effort step as after a fit.
+            lens_fit.report(
+                "already fitted for this corpus and exact model source — nothing to do",
+            )
+            async with session_lock(app):
+                await select_lens_source(f"local:{kind.lower()}")
+            await enable_live_after(lens_fit, enable)
+            lens_fit.report("done")
+            return
+        lens_fit.report(f"streaming {body.prompts} documents from {corpus}…")
+        docs, spec = await run_in_thread(
+            stream_lens_corpus, body.prompts, corpus, cancel_event=lens_fit.cancel_event,
+        )
+        lens_fit.report("fitting…")
+        await run_in_thread(
+            session.lens.fit, docs,
+            kind=kind,
+            corpus_spec=spec, source_layers=source_layers, seq_len=body.seq_len,
+            prompt_batch=body.prompt_batch, force=body.force,
+            on_progress=lens_fit.report, cancel_event=lens_fit.cancel_event,
+        )
+        await enable_live_after(lens_fit, enable)
+        lens_fit.report("done")
+
+    def start_lens_fit(fields: dict[str, Any]) -> None:
+        from drowse.lens.corpus import parse_lens_corpus
 
         body = LensFitRequest(**fields)
-        try:
-            corpus = parse_lens_corpus(body.hf_corpus)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+        corpus = parse_lens_corpus(body.hf_corpus)
         source_layers = _parse_layers(body.layers) or "workspace"
         if source_layers == "sample":
             raise HTTPException(
@@ -834,168 +443,115 @@ def register_instrument_routes(app: FastAPI) -> None:
                 "layers='sample' is not fittable (debug readout only) — "
                 "use 'workspace', 'all', or an explicit csv list",
             )
-        lens_fit_job.refuse_if_busy()
-        lens_fit_job.start(
-            message="starting…", prompts_done=0, prompts_total=body.prompts,
+        lens_fit.start(
+            lambda: lens_fit_body(body, source_layers, corpus),
+            message="starting…", current=0, total=body.prompts,
         )
 
-        def _on_error(exc: BaseException) -> None:
-            scrub_job_error(
-                lens_fit_job.state, exc,
-                cancel_exc=JacobianLensCancelled,
-                op_label="lens fit",
-                logger=log,
-            )
-
-        lens_fit_job.launch(
-            lambda: _lens_fit_body(body, source_layers, corpus), _on_error,
+    async def sae_fetch_body(body: SaeFetchRequest, source: str, release: str) -> None:
+        async with session_lock(app):
+            info = await run_in_thread(session.sae.load, release, layer=body.layer)
+            await run_in_thread(session.sae.set_live, True)
+        sae_fetch.state["info"] = info
+        sae_fetch.report(
+            f"loaded {source} · live at L{info.get('layer')} ({info.get('width')} features)",
         )
-        return _prep_status("lens")
 
-    def _start_sae_fetch(fields: dict[str, Any]) -> PreparationStatusJSON:
+    def start_sae_fetch(fields: dict[str, Any]) -> None:
+        from drowse.sae.sources import SAE_SOURCES, sae_release
+
         body = SaeFetchRequest(**fields)
-        sae_load_job.refuse_if_busy()
         source = body.release.strip()
-        release = (
-            source[len("saelens:"):] if source.startswith("saelens:") else source
+        try:
+            release = sae_release(SAE_SOURCES.parse(source))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        sae_fetch.start(
+            lambda: sae_fetch_body(body, source, release),
+            message=f"loading {source}", release=source, info=None,
         )
-        if not release:
-            raise HTTPException(400, "SAE source must not be empty")
-        sae_load_job.start(message=f"loading {source}", release=source, info=None)
-        sae_load_job.launch(
-            lambda: _sae_fetch_body(body, source, release), _sae_fetch_on_error,
-        )
-        return _prep_status("sae")
 
-    def _start_sae_train(fields: dict[str, Any]) -> PreparationStatusJSON:
-        from drowse.core.sae_training import SaeTrainingCancelled
+    async def sae_train_body(body: SaeTrainRequest, layer: int) -> None:
+        from drowse.lens.corpus import stream_lens_corpus
+
+        n_docs = max(1, math.ceil(body.tokens / body.seq_len))
+        sae_train.report(f"streaming {n_docs:,} corpus documents…")
+        docs, spec = await run_in_thread(stream_lens_corpus, n_docs)
+        result = await run_in_thread(
+            session.sae.train, body.name, docs,
+            layer=layer, corpus_spec=spec, tokens=body.tokens, seq_len=body.seq_len,
+            batch_size=body.batch_size, d_sae=body.width, expansion=body.expansion,
+            learning_rate=body.learning_rate, l1_coefficient=body.l1,
+            dead_feature_threshold=body.dead_threshold, seed=body.seed, force=body.force,
+            on_progress=sae_train.report, cancel_event=sae_train.cancel_event,
+        )
+        sae_train.state["info"] = result["runtime"]
+        sae_train.state["current"] = int(result["metrics"]["tokens_trained"])
+        sae_train.report(f"active: {result['source']}")
+        await enable_live_after(sae_train, lambda: run_in_thread(session.sae.set_live, True))
+
+    def start_sae_train(fields: dict[str, Any]) -> None:
+        from drowse.sae.backend import select_runtime_layer
 
         body = SaeTrainRequest(**fields)
-        sae_train_job.refuse_if_busy()
-        layer = body.layer
-        if layer is None:
-            layer = round(0.65 * max(len(session.layers) - 1, 0))
-        if not 0 <= layer < len(session.layers):
+        n_layers = len(session.layers)
+        try:
+            layer = select_runtime_layer(frozenset(range(n_layers)), n_layers, body.layer)
+        except ValueError:
             raise HTTPException(
-                400,
-                f"SAE layer {layer} is outside model layers "
-                f"0..{len(session.layers) - 1}",
-            )
-        sae_train_job.start(
-            message="starting…",
-            name=body.name,
-            tokens_done=0,
-            tokens_total=body.tokens,
-            info=None,
+                400, f"SAE layer {body.layer} is outside model layers 0..{n_layers - 1}",
+            ) from None
+        sae_train.start(
+            lambda: sae_train_body(body, layer),
+            message="starting…", name=body.name, current=0, total=body.tokens, info=None,
         )
 
-        def _on_error(exc: BaseException) -> None:
-            scrub_job_error(
-                sae_train_job.state, exc,
-                cancel_exc=SaeTrainingCancelled,
-                op_label="SAE training",
-                logger=log,
-                failure_message="training failed",
-            )
-
-        sae_train_job.launch(lambda: _sae_train_body(body, layer), _on_error)
-        return _prep_status("sae")
-
-    #: Preparation starters keyed by ``(family, operation)``.  The operation
-    #: names match the CLI verbs exactly — ``sae fetch`` is ``fetch`` on both
-    #: surfaces, like ``lens fetch`` (the historical HTTP ``load`` spelling
-    #: for the same operation is gone; clean break, no alias).
-    _PREP_STARTERS = {
-        ("lens", "fetch"): _start_lens_fetch,
-        ("lens", "fit"): _start_lens_fit,
-        ("sae", "fetch"): _start_sae_fetch,
-        ("sae", "train"): _start_sae_train,
+    #: Starters keyed by ``(family, operation)`` — the CLI verbs on both surfaces.
+    starters = {
+        ("lens", "fetch"): start_lens_fetch,
+        ("lens", "fit"): start_lens_fit,
+        ("sae", "fetch"): start_sae_fetch,
+        ("sae", "train"): start_sae_train,
     }
 
-    @app.post(
-        "/drowse/v1/sessions/{session_id}/instruments/{family}/preparations",
-        status_code=202,
-    )
-    async def preparations_start(
-        session_id: str, family: str, body: dict[str, Any],
-    ) -> PreparationStatusJSON:
-        resolve_session_id(session_id)
-        require_family(session, family)
-        caps = CAPABILITIES[family]
+    def preparation_group(family: str) -> PreparationGroup:
+        caps = _capabilities(session, family)
         if not caps.preparations:
-            _refuse(
-                caps.preparations_error,
-                f"{family} has no background preparations",
-            )
-        operation = body.get("operation")
-        if not isinstance(operation, str):
-            raise HTTPException(400, "body must carry a string 'operation'")
-        starter = _PREP_STARTERS.get((family, operation))
+            _refuse(caps.preparations_error, f"{family} has no background preparations")
+        return preparations[family]
+
+    @router.post("/instruments/{family}/preparations", status_code=202)
+    async def preparations_start(family: str, body: PreparationRequest) -> PreparationStatusJSON:
+        group = preparation_group(family)
+        starter = starters.get((family, body.operation))
         if starter is None:
-            valid = [op for (fam, op) in _PREP_STARTERS if fam == family]
-            raise HTTPException(
-                400,
-                f"{family} preparations support {valid}, not {operation!r}",
-            )
-        fields = {k: v for k, v in body.items() if k != "operation"}
-        try:
-            return starter(fields)
-        except ValidationError as exc:
-            raise HTTPException(400, _validation_message(exc)) from exc
+            valid = [op for (fam, op) in starters if fam == family]
+            raise HTTPException(400, f"{family} preparations support {valid}, not {body.operation!r}")
+        group.refuse_if_busy()
+        starter(body.model_extra or {})
+        return cast(PreparationStatusJSON, group.status())
 
-    @app.get(
-        "/drowse/v1/sessions/{session_id}/instruments/{family}/preparations",
-    )
-    def preparations_status(
-        session_id: str, family: str,
-    ) -> PreparationStatusJSON:
-        resolve_session_id(session_id)
-        require_family(session, family)
-        caps = CAPABILITIES[family]
-        if not caps.preparations:
-            _refuse(
-                caps.preparations_error,
-                f"{family} has no background preparations",
-            )
-        return _prep_status(family)
+    @router.get("/instruments/{family}/preparations")
+    def preparations_status(family: str) -> PreparationStatusJSON:
+        return cast(PreparationStatusJSON, preparation_group(family).status())
 
-    @app.delete(
-        "/drowse/v1/sessions/{session_id}/instruments/{family}/preparations",
-    )
-    async def preparations_cancel(
-        session_id: str, family: str,
-    ) -> PreparationStatusJSON:
-        resolve_session_id(session_id)
-        require_family(session, family)
-        caps = CAPABILITIES[family]
-        if not caps.preparations:
-            _refuse(
-                caps.preparations_error,
-                f"{family} has no background preparations",
-            )
+    @router.delete("/instruments/{family}/preparations")
+    async def preparations_cancel(family: str) -> PreparationStatusJSON:
+        """lens: cancel a running fit.  sae: cancel a running train, else unload the resident SAE."""
+        group = preparation_group(family)
         if family == "lens":
-            # Only the fit is cancellable (the fetch is not).
-            lens_fit_job.request_cancel()
-            return _prep_status("lens")
-        # sae: cancel a running train, else tear down (unload) the resident SAE.
-        if sae_train_job.running:
-            sae_train_job.request_cancel()
-            return _prep_status("sae")
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
-            session.unload_sae()
-        return _prep_status("sae")
+            lens_fit.request_cancel()
+        elif sae_train.running:
+            sae_train.request_cancel()
+        else:
+            async with session_lock(app):
+                session.sae.unload()
+        return cast(PreparationStatusJSON, group.status())
 
-    # =====================================================================
-    # GET /instruments/{family}/token-readout — measurements replay envelope
-    # =====================================================================
+    # -- token readout ----------------------------------------------------------
 
-    @app.get(
-        "/drowse/v1/sessions/{session_id}/instruments/{family}/token-readout",
-    )
+    @router.get("/instruments/{family}/token-readout")
     async def instrument_token_readout(
-        session_id: str,
         family: str,
         node_id: str,
         raw_index: int,
@@ -1004,98 +560,39 @@ def register_instrument_routes(app: FastAPI) -> None:
         raw: bool = False,
         layers: str | None = None,
     ) -> MeasurementsEnvelope:
-        """Resolve -> validate -> dispatch.
-
-        The family owns the whole replay including its ``measurements``
-        envelope (``Instrument.token_readout``), so this route no longer
-        reshapes three different native dicts.  A knob a family cannot
-        honor comes back as a ``ValueError`` -> 400 rather than being
-        dropped: ``top_k``/``layers`` on geometry, ``layers`` on sae.
-        """
-        resolve_session_id(session_id)
-        require_family(session, family)
-        caps = CAPABILITIES[family]
+        """The instrument owns the whole replay, envelope included; a knob it
+        cannot honor is a ``RequestError`` → 400, never silently dropped."""
+        caps = _capabilities(session, family)
         if not caps.token_readout:
-            raise HTTPException(
-                404, f"{family} has no token readout",
+            raise HTTPException(404, f"{family} has no token readout")
+        async with session_lock(app):
+            return await run_in_thread(
+                session.instruments[family].token_readout,
+                node_id, raw_index,
+                top_k=top_k, layers=_parse_layers(layers), apply_steering=steered, raw=raw,
             )
-        instrument = session.instruments[family]
-        async with acquire_session_lock(session) as acquired:
-            if not acquired:
-                raise HTTPException(503, "session locked")
-            try:
-                return await run_in_thread(
-                    instrument.token_readout,
-                    node_id,
-                    raw_index,
-                    top_k=top_k,
-                    layers=_parse_layers(layers),
-                    apply_steering=steered,
-                    raw=raw,
-                )
-            except (LensNotFittedError, UnknownNodeError) as exc:
-                raise HTTPException(404, str(exc)) from exc
-            except InvalidNodeOperationError as exc:
-                raise HTTPException(400, str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(400, str(exc)) from exc
-            except DrowseError as exc:
-                status, message = exc.user_message()
-                raise HTTPException(status, message) from exc
 
-    # =====================================================================
-    # Family extras
-    # =====================================================================
+    # -- family extras ---------------------------------------------------------
 
-    @app.post(
-        "/drowse/v1/sessions/{session_id}/instruments/lens/token/validate",
-    )
-    def validate_lens_token(
-        session_id: str, body: LensTokenValidationRequest,
-    ) -> LensTokenValidationJSON:
-        """Read-only single-token check for the J-lens steer/probe add forms."""
-        resolve_session_id(session_id)
+    @router.post("/instruments/lens/token/validate")
+    def validate_lens_token(body: LensTokenValidationRequest) -> LensTokenValidationJSON:
+        """Read-only single-token check for the J-lens steer/probe forms
+        (``word`` or ``#<id>``, the same contract as the atoms)."""
         word = body.word.strip()
         if not word:
             raise HTTPException(400, "word must not be empty")
-        try:
-            token_id = resolve_word_token(session.tokenizer, word)
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        return {"word": word, "token_id": token_id}
+        return {"word": word, "token_id": session.lens.resolve_token(word)}
 
-    @app.post(
-        "/drowse/v1/sessions/{session_id}/instruments/sae/features/validate",
-    )
-    def sae_feature_validate(
-        session_id: str, body: SaeFeatureRequest,
-    ) -> SaeFeatureValidationJSON:
-        resolve_session_id(session_id)
-        try:
-            return session.validate_sae_feature(body.id)
-        except DrowseError as exc:
-            status, message = exc.user_message()
-            raise HTTPException(status, message) from exc
+    @router.post("/instruments/sae/features/validate")
+    def sae_feature_validate(body: SaeFeatureRequest) -> SaeFeatureValidationJSON:
+        return session.sae.validate_feature(body.id)
 
-    @app.post(
-        "/drowse/v1/sessions/{session_id}/instruments/sae/features/metadata",
-    )
-    async def sae_features_metadata(
-        session_id: str, body: SaeFeatureMetaRequest,
-    ) -> SaeFeatureMetaResponse:
-        """Fetch-and-cache Neuronpedia metadata (label + maxActApprox).
-
-        Network + disk-cache only (no model use), so it deliberately does not
-        take the session lock, mirroring feature validation.
-        """
-        resolve_session_id(session_id)
+    @router.post("/instruments/sae/features/metadata")
+    async def sae_features_metadata(body: SaeFeatureMetaRequest) -> SaeFeatureMetaResponse:
+        """Neuronpedia label + ``maxActApprox`` backfill.  Network and disk
+        cache only, so it takes no session lock."""
         if any(feature_id < 0 for feature_id in body.ids):
             raise HTTPException(400, "feature ids must be non-negative")
-        try:
-            features = await run_in_thread(
-                session.fetch_sae_feature_meta, body.ids,
-            )
-        except DrowseError as exc:
-            status, message = exc.user_message()
-            raise HTTPException(status, message) from exc
-        return {"features": features}
+        return {"features": await run_in_thread(session.sae.fetch_meta, body.ids)}
+
+    app.include_router(router)

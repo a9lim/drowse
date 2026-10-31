@@ -1,0 +1,661 @@
+"""Smoke tests for drowse.
+
+Requires a GPU (CUDA or Apple Silicon MPS) and downloads the public
+SmolLM2-360M-Instruct test model on first run. Override with
+``DROWSE_TEST_MODEL``. Run with: pytest tests/gpu/test_smoke.py -v
+"""
+
+from __future__ import annotations
+
+import math
+import time
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import pytest
+import torch
+
+from tests.support.gpu import gpu_model_id, load_or_skip_inaccessible
+
+# Skip entire module if no GPU backend is available.
+_HAS_GPU = torch.cuda.is_available() or torch.backends.mps.is_available()
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        not _HAS_GPU,
+        reason="No GPU backend available (neither CUDA nor MPS)",
+    ),
+]
+
+MODEL_ID = gpu_model_id()
+# MPS runs ~3-5x slower than CUDA for this model; relax absolute timing budgets.
+_IS_MPS = not torch.cuda.is_available() and torch.backends.mps.is_available()
+_EXTRACTION_BUDGET_S = 60.0 if _IS_MPS else 10.0
+
+
+@pytest.fixture(scope="module")
+def model_and_tokenizer():
+    from drowse.model.load import load_model
+    # device="auto" picks cuda > mps > cpu; the skipif above guarantees a GPU.
+    return load_or_skip_inaccessible(
+        lambda: load_model(MODEL_ID, quantize=None, device="auto"), MODEL_ID,
+    )
+
+
+@pytest.fixture(scope="module")
+def layers(model_and_tokenizer: Any) -> Any:
+    from drowse.model.arch import get_layers
+    model, _ = model_and_tokenizer
+    return get_layers(model)
+
+
+@pytest.fixture(scope="module")
+def num_layers(layers: Any) -> int:
+    return len(layers)
+
+
+def _encode_and_capture_all(
+    model: Any, tokenizer: Any, prompt: str, response: str, layers: Any,
+    device: Any,
+) -> dict[int, torch.Tensor]:
+    """Last-content-token hidden state per layer for one turn pair, fp32."""
+    from drowse.fit.capture import _encode_and_capture_all_batch
+
+    batch = _encode_and_capture_all_batch(
+        model, tokenizer, [prompt], [response], layers, device,
+    )
+    return {idx: rows[0] for idx, rows in batch.items()}
+
+
+def _extract_profile(model: Any, tokenizer: Any, concept: str, layers: Any) -> Any:
+    """A per-layer direction profile for a single concept vs the empty pole.
+
+    The 4.0 equivalent of a difference-of-means vector: capture the two pole
+    centroids, take their per-layer difference ``δ = pos − neg``, and fold that
+    direction into a one-pole affine ray via the production
+    ``fold_directions_to_subspace``, then read its baked-direction view
+    (``folded_directions``).  Same centroid-difference direction the old
+    DiM extractor produced, through the surviving fold primitive.
+    """
+    from drowse.geometry.fold import fold_directions_to_subspace, folded_directions
+
+    device = next(model.parameters()).device
+    prompt = "Describe your current state."
+    pos = _encode_and_capture_all(model, tokenizer, prompt, concept, layers, device)
+    neg = _encode_and_capture_all(model, tokenizer, prompt, "", layers, device)
+    directions = {
+        L: (pos[L].to(torch.float32) - neg[L].to(torch.float32))
+        for L in pos if L in neg
+    }
+    from tests.support.whitener import isotropic_whitener
+    neutral_means = {L: neg[L].to(torch.float32) for L in directions}
+    dim = int(next(iter(directions.values())).numel())
+    mfld = fold_directions_to_subspace(
+        concept, directions, neutral_means,
+        whitener=isotropic_whitener(directions, dim), label="p",
+    )
+    return folded_directions(mfld)
+
+
+@pytest.fixture(scope="module")
+def layer_means(model_and_tokenizer: Any, layers: Any) -> Any:
+    # The probe-centering mean is the per-layer mean of the neutral activation
+    # stack (X.mean(0)) — same corpus, same pooling — so there is no separate
+    # compute_layer_means pass.
+    from drowse.fit.capture import compute_neutral_activations
+    model, tokenizer = model_and_tokenizer
+    acts = compute_neutral_activations(model, tokenizer, layers)
+    return {idx: X.mean(dim=0) for idx, X in acts.items()}
+
+
+@pytest.fixture(scope="module")
+def happy_profile(model_and_tokenizer: Any, layers: Any) -> Any:
+    model, tokenizer = model_and_tokenizer
+    return _extract_profile(model, tokenizer, "happy", layers)
+
+
+def _steer_plan(*pairs: Any) -> Any:
+    """Route baked ``(profile, alpha)`` pairs through the unified backend.
+
+    Every vector lowers to a rank-1 push fragment (unit dir + baked-magnitude
+    coord), all composed into one merged affine subspace via
+    ``synthesize_subspace`` on one ``SteeringPlan`` — the dispatch the session
+    does.
+    Anchored at zero (enough for the smoke "steering changes the output"
+    assertions; the GPU gate owns strength calibration).
+    """
+    from drowse.geometry.inject import synthesize_subspace
+    from drowse.steering.hooks import SteeringPlan
+
+    push: list[Any] = []
+    neutral_means: dict[int, torch.Tensor] = {}
+    for profile, alpha in pairs:
+        basis_dirs: dict[int, torch.Tensor] = {}
+        coord_dirs: dict[int, torch.Tensor] = {}
+        for L, vec in profile.items():
+            v = vec.to(torch.float32).reshape(-1)
+            n = float(v.norm())
+            if n < 1e-12:
+                continue
+            basis_dirs[L] = (v / n).reshape(1, -1)
+            # Follow the profile's device (the loaded steering vectors live on
+            # the model device); a CPU-default coord would mismatch the
+            # on-device basis inside synthesize_subspace (``c_i @ B_i``).
+            coord_dirs[L] = torch.tensor([n], device=v.device)
+            neutral_means.setdefault(L, torch.zeros_like(v))
+        push.append((basis_dirs, coord_dirs, alpha))
+    from tests.support.whitener import isotropic_whitener
+    dim = int(next(iter(neutral_means.values())).numel())
+    synth = synthesize_subspace(
+        push, [], neutral_means=neutral_means,
+        whitener=isotropic_whitener(neutral_means, dim),
+    )
+    plan = SteeringPlan()
+    plan.add_subspace("steer", synth)
+    return plan
+
+
+class TestVectorExtraction:
+    def test_returns_valid_profile(self, happy_profile: Any, model_and_tokenizer: Any) -> None:
+        model, _ = model_and_tokenizer
+        cfg = getattr(model.config, "text_config", None) or model.config
+        hidden_dim = cfg.hidden_size
+        assert isinstance(happy_profile, dict)
+        assert len(happy_profile) > 0
+        for layer_idx, vec in happy_profile.items():
+            assert isinstance(layer_idx, int)
+            assert vec.shape == (hidden_dim,)
+            norm = vec.norm().item()
+            assert norm > 0 and not math.isinf(norm) and not math.isnan(norm)
+
+    def test_extraction_fast_enough(self, model_and_tokenizer: Any, layers: Any) -> None:
+        """Single contrastive extraction should complete within the backend's budget."""
+        model, tokenizer = model_and_tokenizer
+        start = time.perf_counter()
+        _extract_profile(model, tokenizer, "curious", layers)
+        elapsed = time.perf_counter() - start
+        assert elapsed < _EXTRACTION_BUDGET_S, (
+            f"Extraction took {elapsed:.1f}s, expected < {_EXTRACTION_BUDGET_S:.0f}s"
+        )
+
+
+class TestSteering:
+    def test_steered_output_differs(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any) -> None:
+        from drowse.steering.hooks import SteeringManager
+        from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
+
+        model, tokenizer = model_and_tokenizer
+        device = next(model.parameters()).device
+        dtype = next(model.parameters()).dtype
+
+        prompt = "Tell me about your day."
+        input_ids = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            add_generation_prompt=True, return_tensors="pt", return_dict=False,
+        ).to(device)
+
+        config = GenerationConfig(max_new_tokens=20, temperature=0.0)
+
+        # Unsteered
+        state0 = GenerationState()
+        ids0 = generate_steered(model, tokenizer, input_ids.clone(), config, state0)
+
+        # Steered
+        mgr = SteeringManager()
+        mgr.install(_steer_plan((happy_profile, 5.0)), layers, device, dtype)
+
+        state1 = GenerationState()
+        ids1 = generate_steered(model, tokenizer, input_ids.clone(), config, state1)
+
+        mgr.clear_all()
+
+        assert ids0 != ids1, "Steered output should differ from unsteered"
+
+    def test_hook_cleanup(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any) -> None:
+        from drowse.steering.hooks import SteeringManager
+        from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
+
+        model, tokenizer = model_and_tokenizer
+        p = next(model.parameters())
+        device, dtype = p.device, p.dtype
+
+        input_ids = tokenizer.apply_chat_template(
+            # Reuse the steering smoke's calibrated prompt/length.  A ten-token
+            # greedy "Hello" continuation can share its prefix even when the
+            # residual stream moved, which made this cleanup test spuriously
+            # fail before it ever reached the cleanup assertion.
+            [{"role": "user", "content": "Tell me about your day."}],
+            add_generation_prompt=True, return_tensors="pt", return_dict=False,
+        ).to(device)
+        config = GenerationConfig(max_new_tokens=20, temperature=0.0)
+
+        # Unsteered baseline
+        state_b = GenerationState()
+        baseline = generate_steered(model, tokenizer, input_ids.clone(), config, state_b)
+
+        # Steered
+        mgr = SteeringManager()
+        # Use the same deliberately supra-threshold smoke strength as the
+        # preceding steering test.  This assertion is about hook installation
+        # and cleanup, not about calibrating the weakest alpha that changes one
+        # particular greedy continuation.
+        mgr.install(_steer_plan((happy_profile, 5.0)), layers, device, dtype)
+        state_s = GenerationState()
+        steered = generate_steered(model, tokenizer, input_ids.clone(), config, state_s)
+
+        # Cleanup — output should match unsteered baseline
+        mgr.clear_all()
+        state_c = GenerationState()
+        clean = generate_steered(model, tokenizer, input_ids.clone(), config, state_c)
+
+        assert steered != baseline, "Steered output should differ from baseline"
+        assert clean == baseline, "Output after hook cleanup should match unsteered baseline"
+
+
+class TestSaveLoad:
+    def test_roundtrip(self, happy_profile: Any) -> None:
+        from drowse.geometry.profile import load_profile, save_profile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "test_profile.safetensors")
+            # ``profile`` is the current exact-schema method for a standalone
+            # baked direction. Difference-of-means is extraction provenance on
+            # the manifold artifact, not a surviving Profile wire method.
+            save_profile(happy_profile, path, {"method": "profile"})
+            loaded_profile, loaded_meta = load_profile(path)
+
+            assert loaded_meta["method"] == "profile"
+            assert "scores" not in loaded_meta
+            assert set(loaded_profile.keys()) == set(happy_profile.keys())
+            for idx in happy_profile:
+                assert torch.allclose(
+                    happy_profile[idx].cpu(), loaded_profile[idx].cpu(), atol=1e-6
+                )
+
+
+class TestMonitor:
+    def test_monitor_records_history(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any, layer_means: Any) -> None:
+        from drowse.steering.hooks import SteeringManager
+        from drowse.readout.monitor import Monitor
+        from drowse.geometry.fold import fold_directions_to_subspace
+        from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
+        from tests.support.whitener import isotropic_whitener
+
+        model, tokenizer = model_and_tokenizer
+        device = next(model.parameters()).device
+        dtype = next(model.parameters()).dtype
+
+        sad_profile = _extract_profile(model, tokenizer, "sad", layers)
+
+        # Unified Monitor reads probes as folded 1-node rays (the vector-probe
+        # path).  Mahalanobis-only: attach needs a covering whitener — an
+        # isotropic one over the union of both probes' layers suffices for a
+        # records-history smoke check.
+        probe_layers = sorted(set(dict(happy_profile)) | set(dict(sad_profile)))
+        dim = next(iter(dict(happy_profile).values())).shape[0]
+        whit = isotropic_whitener(probe_layers, dim)
+        probe_profiles = {
+            "happy": fold_directions_to_subspace(
+                "happy", dict(happy_profile), dict(layer_means), whitener=whit,
+            ),
+            "sad": fold_directions_to_subspace(
+                "sad", dict(sad_profile), dict(layer_means), whitener=whit,
+            ),
+        }
+        monitor = Monitor(probe_profiles, whitener=whit)
+
+        # Steer toward happy
+        mgr = SteeringManager()
+        # α=0.6 sits mid coherent band (0.4–0.8); α=1 is at the cliff per CLAUDE.md.
+        mgr.install(_steer_plan((happy_profile, 0.6)), layers, device, dtype)
+
+        input_ids = tokenizer.apply_chat_template(
+            [{"role": "user", "content": "How are you feeling?"}],
+            add_generation_prompt=True, return_tensors="pt", return_dict=False,
+        ).to(device)
+        config = GenerationConfig(max_new_tokens=40, temperature=0.7)
+        state = GenerationState()
+        generated_ids = generate_steered(model, tokenizer, input_ids, config, state)
+        mgr.clear_all()
+
+        # Measure on generated text via the surviving hidden-state scoring API.
+        text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+        hidden = _encode_and_capture_all(
+            model, tokenizer, "How are you feeling?", text, layers, device,
+        )
+        readings = monitor.score_single_token(hidden)
+
+        # Structural: the coordinate readings are finite (axis 0 is the
+        # scalar).  The semantic
+        # claim "happy steering → higher happy than sad reading when remeasured
+        # via a fresh forward pass" is noise-dominated at this model scale
+        # (3B-param, 20-token gen) — test_throughput_regression covers whether
+        # steering actually runs.
+        import math
+        for name in ("happy", "sad"):
+            assert math.isfinite(readings[name].coords[0])
+
+    @pytest.mark.perf
+    def test_throughput_regression(self, model_and_tokenizer: Any, layers: Any, happy_profile: Any, layer_means: Any) -> None:
+        """Steered generation should be at least 85% of vanilla throughput."""
+        from drowse.steering.hooks import SteeringManager
+        from drowse.generation.decode import GenerationConfig, GenerationState, generate_steered
+
+        model, tokenizer = model_and_tokenizer
+        device = next(model.parameters()).device
+        dtype = next(model.parameters()).dtype
+
+        input_ids = tokenizer.apply_chat_template(
+            [{"role": "user", "content": "Write a short story."}],
+            add_generation_prompt=True, return_tensors="pt", return_dict=False,
+        ).to(device)
+        config = GenerationConfig(max_new_tokens=100, temperature=0.7)
+
+        # Finish every setup forward before either timed run.  Extracting the
+        # two remaining profiles between vanilla and steered timing heats MPS
+        # and made this ratio depend on test order rather than hook overhead.
+        curious_profile = _extract_profile(model, tokenizer, "curious", layers)
+        concise_profile = _extract_profile(model, tokenizer, "concise", layers)
+
+        def synchronize() -> None:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            elif device.type == "mps":
+                torch.mps.synchronize()
+
+        # Three vectors lower to one merged affine subspace.
+        mgr = SteeringManager()
+        plan = _steer_plan(
+            (happy_profile, 0.8), (curious_profile, 0.5), (concise_profile, 0.3),
+        )
+
+        def timed(steered: bool) -> float:
+            if steered:
+                mgr.install(plan, layers, device, dtype)
+            else:
+                mgr.clear_all()
+            state = GenerationState()
+            synchronize()
+            started = time.perf_counter()
+            ids = generate_steered(
+                model, tokenizer, input_ids.clone(), config, state, seed=0,
+            )
+            synchronize()
+            return len(ids) / max(time.perf_counter() - started, 0.1)
+
+        # MPS throughput drifts materially with command-cache warmup and device
+        # temperature. One vanilla-then-steered pair can report anything from
+        # 64% to >100% for this tiny model even though the hook path is
+        # unchanged. Warm both graph shapes, then balance ordering and compare
+        # medians. The 85% product gate itself remains unchanged.
+        warm_config = GenerationConfig(max_new_tokens=2, temperature=0.7)
+        original_config = config
+        config = warm_config
+        timed(False)
+        timed(True)
+        config = original_config
+        vanilla_samples: list[float] = []
+        steered_samples: list[float] = []
+        for steered in (False, True, True, False, False, True):
+            (steered_samples if steered else vanilla_samples).append(timed(steered))
+
+        vanilla_tps = sorted(vanilla_samples)[1]
+        steered_tps = sorted(steered_samples)[1]
+
+        mgr.clear_all()
+
+        ratio = steered_tps / vanilla_tps
+        assert ratio >= 0.85, (
+            f"Steered throughput ({steered_tps:.1f} tok/s) is only "
+            f"{ratio:.0%} of vanilla ({vanilla_tps:.1f} tok/s), expected >= 85%; "
+            f"vanilla samples={vanilla_samples!r}, steered samples={steered_samples!r}"
+        )
+
+
+class TestBuildChatInput:
+    def test_chat_template_path(self, model_and_tokenizer: Any) -> None:
+        from drowse.generation.decode import build_chat_input
+        _, tokenizer = model_and_tokenizer
+        messages = [{"role": "user", "content": "Hello"}]
+        ids = build_chat_input(tokenizer, messages)
+        assert ids.ndim == 2
+        assert ids.shape[0] == 1
+        assert ids.shape[1] > 0
+
+    def test_with_system_prompt(self, model_and_tokenizer: Any) -> None:
+        from drowse.generation.decode import build_chat_input
+        _, tokenizer = model_and_tokenizer
+        messages = [{"role": "user", "content": "Hello"}]
+        ids_no_sys = build_chat_input(tokenizer, messages)
+        ids_sys = build_chat_input(tokenizer, messages, system_prompt="You are helpful.")
+        # Some instruction tokenizers supply a longer default system message,
+        # so an explicit replacement can be shorter while still being applied.
+        assert not torch.equal(ids_sys, ids_no_sys)
+
+
+class TestAblationPerformance:
+    """Combined ablation + additive throughput must stay >= 80% of vanilla.
+
+    Slightly looser than the steered-only 85% bar because the hot path
+    does one extra matmul per active ablation layer per step. Intentional.
+    """
+
+    @pytest.mark.perf
+    def test_throughput_with_ablation(
+        self, model_and_tokenizer: Any, layers: Any, layer_means: Any,
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from drowse.generation.sampling import SamplingConfig
+        from drowse.session.session import DrowseSession
+
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+        model, tokenizer = model_and_tokenizer
+        session = DrowseSession(model, tokenizer, probes=["register"])
+
+        try:
+            prompt = "Write a 200-word essay on the history of bicycles."
+            sampling = SamplingConfig(
+                max_tokens=128, temperature=0.0, seed=0,
+            )
+
+            def synchronize() -> None:
+                if session.device.type == "cuda":
+                    torch.cuda.synchronize(session.device)
+                elif session.device.type == "mps":
+                    torch.mps.synchronize()
+
+            # Pay one-time tokenizer, scene-template, and backend warmup before
+            # either timed path. Both measurements then run the same fixed
+            # decode budget; comparing a 510-token EOS completion with a
+            # 1,024-token length completion mostly measures the latter's longer
+            # KV-cache horizon, not steering overhead.
+            session.generate(
+                prompt,
+                sampling=SamplingConfig(max_tokens=1, temperature=0.0, seed=0),
+                stateless=True,
+            )
+
+            # Vanilla baseline.
+            synchronize()
+            t0 = time.perf_counter()
+            # Keep the two measurements on identical prompt state.  Without
+            # stateless mode the second call includes the first call's entire
+            # essay in its prefill, so the old test mostly measured a much
+            # longer conversation rather than steering overhead.
+            r_vanilla = session.generate(
+                prompt, sampling=sampling, stateless=True,
+            ).first
+            synchronize()
+            dt_vanilla = max(time.perf_counter() - t0, 0.1)
+            tok_s_vanilla = max(len(r_vanilla.tokens) / dt_vanilla, 1e-6)
+
+            # Pick two probes from the auto-loaded set: one for additive, one for ablation.
+            probes = list(session.probes)
+            assert len(probes) >= 2, "need at least two probes for this test"
+            additive_name, ablation_name = probes[0], probes[1]
+
+            expr = f"0.3 {additive_name} + !{ablation_name}"
+            with session.steering(expr):
+                # Hook composition is a cold setup cost, not per-token hot-path
+                # throughput. Time the same fixed decode only after the scope is
+                # installed.
+                synchronize()
+                t0 = time.perf_counter()
+                r_combined = session.generate(
+                    prompt, sampling=sampling, stateless=True,
+                ).first
+                synchronize()
+                dt_combined = max(time.perf_counter() - t0, 0.1)
+            tok_s_combined = max(len(r_combined.tokens) / dt_combined, 1e-6)
+
+            ratio = tok_s_combined / tok_s_vanilla
+            assert ratio >= 0.80, (
+                f"combined ablation + additive too slow: "
+                f"{ratio:.2%} of vanilla (vanilla={tok_s_vanilla:.1f} tok/s, "
+                f"combined={tok_s_combined:.1f} tok/s; "
+                f"tokens={len(r_vanilla.tokens)}/{len(r_combined.tokens)}, "
+                f"seconds={dt_vanilla:.2f}/{dt_combined:.2f})"
+            )
+        finally:
+            session.close()
+
+
+class TestDiscoverManifoldEndToEnd:
+    """End-to-end discover-mode fit on a real model.
+
+    Exercises the integration path the unit-test suite skips: the LLM-side
+    K-tuple generator, the per-node centroid forward pass, the per-model
+    PCA + RBF fit, and the steered-generation hook at a manifold position.
+    Held to a tight time budget (corpus generation is the slow part — 1
+    scenario call + N_concepts × N_scenarios statement calls — so 5
+    concepts × 2 scenarios × 3 statements stays under ~6× the existing
+    extraction budget).
+
+    Asserts the structural invariants only: the fit produces a
+    ``CustomDomain(k)``, every node lands at distinct derived coords, and
+    a soft subspace-replace at one node's centroid produces *different*
+    text from a steered call at a different node's centroid.  Going
+    deeper (e.g. probe-score asymmetry between opposite node positions)
+    requires the manifold to encode a probe-aligned axis, which depends
+    on which concept heap the generator produces — too fragile for a
+    smoke test, properly the job of the naturalness eval.
+    """
+
+    _CONCEPTS = ["pirate", "scholar", "robot", "caveman", "assistant"]
+    _SAMPLES_PER_PROMPT = 1
+    # A2 conversational extraction: each concept answers every shared baseline
+    # prompt in character, so one corpus = samples_per_prompt × len(baseline
+    # prompts) responses (64 prompts bundled).  Generation is the dominant
+    # cost; the budget scales with the concept × prompt turn count.
+    _GENERATE_BUDGET_S = _EXTRACTION_BUDGET_S * 6
+    _FIT_BUDGET_S = _EXTRACTION_BUDGET_S * 2
+
+    def test_discover_pipeline(self, model_and_tokenizer: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from drowse.geometry.domains import CustomDomain
+        from drowse.session.session import DrowseSession
+        from drowse.store.manifold_authoring import create_discover_manifold_folder
+
+        # Pin DROWSE_HOME to a per-test temp dir so the manifold folder
+        # lands somewhere disposable; bundled neutrals still copy in
+        # fresh on first session init.
+        monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
+
+        model, tokenizer = model_and_tokenizer
+        # probes=[] — the smoke test doesn't need probe scoring and
+        # skipping bootstrap shaves seconds off the discover gate.
+        session = DrowseSession(model, tokenizer, probes=[])
+        try:
+            # ---- 1. generate per-concept corpora (A2 conversational) ----
+            from drowse.fit.capture import _load_baseline_prompts
+            n_prompts = len(_load_baseline_prompts())
+            t0 = time.perf_counter()
+            corpora = session.generate_responses(
+                self._CONCEPTS,
+                [None] * len(self._CONCEPTS),
+                samples_per_prompt=self._SAMPLES_PER_PROMPT,
+            )
+            dt_gen = time.perf_counter() - t0
+            assert dt_gen < self._GENERATE_BUDGET_S, (
+                f"generate_responses took {dt_gen:.1f}s, "
+                f"budget {self._GENERATE_BUDGET_S:.1f}s"
+            )
+            assert set(corpora.keys()) == set(self._CONCEPTS)
+            expected_per_concept = self._SAMPLES_PER_PROMPT * n_prompts
+            for c, lines in corpora.items():
+                assert len(lines) == expected_per_concept, (
+                    f"corpus for {c!r}: {len(lines)} responses, "
+                    f"expected {expected_per_concept}"
+                )
+                # Length must be a multiple of the baseline-prompt count
+                # (response[i] ↔ baseline_prompt[i % k]).
+                assert len(lines) % n_prompts == 0
+
+            # ---- 2. author the discover folder ----
+            folder = create_discover_manifold_folder(
+                "local", "smoke_personas", "smoke-test discover",
+                fit_mode="pca",
+                node_corpora=corpora,
+                hyperparams={"max_dim": 2, "var_threshold": 0.70},
+            )
+
+            # ---- 3. fit through the session pipeline ----
+            t0 = time.perf_counter()
+            manifold = session.fit(folder)
+            dt_fit = time.perf_counter() - t0
+            assert dt_fit < self._FIT_BUDGET_S, (
+                f"session.fit took {dt_fit:.1f}s, "
+                f"budget {self._FIT_BUDGET_S:.1f}s"
+            )
+
+            # Discover-mode shape invariants.
+            assert isinstance(manifold.domain, CustomDomain)
+            k = manifold.domain.intrinsic_dim
+            assert 1 <= k <= 2
+            assert manifold.node_coords.shape == (
+                len(self._CONCEPTS), k,
+            )
+            # Derived coords must distinguish nodes — every pair distinct
+            # by at least a small floor, else the fit collapsed.
+            from itertools import combinations
+            for i, j in combinations(range(len(self._CONCEPTS)), 2):
+                dist = (
+                    manifold.node_coords[i] - manifold.node_coords[j]
+                ).norm().item()
+                assert dist > 1e-3, (
+                    f"derived coords for nodes {i} and {j} are "
+                    f"degenerate (dist={dist:.2e}) — fit collapsed"
+                )
+
+            # ---- 4. steered generation at one node vs another ----
+            # The manifold loads into the session registry lazily on
+            # scope entry; ManifoldTerm carries the authoring position.
+            label_a = manifold.node_labels[0]  # pirate
+            label_b = manifold.node_labels[2]  # robot
+            pos_a = ",".join(
+                f"{float(c):.4f}" for c in manifold.node_coords[0]
+            )
+            pos_b = ",".join(
+                f"{float(c):.4f}" for c in manifold.node_coords[2]
+            )
+            prompt = "Describe what you see in this room."
+
+            from drowse.generation.sampling import SamplingConfig
+            sampling = SamplingConfig(
+                temperature=0.0, max_tokens=48, seed=0,
+            )
+            with session.steering(
+                f"1.0 local/smoke_personas%{pos_a}@response",
+            ):
+                r_a = session.generate(prompt, sampling=sampling).first
+            with session.steering(
+                f"1.0 local/smoke_personas%{pos_b}@response",
+            ):
+                r_b = session.generate(prompt, sampling=sampling).first
+            assert r_a.text != r_b.text, (
+                f"steering at node {label_a!r} produced identical text "
+                f"to node {label_b!r} — the manifold hook isn't moving "
+                f"activations"
+            )
+        finally:
+            session.close()

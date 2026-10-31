@@ -53,7 +53,32 @@ try {
   client.events.close();
   currentSocket.finishClose();
   assert.deepEqual(states.at(-1), { state: "closed", expected: true, reason: null });
-  console.log("HTTP runtime lifecycle: closed and replaced socket events are ignored; active messages and expected shutdown are preserved");
+  // Every SSE operation goes through one POST/stream/done helper.
+  const { apiManifoldFitStream, apiExtractStream } = await server.ssrLoadModule("/src/lib/api.ts");
+  const previousFetch = globalThis.fetch;
+  const posted = [];
+  const sse = frames => new Response(new ReadableStream({ start(controller) {
+    for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame));
+    controller.close();
+  } }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  try {
+    globalThis.fetch = async (path, init) => {
+      posted.push({ path, body: JSON.parse(init.body), request: init.headers["X-Drowse-Request-Id"] });
+      return path.endsWith("/extract")
+        ? sse(['event: done\ndata: {"canonical":"calm"}\n\n'])
+        : sse(['event: progress\ndata: {"stage":"capture"}\n\n', 'event: done\ndata: {"name":"m","layers_fitted":3}\n\n']);
+    };
+    const seen = [];
+    const fitted = await apiManifoldFitStream("local", "m", { sae: null }, event => seen.push(event.event), "op-1");
+    assert.deepEqual(seen, ["progress", "done"]);
+    assert.equal(fitted.layers_fitted, 3);
+    assert.deepEqual(posted[0], { path: "/drowse/v1/manifolds/local/m/fit", body: { sae: null }, request: "op-1" });
+    await assert.rejects(apiExtractStream({ concept: "calm" }, () => {}), /extract: stream ended without done event/,
+      "an incomplete done payload is not a result");
+    globalThis.fetch = async () => sse(['event: error\ndata: {"message":"not poised","code":"PoisednessError","status":422}\n\n']);
+    await assert.rejects(apiManifoldFitStream("local", "m", {}, () => {}), error => error.status === 422 && /not poised/.test(error.message));
+  } finally { globalThis.fetch = previousFetch; }
+  console.log("HTTP runtime lifecycle: closed and replaced socket events are ignored; active messages and expected shutdown are preserved; SSE operations stream, resolve, and fail through one path");
 } finally {
   globalThis.WebSocket = previousSocket;
   globalThis.location = previousLocation;

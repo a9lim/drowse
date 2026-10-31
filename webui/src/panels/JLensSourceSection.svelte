@@ -39,7 +39,8 @@
   ] : []);
   let fitPrompts = $state(100);
   let fitLayers = $state("all");
-  let fitRelp = $state(true);
+  // The estimator: r = RelP R-lens (local:r), j = standard J-lens (local:j).
+  let fitKind = $state<"r" | "j">("r");
   let fitConfirm = $state(false);
   let selectedSource = $state("");
   const fitReady = $derived(
@@ -60,7 +61,7 @@
     void lensFit.start({
       prompts: fitPrompts,
       layers: fitLayers.trim(),
-      relp: fitRelp,
+      kind: fitKind,
     });
   }
 
@@ -123,11 +124,11 @@
       <button
         type="button"
         class="add-input relp-toggle"
-        class:relp-on={fitRelp}
-        onclick={() => (fitRelp = !fitRelp)}
-        aria-pressed={fitRelp}
-        {...{ "aria-description": "RelP (default) · saves as local:relp" }}
-      >{fitRelp ? "relp (R-lens)" : "standard"}</button>
+        class:relp-on={fitKind === "r"}
+        onclick={() => (fitKind = fitKind === "r" ? "j" : "r")}
+        aria-pressed={fitKind === "r"}
+        {...{ "aria-description": "r: RelP R-lens (default, local:r) · j: standard J-lens (local:j)" }}
+      >{fitKind === "r" ? "r (RelP R-lens)" : "j (standard J-lens)"}</button>
     </label>
   {/snippet}
   {#snippet progress()}

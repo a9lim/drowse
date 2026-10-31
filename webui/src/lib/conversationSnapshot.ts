@@ -68,9 +68,11 @@ export interface ConversationImportPlan {
   probeRows: Map<string, ConversationProbeRow>;
 }
 
-const TRIGGERS = new Set<Trigger>([
-  "BOTH", "BEFORE", "AFTER", "THINKING", "RESPONSE", "PROMPT", "GENERATED",
-]);
+const TRIGGERS = new Set<Trigger>(["BOTH", "BEFORE", "AFTER", "THINKING", "RESPONSE"]);
+// Racks saved while the pill still cycled through the grammar aliases may
+// carry these; they mean exactly the canonical preset and are rewritten on
+// import.
+const STORED_TRIGGER_ALIASES: Partial<Record<string, Trigger>> = { PROMPT: "BEFORE", GENERATED: "RESPONSE" };
 const VARIANT = /^(?:raw|sae(?:-.+)?|role(?:-.+)?|from(?:-.+)?)$/u;
 
 export function isConversationSnapshot(
@@ -136,7 +138,8 @@ export function validateConversationSnapshot(
     const name = nonempty(row.name, "steering row name");
     if (steerNames.has(name)) invalid(`duplicate steering row ${name}`);
     steerNames.add(name);
-    if (!TRIGGERS.has(row.trigger as Trigger) || typeof row.enabled !== "boolean") {
+    const trigger = String(row.trigger);
+    if ((!TRIGGERS.has(trigger as Trigger) && !STORED_TRIGGER_ALIASES[trigger]) || typeof row.enabled !== "boolean") {
       invalid(`steering row ${name}`);
     }
     if (row.mode === "jlens" || row.mode === "sae") {
@@ -223,6 +226,7 @@ export function buildConversationImportPlan(
   const steerEntries = new Map<string, SteerEntry>();
   for (const { name, ...entry } of snapshot.steerRack) {
     const cloned = structuredClone(entry) as SteerEntry;
+    cloned.trigger = STORED_TRIGGER_ALIASES[cloned.trigger] ?? cloned.trigger;
     if (cloned.mode === "subspace" || cloned.mode === "jlens" || cloned.mode === "sae") {
       cloned.ablate = cloned.ablate === true;
     }

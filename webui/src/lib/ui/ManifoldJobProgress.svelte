@@ -5,6 +5,7 @@
   import { pushToast } from "../stores/toasts.svelte";
   import { describeError } from "../runtime/errors";
   import { steerRack } from "../stores/steering.svelte";
+  import { steeringDrawerFor } from "../manifolds/fitKind";
   import Button from "./Button.svelte";
 
   let { compact = false }: { compact?: boolean } = $props();
@@ -39,9 +40,7 @@
   function openResult(): void {
     if (!job) return;
     if (job.phase === "scoring") { openDrawer("template_lab"); return; }
-    const item = steerRack.catalog.find(row => row.namespace === job.namespace && row.name === job.name);
-    const fit = item?.resolved_fit_mode ?? item?.fit_mode;
-    openDrawer(fit === "spectral" || fit === "authored" ? "manifolds" : "subspace");
+    openDrawer(steeringDrawerFor(steerRack.catalog.find(row => row.namespace === job.namespace && row.name === job.name)));
   }
 </script>
 

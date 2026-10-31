@@ -20,12 +20,6 @@ export const SURPRISE_TARGET = "__surprise__";
 export const PROBABILITY_TARGET = "__probability__";
 export const ENTROPY_TARGET = "__entropy__";
 
-export function isBuiltInHighlightTarget(target: string | null): boolean {
-  return target === SURPRISE_TARGET ||
-    target === PROBABILITY_TARGET ||
-    target === ENTROPY_TARGET;
-}
-
 /** Split a highlight target into its base probe name and coordinate axis.
  *  ``"personas[3]"`` → ``{base: "personas", axis: 3}``; a bare name → axis 0.
  *  Mirrors the ``<probe>[<i>]`` gate-channel grammar ``Monitor.flat_scalars``
@@ -228,23 +222,6 @@ export function twoBlendStyle(
   return {
     backgroundImage: `linear-gradient(to bottom, ${top}, ${bot})`,
   };
-}
-
-/** Build the hover-tooltip text for a token.  ``scores`` is the full
- * per-probe score row for one token — sorted by absolute value so the
- * strongest signals lead the tooltip.  Strings render as
- * ``probe_name +0.42`` one per line. */
-export function formatScoreTooltip(scores: Record<string, number>): string {
-  const entries = Object.entries(scores).filter(
-    ([, v]) => Number.isFinite(v),
-  );
-  entries.sort(([, a], [, b]) => Math.abs(b) - Math.abs(a));
-  return entries
-    .map(([name, v]) => {
-      const sign = v >= 0 ? "+" : "";
-      return `${name} ${sign}${v.toFixed(3)}`;
-    })
-    .join("\n");
 }
 
 /** Combine the ramp helpers above into one per-token style spec the

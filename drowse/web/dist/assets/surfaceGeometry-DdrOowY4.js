@@ -1,0 +1,1 @@
+function e(e){return e.type===`klein`?`Klein bottle · two angles in radians. Crossing the u seam reverses v; these are coordinates, not a flat surface.`:e.type===`projective`?`Real projective plane (RP²) · polar and azimuth angles in radians. Opposite points on the sphere represent the same position.`:null}export{e as t};

@@ -1,11 +1,12 @@
 """Mount the pre-built Svelte+Vite bundle from ``drowse/web/dist/``.
 
 The bundle is a single-page app — every unknown route falls back to
-``index.html`` so client-side routing works.  Vite emits the bundle
-under fixed filenames (``assets/drowse.js`` / ``assets/index.css``),
-not content-hashed ones, so ``/assets/*`` is served by ``StaticFiles``
-with its default ETag / Last-Modified revalidation — do not layer an
-immutable long-lived cache on top, a rebuild reuses the same names.
+``index.html`` so client-side routing works.  The shell is public: it holds
+no data, and the API key is entered client-side and rides each API call
+(only the API prefixes authenticate).  The entry chunks keep fixed names
+(``assets/drowse.js``, ``assets/App.css``) while split chunks are
+content-hashed, so ``/assets/*`` is served by ``StaticFiles`` with its
+default ETag / Last-Modified revalidation.
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from drowse.core.errors import DrowseError
+from drowse.errors import DrowseError
 
 
 class WebUINotBuilt(RuntimeError, DrowseError):
@@ -67,7 +68,7 @@ def register_web_routes(app: FastAPI) -> None:
 
     # Mount public asset directories on StaticFiles; fall back to index.html
     # for any other path so client-side routing in the SPA works.
-    for directory in ("assets", "icons", "social"):
+    for directory in ("assets", "icons"):
         static_dir = dist / directory
         if static_dir.is_dir():
             app.mount(
@@ -102,11 +103,7 @@ def register_web_routes(app: FastAPI) -> None:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def _spa_fallback(full_path: str) -> FileResponse:
-        # Never turn a removed native route into a successful SPA response.
-        # The style guide is an internal development artifact, not a public
-        # dashboard page; its old route and descendants stay unavailable too.
-        if full_path == "styleguide" or full_path.startswith("styleguide/"):
-            raise HTTPException(404, "not found")
+        # An unknown API path is a 404, never the dashboard shell.
         if (
             full_path in {"api", "v1", "drowse"}
             or full_path.startswith(("api/", "v1/", "drowse/"))

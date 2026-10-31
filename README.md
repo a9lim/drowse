@@ -13,8 +13,7 @@ with both OpenAI and Ollama.
 ## Quick start
 
 The PyPI distribution name is `drowse.ai`; the Python import and CLI are
-`drowse`. Releases through 5.3.0 were published as `saklas`, and drowse still
-reads an existing `~/.saklas`.
+`drowse`.
 
 ```bash
 pip install drowse.ai
@@ -139,11 +138,11 @@ across Python, YAML, OpenAI, Ollama, or the native API.
 ```text
 0.3 honest + 0.4 warm
 0.5 formal - 0.2 verbose
-0.3 honest|sycophantic
-0.3 honest~confident
-!sycophantic
+0.3 honest.deceptive|sycophantic.blunt
+0.3 honest.deceptive~confident.uncertain
+!sycophantic.blunt
 0.5 personas%pirate
-0.7,0.4 months%january@response
+0.7,0.4 months%january@after
 0.4 warm@when:confident.uncertain>0.4
 0.3 jlens/orange + 0.2 sae/9143
 ```
@@ -152,17 +151,29 @@ across Python, YAML, OpenAI, Ollama, or the native API.
 |---|---|
 | `+`, `-` | Add or subtract terms |
 | leading number | Steering coefficient; omitted terms default to `0.5` |
-| `~` | Keep the component shared with another direction |
-| `\|` | Remove the component shared with another direction |
-| `!` | Mean-ablate a direction |
+| `~` | Keep the component shared with another direction (Mahalanobis) |
+| `\|` | Remove the component shared with another direction (Mahalanobis) |
+| `!` | Mean-ablate a direction; a bare `!x` ablates fully |
 | `%label` or `%x,y,…` | Choose a named node or coordinates on a manifold |
-| `@response`, `@prompt`, `@thinking`, … | Restrict the token phase where a term applies |
+| `@prompt`, `@response`, `@after`, `@thinking`, … | Restrict the token phase where a term applies |
 | `@first:N`, `@after:N` | Restrict a term to a counted decode window |
 | `@when:<probe><op><value>` | Apply a term only while a live probe gate is true |
+| `jlens/<word>`, `jlens/#<id>`, `sae/<id>` | Steer along a J-lens token direction or an SAE decoder row |
+
+A bare pole or node label such as `honest` or `pirate` resolves to its concept
+or manifold; an ambiguous name raises instead of guessing. The operands of `~`,
+`|` and `!` must reduce to one direction: a whole two-pole concept
+(`sycophantic.blunt`, not `sycophantic`), an extracted vector, or a
+`jlens/`/`sae/` atom. `@response` covers every generated token, thinking
+included; `@after` applies only after the thinking block closes. A gate names
+an attached probe, so `confident.uncertain` above reads the bundled probe. The
+larger sets (`personas`, `emotions`, `months`) steer once they are fitted for
+the model.
 
 Manifold coefficients use two coordinates: `along` and `onto`. `along` controls
 movement within the manifold toward the target; `onto` reduces the off-surface
-component inside the manifold's fitted tube.
+component inside the manifold's fitted tube. For a flat subspace, aim for a
+coefficient near `0.5` and raise it toward `1.0` for stronger expression.
 
 ## How Drowse works
 
@@ -205,24 +216,25 @@ smaller models and non-GPU workflows.
 pip install drowse.ai
 ```
 
-The base package includes the HTTP server, the prebuilt Svelte WebUI, and SAELens.
+The base package includes the HTTP server and the prebuilt Svelte WebUI.
 Optional extras add specialized workflows:
 
 | Extra | Adds |
 |---|---|
 | `flash` | FlashAttention 2 for supported NVIDIA CUDA models; stable and tested |
 | `cuda` | `bitsandbytes` quantization and Hugging Face `kernels` acceleration |
+| `sae` | SAELens 6.x, for published SAE releases (`sae fetch`); local SAEs need no extra |
 | `hf` | `datasets` for streamed J-LENS and SAE corpora |
 | `gguf` | GGUF import/export support |
 | `research` | `datasets`, NumPy, SciPy, scikit-learn, pandas, Matplotlib, and image helpers |
 | `notebook` | Plotly, pandas, and Kaleido notebook helpers |
-| `pandas` | pandas-only dataframe export helpers |
 | `dev` | Test, lint, type-check, and build tooling |
 
 Extras can be combined:
 
 ```bash
 pip install "drowse.ai[cuda,flash]"     # full tested NVIDIA path
+pip install "drowse.ai[sae,hf]"         # SAELens sources and streamed corpora
 pip install "drowse.ai[hf,research]"    # dataset-backed research workflows
 pip install "drowse.ai[notebook]"       # interactive figures
 ```
@@ -257,11 +269,13 @@ Common options:
 | `-H`, `--host` | `127.0.0.1` | Bind address; non-loopback requires an API key |
 | `-P`, `--port` | `8000` | Bind port |
 | `-S`, `--steer` | none | Default steering expression |
+| `-C`, `--cors` | none | Allowed CORS origin; repeatable |
 | `--top-k-alts` | `0` | Alternative tokens captured at each decode step |
 | `--compile` | off | Opt into `torch.compile` after Drowse probes the path |
 | `--cuda-graphs` | off | Pair static cache and CUDA graph capture with `--compile` |
 | `-k`, `--api-key` | none | Require bearer authentication; also reads `$DROWSE_API_KEY` |
 | `--no-web` | off | Run the APIs without mounting the dashboard |
+| `-c`, `--config` | none | Setup YAML; repeatable, later files win |
 
 `serve` and every subcommand that accepts `-c/--config` read
 `~/.drowse/config.yaml` first and then compose any explicit `-c PATH` files on top.
@@ -276,8 +290,10 @@ max_tokens: 512
 return_top_k: 8
 ```
 
-Inspect the resolved configuration with `drowse config show` and validate a file
-with `drowse config validate path.yaml`.
+Command-line flags override YAML, and `vectors:` sets the server's default
+steering only; the `experiment` verbs use exactly their own `-S`. Inspect the
+resolved configuration with `drowse config show` and validate a file with
+`drowse config validate path.yaml`.
 
 ## Command-line artifact workflows
 
@@ -314,9 +330,12 @@ drowse pack push local/patient.impatient -a OWNER/REPO -m google/gemma-3-4b-it
 drowse pack export archive local/patient.impatient -o patient.drowse
 drowse pack install patient.drowse
 
-# Fetch a provider J-LENS or fit a local R-lens (RelP is the fit default)
+# Fetch a provider J-LENS (Neuronpedia by default), or fit a local one:
+# --kind r (the default) is the RelP R-lens at local:r, --kind j the standard
+# J-lens at local:j
 drowse lens fetch google/gemma-3-4b-it
 drowse lens fit org/model --prompts 100
+drowse lens fit org/model --kind j --layers workspace
 # Or on another commit-pinned Hub dataset (a shuffled one grows by nested samples)
 drowse lens fit org/model --hf-corpus HuggingFaceFW/dclm_100BT-shuffled --prompts 1000
 # A bilingual mix: 3 English documents per Chinese one, the Chinese side spread
@@ -324,15 +343,18 @@ drowse lens fit org/model --hf-corpus HuggingFaceFW/dclm_100BT-shuffled --prompt
 drowse lens fit org/model --prompts 1000 \
   --hf-corpus HuggingFaceFW/dclm_100BT-shuffled,weight=3 \
   --hf-corpus HuggingFaceFW/fineweb-2:cmn_Hani,files=64
-# Use --standard when you specifically want local:default instead
+# Pick which lens the session reads
+drowse lens use org/model local:r
 
-# Fetch an SAE or train a local source
+# Fetch an SAE (needs the [sae] extra) or train a local source
 drowse sae fetch google/gemma-3-4b-it saelens:gemma-scope-2-4b-it-res
 drowse sae train org/model my-sae --layer 20 --tokens 1000000
 ```
 
-Run `drowse <verb> -h` and `drowse <verb> <subcommand> -h` for the complete flag
-surface.
+Lens fits are resumable: an interrupted fit checkpoints and continues, and an
+exact repeat is recognized without loading the model. `--layers workspace`
+(the 40–90% depth band) is the main lever on fit time. Run `drowse <verb> -h`
+and `drowse <verb> <subcommand> -h` for the complete flag surface.
 
 ## HTTP APIs
 
@@ -405,7 +427,8 @@ with DrowseSession.from_pretrained(
     print(result.probe_readings[name].coords)
 ```
 
-`generate` and `generate_stream` accept the same steering expression as the WebUI.
+`generate` and `generate_stream` accept the same steering expression as the WebUI;
+`session.steering(expr)` applies one to every generation inside a `with` block.
 Generation returns a list-like `RunSet`; `.first` is convenient for a single
 completion. `GenerationResult` carries text, token IDs, throughput and timing,
 finish reason, the canonical applied expression, captured log probabilities,
@@ -426,8 +449,9 @@ sweep = session.generate_sweep(
 )
 ```
 
-Restricted-choice scoring evaluates a candidate distribution directly under the
-model, optionally with steering:
+Restricted-choice scoring reads the model's raw probability distribution over a
+set of candidate completions, optionally under steering, so you can see whether
+steering moved the distribution and not just the top choice:
 
 ```python
 scores = session.score_choices(
@@ -437,28 +461,33 @@ scores = session.score_choices(
 )
 ```
 
+The three read families are available as `session.geometry`, `session.lens`
+and `session.sae`; `session.add_probe` attaches a concept, a `jlens/<word>`
+token probe, or an `sae/<id>` feature to the right one.
+
 Notebook helpers are available from `drowse.notebook` after installing
-`drowse[notebook]`: `plot_alpha_sweep`, `plot_probe_correlation`,
+`drowse.ai[notebook]`: `plot_alpha_sweep`, `plot_probe_correlation`,
 `plot_layer_norms`, `plot_trait_history`, and `to_dataframe`.
 
 ## Model support
 
 Drowse has end-to-end tested paths for:
 
-- Qwen 2, Qwen 3, and Qwen 3.5, including supported text and MoE variants;
+- Qwen 2, Qwen 3, and Qwen 3.5, including its text and MoE variants;
 - Gemma 2, Gemma 3, and Gemma 4, including text-only extraction from supported
   multimodal checkpoints;
 - Mistral 3 and Ministral 3;
 - Llama, GLM, gpt-oss, and Talkie.
 
-Additional architectures are wired through the generic residual-layer interface,
-including Mixtral, Phi, Cohere, DeepSeek, OLMo, Granite, Nemotron, GPT-2-family,
-Falcon, MPT, DBRX, OPT, and others. Drowse emits a warning when an architecture is
-wired but has not been exercised end to end.
+Other decoder-only models load when their transformer blocks sit at a standard
+Transformers location, which covers most families (Mixtral, Phi, Cohere,
+DeepSeek, OLMo, Granite, GPT-2, Falcon, MPT, OPT, and others). Drowse warns once
+when an architecture has not been exercised end to end.
 
 CUDA and Apple Silicon MPS both have real-model smoke coverage. Model-specific
-features still depend on the checkpoint: chat/role experiments require a compatible
-chat template, official SAE and J-LENS sources cover only some models, and
+features still depend on the checkpoint: role-augmented extraction and persona
+regeneration need a chat template with a substitutable assistant label (Mistral's
+does not have one), official SAE and J-LENS sources cover only some models, and
 FlashAttention depends on the model's Transformers attention implementation.
 
 ## State and distribution
@@ -478,16 +507,22 @@ It never contains model weights, J-lenses, or SAEs. A fitted two-node PCA manifo
 can instead be exported as a llama.cpp control-vector GGUF with
 `drowse pack export gguf`.
 
-The drowse.ai browser edition discovers only Hugging Face repositories tagged
-`drowse-manifold` that publish exactly one `.drowse` at the repository root
-and a root `manifold.json` summary. The browser resolves the repository to an
-immutable 40-character commit, streams the archive into browser-local storage,
-and verifies that its declared repository and revision match before installing
-it. Python installations continue to support the legacy folder layout.
+A Hugging Face pack is a model repository tagged `drowse-manifold` that holds
+exactly one `.drowse` at its root, a root `manifold.json` summary, and a model
+card; `drowse pack push` writes that layout, and both drowse and the drowse.ai
+browser edition install from it. An install pins the repository to an immutable
+commit and records that commit as the manifold's source; the browser also checks
+that the archive's declared repository and revision match it.
 
 Treat model repositories and downloaded artifacts as executable or otherwise
 untrusted input. Drowse validates archive paths, declared structure, tensor
 headers, and hashes, but integrity is not publisher identity.
+
+Drowse reads only its current artifact formats and does not migrate older ones.
+Releases through 5.3.0 were published as `saklas`, and drowse does not read a
+`~/.saklas` directory. J-LENS artifacts fitted or fetched before 5.4 must be
+converted once from a source checkout with
+`python scripts/migrate_lens_v7.py --home ~/.drowse` (try `--dry-run` first).
 
 ## Development
 
@@ -496,8 +531,9 @@ pip install -e ".[dev]"
 
 ruff check .
 pyright
-pytest -q -m "not gpu"
-pytest -q tests/
+pytest -q -m "not gpu"              # the CI suite
+pytest -q -n auto -m "not perf"     # everything this machine can run
+pytest -m perf -p no:xdist          # throughput gates, serially
 python -m build
 ```
 
@@ -505,8 +541,8 @@ GPU integration tests download the public SmolLM2-360M-Instruct weights by
 default. Set `DROWSE_TEST_MODEL` to exercise another compatible model:
 
 ```bash
-pytest -q tests/test_smoke.py
-DROWSE_TEST_MODEL=google/gemma-3-4b-it pytest -q tests/test_smoke.py
+pytest -q tests/gpu/test_smoke.py
+DROWSE_TEST_MODEL=google/gemma-3-4b-it pytest -q tests/gpu/test_smoke.py
 ```
 
 The WebUI is a Svelte 5 + Vite application in `webui/`. Its compiled bundle under

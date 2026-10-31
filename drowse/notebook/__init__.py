@@ -6,7 +6,7 @@ existing structured types (``Profile``, ``RunSet``, ``ResultCollector``,
 HTML reports, and PNG export via kaleido.
 
 Imports of plotly / pandas are gated behind each public function — calling
-into the module without ``drowse[notebook]`` installed raises
+into the module without ``drowse.ai[notebook]`` installed raises
 :class:`NotebookExtraNotInstalled` with the install hint.
 
 Public surface:

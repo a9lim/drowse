@@ -124,10 +124,8 @@ try {
 
   const pythonSnapshot = structuredClone(snapshot);
   pythonSnapshot.tree = JSON.parse(readFileSync(new URL(
-    "../../tests/fixtures/saklas_v5_3/legacy_tree.json", import.meta.url,
+    "../../tests/fixtures/loom_tree_v2.json", import.meta.url,
   ), "utf8"));
-  pythonSnapshot.tree.drowse_version = pythonSnapshot.tree.saklas_version;
-  delete pythonSnapshot.tree.saklas_version;
   pythonSnapshot.tree.model_id = pythonSnapshot.model_id;
   assert.equal(pythonSnapshot.tree.session_id, null);
   assert.equal(isConversationSnapshot(pythonSnapshot, Object.keys(samplingState)), true);
@@ -164,6 +162,17 @@ try {
   assert.equal(legacyPlan.steerEntries.get("local/calm").ablate, false);
   assert.equal(legacyPlan.steerEntries.get("jlens/fixture").ablate, false);
   assert.equal(legacyPlan.steerEntries.get("sae/17").ablate, false);
+
+  const aliasTriggers = structuredClone(snapshot);
+  aliasTriggers.steerRack[0].trigger = "PROMPT";
+  aliasTriggers.steerRack[3].trigger = "GENERATED";
+  assert.equal(isConversationSnapshot(aliasTriggers, Object.keys(samplingState)), true);
+  const aliasPlan = buildConversationImportPlan(aliasTriggers);
+  assert.equal(aliasPlan.steerEntries.get("local/calm").trigger, "BEFORE");
+  assert.equal(aliasPlan.steerEntries.get("local/emotions").trigger, "RESPONSE");
+  const unknownTrigger = structuredClone(snapshot);
+  unknownTrigger.steerRack[0].trigger = "SOMETIMES";
+  assert.equal(isConversationSnapshot(unknownTrigger, Object.keys(samplingState)), false);
 
   const oldVersion = structuredClone(snapshot);
   oldVersion.version = 6;

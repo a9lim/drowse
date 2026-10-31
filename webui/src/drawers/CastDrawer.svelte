@@ -32,11 +32,6 @@
   import Select from "../lib/Select.svelte";
   import type { CastMemberJSON } from "../lib/types";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => {
-    void _drawerProps.params;
-  });
-
   let steering = $state("");
   let notes = $state("");
   let thinking = $state("inherit");

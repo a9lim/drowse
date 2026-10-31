@@ -22,11 +22,6 @@
   import Radio from "../lib/Radio.svelte";
   import Checkbox from "../lib/Checkbox.svelte";
 
-  let _drawerProps: { params?: unknown } = $props();
-  $effect(() => {
-    void _drawerProps.params;
-  });
-
   type Tab = "export" | "import";
   let tab: Tab = $state("export");
 

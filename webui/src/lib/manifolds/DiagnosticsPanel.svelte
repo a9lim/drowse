@@ -10,6 +10,7 @@
   import type { ManifoldInfo } from "../types";
   import { chartValue } from "../charts/chartValues";
   import { quotientDescription } from "./surfaceGeometry";
+  import { isDiscoverFit } from "./fitKind";
   import {
     classifyDiagnostics,
     diagnosticsSummary,
@@ -73,7 +74,7 @@
       </p>
     {/if}
   </div>
-{:else if manifold.fit_mode === "pca" || manifold.fit_mode === "spectral"}
+{:else if isDiscoverFit(manifold)}
   <p class="muted">
     fit for diagnostics
   </p>

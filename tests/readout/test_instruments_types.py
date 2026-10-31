@@ -1,0 +1,286 @@
+"""Instrument-protocol vocabulary: GateRef parsing, channel validation,
+and the ScalarReading -> ProbeReading compatibility projection."""
+
+from typing import Any
+
+import pytest
+
+from drowse.errors import DrowseError, UnsupportedProbeChannelError
+from drowse.readout.types import (
+    Assignment,
+    Axis,
+    DepthSummary,
+    Distance,
+    Fraction,
+    GateRef,
+    Membership,
+    ScalarReading,
+    parse_gate_ref,
+    validate_gate_channels,
+)
+from drowse.readout.types import ProbeReading
+
+
+# --------------------------------------------------------------------------
+# parse_gate_ref / scalar_key
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("confident.uncertain", GateRef("confident.uncertain", Axis(0))),
+        ("personas[3]", GateRef("personas", Axis(3))),
+        ("emotions:fraction", GateRef("emotions", Fraction())),
+        ("emotions:membership", GateRef("emotions", Membership())),
+        ("emotions@happy", GateRef("emotions", Distance("happy"))),
+        ("personas~hacker", GateRef("personas", Assignment("hacker"))),
+        ("personas@neutral", GateRef("personas", Distance("neutral"))),
+        # namespaced probes keep their full attached name
+        ("default/emotions@happy", GateRef("default/emotions", Distance("happy"))),
+        ("jlens/fake", GateRef("jlens/fake", Axis(0))),
+        ("sae/123", GateRef("sae/123", Axis(0))),
+        ("default/personas[3]", GateRef("default/personas", Axis(3))),
+        # a variant-suffixed probe name is a name, not a channel
+        ("pirate:role-x", GateRef("pirate:role-x", Axis(0))),
+        ("alice/pirate:role-x@node", GateRef("alice/pirate:role-x", Distance("node"))),
+    ],
+)
+def test_parse_gate_ref_shapes(key: str, expected: GateRef) -> None:
+    assert parse_gate_ref(key) == expected
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "confident.uncertain",
+        "personas[3]",
+        "emotions:fraction",
+        "emotions:membership",
+        "default/emotions@happy",
+        "personas~hacker",
+        "jlens/fake",
+        "sae/123",
+        "pirate:role-x",
+    ],
+)
+def test_key_round_trip(key: str) -> None:
+    assert parse_gate_ref(key).scalar_key() == key
+
+
+def test_explicit_axis_zero_normalizes_to_bare():
+    ref = parse_gate_ref("personas[0]")
+    assert ref == GateRef("personas", Axis(0))
+    # format(parse) normalizes [0] to the bare spelling — both read the
+    # same channel; parse(format) is exact.
+    assert ref.scalar_key() == "personas"
+    assert parse_gate_ref(ref.scalar_key()) == ref
+
+
+def test_ref_round_trip_is_exact():
+    for ref in [
+        GateRef("a/b.c", Axis(0)),
+        GateRef("a/b.c", Axis(7)),
+        GateRef("x", Fraction()),
+        GateRef("x", Membership()),
+        GateRef("ns/x", Distance("lbl")),
+        GateRef("ns/x", Assignment("lbl")),
+    ]:
+        assert parse_gate_ref(ref.scalar_key()) == ref
+
+
+# --------------------------------------------------------------------------
+# Channel validation
+# --------------------------------------------------------------------------
+
+def test_validate_passes_allowed_channel():
+    validate_gate_channels(
+        GateRef("sae/123", Axis(0)), (Axis,), family="sae",
+    )
+
+
+def test_validate_rejects_unsupported_channel():
+    with pytest.raises(UnsupportedProbeChannelError) as exc_info:
+        validate_gate_channels(
+            GateRef("sae/123", Membership()), (Axis,), family="sae",
+        )
+    err = exc_info.value
+    # DrowseError family + stdlib MRO + 400 user_message, per errors.py
+    # conventions.
+    assert isinstance(err, DrowseError)
+    assert isinstance(err, ValueError)
+    status, text = err.user_message()
+    assert status == 400
+    assert "sae/123:membership" in text
+    assert "sae" in text
+
+
+def test_validate_rejects_label_channels_for_lens():
+    with pytest.raises(UnsupportedProbeChannelError):
+        validate_gate_channels(
+            GateRef("jlens/fake", Distance("x")), (Axis,), family="lens",
+        )
+    with pytest.raises(UnsupportedProbeChannelError):
+        validate_gate_channels(
+            GateRef("jlens/fake", Assignment("x")), (Axis,), family="lens",
+        )
+
+
+# --------------------------------------------------------------------------
+# ScalarReading -> ProbeReading compatibility projection
+# --------------------------------------------------------------------------
+
+def test_lens_reading_projects_to_probe_reading():
+    """A lens reading projects to coords=(strength,),
+    coords_per_layer[l]=(p_l,), depth from the readout stats, and the
+    geometry fields at their defaults."""
+    layers = [10, 11, 12]
+    per_layer = {10: 0.2, 11: 0.5, 12: 0.8}
+    strength, com, spread = 0.5, 0.61, 0.07
+    reading = ScalarReading(
+        value=strength,
+        unit="mean_token_probability",
+        per_layer=per_layer,
+        depth=DepthSummary((com,), (spread,), "readout_probability_mass"),
+        meta={"word": "fake", "token_id": 12345},
+    )
+    expected = ProbeReading(
+        fraction=0.0,
+        nearest=[],
+        coords=(strength,),
+        residual=0.0,
+        coords_per_layer={l: (per_layer[l],) for l in layers},
+        depth_com=(com,),
+        depth_spread=(spread,),
+    )
+    assert reading.to_probe_reading().to_dict() == expected.to_dict()
+
+
+def test_sae_reading_projects_to_probe_reading():
+    """An SAE reading projects to coords=(value,),
+    coords_per_layer={hook_layer: (value,)}, depth_com the single-layer
+    constant and depth_spread (0.0,)."""
+    layer, n_layers = 12, 34
+    value = 0.73
+    depth_center = layer / max(n_layers - 1, 1)
+    reading = ScalarReading(
+        value=value,
+        unit="activation_over_max",
+        per_layer={layer: value},
+        depth=DepthSummary((depth_center,), (0.0,), "single_layer"),
+        meta={"feature_id": 123, "layer": layer},
+    )
+    expected = ProbeReading(
+        fraction=0.0,
+        nearest=[],
+        coords=(value,),
+        residual=0.0,
+        coords_per_layer={layer: (value,)},
+        depth_com=(depth_center,),
+        depth_spread=(0.0,),
+    )
+    assert reading.to_probe_reading().to_dict() == expected.to_dict()
+
+
+def test_projection_defaults_without_depth():
+    reading = ScalarReading(value=0.1, unit="raw_activation")
+    projected = reading.to_probe_reading()
+    assert projected.depth_com == ()
+    assert projected.depth_spread == ()
+    assert projected.membership == 1.0
+    assert projected.assignment == []
+
+
+# --------------------------------------------------------------------------
+# Public facade wiring
+# --------------------------------------------------------------------------
+
+def test_session_facades_are_the_instruments(make_tiny_session: Any) -> None:
+    """``session.lens`` / ``session.sae`` are the instrument objects
+    themselves — the typed public faces of ``session.instruments``."""
+    from drowse import GeometryInstrument, LensInstrument, SaeInstrument
+
+    session = make_tiny_session(warm=False)
+    inst = session.instruments
+    assert set(inst) == {"geometry", "lens", "sae"}
+    assert isinstance(inst["geometry"], GeometryInstrument)
+    assert isinstance(inst["lens"], LensInstrument)
+    assert isinstance(inst["sae"], SaeInstrument)
+    assert session.lens is inst["lens"]
+    assert session.sae is inst["sae"]
+
+
+#: The instrument/run surface the session, composer, and server exercise
+#: uniformly across families — the contract ``protocol.py`` describes in prose.
+#: Pinned here rather than as a ``Protocol`` because an unchecked Protocol
+#: drifts from its implementations and grows conformance-only methods.
+_INSTRUMENT_SURFACE = (
+    "specs", "probe_hash", "prepare", "plan", "bind", "close_run",
+)
+_RUN_SURFACE = ("observe_aggregate", "close")
+
+
+def test_every_family_carries_the_uniform_instrument_surface(make_tiny_session: Any) -> None:
+    """Each family exposes the same instrument/run methods and starts on an
+    idle passthrough run; ``close_run`` restores one."""
+
+    session = make_tiny_session(warm=False)
+    for family, instrument in session.instruments.items():
+        assert instrument.family == family
+        for name in _INSTRUMENT_SURFACE:
+            assert callable(getattr(instrument, name)), f"{family}.{name}"
+        run = instrument.current_run
+        for name in _RUN_SURFACE:
+            assert callable(getattr(run, name)), f"{family} run.{name}"
+        # Per-forward reuse is the step-keyed stash, not a run-level read;
+        # only the geometry run scores one forward (the token tap's read).
+        assert hasattr(run, "observe") is (family == "geometry")
+        assert run.bound is False
+        assert run.binding.family == family
+        # The bind/close asymmetry is what let a standalone capture path leak
+        # a bound run, so close_run must restore an idle passthrough run.
+        instrument.close_run()
+        assert instrument.current_run.bound is False
+    assert session.lens.family == "lens"
+    assert session.sae.family == "sae"
+
+
+def test_gate_validation_is_only_where_a_channel_can_be_refused(make_tiny_session: Any) -> None:
+    """Every family answers ``validate_gate`` — that is what lets the
+    composer walk ``session.instruments`` uniformly.  Lens and SAE read one
+    strength axis, so a geometry-channel gate is a composition-preflight
+    error there; geometry produces every channel, so its implementation
+    accepts unconditionally."""
+
+    session = make_tiny_session(warm=False)
+    ref = parse_gate_ref("probe:membership")
+    for family in ("lens", "sae"):
+        with pytest.raises(UnsupportedProbeChannelError):
+            session.instruments[family].validate_gate(ref)
+    assert session.instruments["geometry"].validate_gate(ref) is None
+
+
+@pytest.mark.parametrize("family", ["geometry", "lens", "sae"])
+def test_token_readout_signature_matches_the_protocol(family: str) -> None:
+    """Every family's ``token_readout`` takes the protocol's parameters with
+    the protocol's defaults (the protocol declared ``top_k: int = 8`` while
+    every implementation takes ``int | None = None``)."""
+    import inspect
+
+    from drowse.lens.instrument import LensInstrument
+    from drowse.readout.geometry import GeometryInstrument
+    from drowse.readout.protocol import Instrument
+    from drowse.sae.instrument import SaeInstrument
+
+    impl = {
+        "geometry": GeometryInstrument,
+        "lens": LensInstrument,
+        "sae": SaeInstrument,
+    }[family]
+
+    def shape(fn: Any) -> list[tuple[str, Any, Any, Any]]:
+        return [
+            (p.name, p.kind, p.default, p.annotation)
+            for p in inspect.signature(fn).parameters.values()
+        ]
+
+    assert shape(impl.token_readout) == shape(Instrument.token_readout)

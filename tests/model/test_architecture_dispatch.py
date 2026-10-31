@@ -1,0 +1,271 @@
+"""Per-architecture structural + hot-path coverage.
+
+`drowse.model.arch.get_layers` discovers each architecture's transformer-block
+list from its module tree.  That discovery is the
+load-bearing assumption behind *everything* drowse does — capture,
+steering, monitoring — yet most entries have never been exercised
+against the architecture's *actual* module tree.  When ``transformers``
+refactors a model's internals (renames ``model.layers``, wraps the text
+model under a composite, returns a bare tensor instead of a tuple from a
+decoder block), the accessor silently points at the wrong place and
+every downstream feature breaks at once.
+
+These tests pin the contract for a curated set of families — the ones a
+user is most likely to load — with **zero downloads**.  Architectures
+are built from tiny synthetic configs: the meta-device path allocates no
+weights at all, and the real-CPU path builds a 4-layer / hidden-64 model
+that forwards in milliseconds.  Random weights make the *outputs*
+meaningless, but the *plumbing* is exactly the production code path, so a
+broken accessor or a changed block-output shape fails here first.
+
+The three guarantees, per architecture:
+
+* ``get_layers`` resolves to the full block list (accessor is correct).
+* drowse's own :class:`HiddenCapture` reads a residual-stream vector of
+  shape ``(hidden_size,)`` from every layer (the block returns the
+  residual at ``output`` / ``output[0]`` as the hooks assume).
+* a :class:`SteeringManager` vector at a middle layer actually changes
+  the model's logits (the write path is wired to this block type).
+
+To widen coverage, append a ``model_type`` to :data:`GUARANTEED_ARCHS`
+once it builds from a tiny config — the parametrization does the rest.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import torch
+import torch.nn as nn
+from transformers import AutoConfig, AutoModelForCausalLM
+
+import pytest
+
+from drowse.model.arch import TESTED_ARCHS, get_layers
+from drowse.readout.capture_buffer import HiddenCapture
+from drowse.steering.hooks import SteeringManager, SteeringPlan
+from drowse.geometry.inject import synthesize_subspace
+from tests.support.whitener import isotropic_whitener
+from drowse.steering.triggers import Trigger
+
+
+# Families drowse guarantees end-to-end on CPU.  Covers every architecture
+# group named in the README's "Tested architectures" set plus the
+# optimistically-wired entries users have asked about (granite, olmo).
+# Each must build from the tiny config below; the dry-run in the test
+# suite proves all three operations succeed.
+GUARANTEED_ARCHS: list[str] = [
+    "llama",
+    "qwen2",
+    "qwen3",
+    "glm",
+    "glm4",
+    "granite",
+    "granitemoe",
+    "olmo2",
+    "olmo3",
+    "gpt_oss",
+    "mistral",
+    "ministral3",
+    "gemma2",
+]
+
+# Deliberately tiny so the real-CPU forward is instant.  pad/bos/eos are
+# pinned inside the vocab — several configs (GLM) default a special-token
+# id past a small vocab and trip ``Embedding``'s ``padding_idx`` assert.
+_TINY_CONFIG = dict(
+    hidden_size=64,
+    intermediate_size=128,
+    num_hidden_layers=4,
+    num_attention_heads=4,
+    num_key_value_heads=2,
+    vocab_size=512,
+    head_dim=16,
+    max_position_embeddings=128,
+    pad_token_id=0,
+    bos_token_id=1,
+    eos_token_id=2,
+)
+
+# Build each real model once and reuse across the capture / steer tests —
+# random init is the same per process, and every forward below is
+# read-only (steering uses clones and removes its hooks), so reuse is safe.
+_REAL_CACHE: dict[str, tuple[Any, Any]] = {}
+
+
+def _tiny_config(model_type: str):
+    return AutoConfig.for_model(model_type, **_TINY_CONFIG)
+
+
+def _real_model(model_type: str):
+    """Return a cached ``(model, config)`` built on CPU with random init."""
+    if model_type not in _REAL_CACHE:
+        cfg = _tiny_config(model_type)
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_config(cfg).eval()
+        _REAL_CACHE[model_type] = (model, cfg)
+    return _REAL_CACHE[model_type]
+
+
+def test_mistral_loads_as_its_text_submodel_and_is_marked_tested():
+    """Mistral-3's composite type never reaches ``get_layers``.
+
+    ``AutoConfig.for_model("mistral3").text_config.model_type == "mistral"``,
+    so ``extract_text_model`` fires and the loaded model reports ``mistral``.
+    Marking the composite type tested left the type users actually load
+    warning "untested" on every session.
+    """
+    assert AutoConfig.for_model("mistral3").text_config.model_type == "mistral"
+    assert "mistral" in TESTED_ARCHS
+    assert "mistral3" not in TESTED_ARCHS
+    # Ministral-3 has no text_config, so its composite type is what loads.
+    assert getattr(AutoConfig.for_model("ministral3"), "text_config", None) is None
+    assert "ministral3" in TESTED_ARCHS
+
+
+# One architecture per block-list shape the structural discovery walks:
+# ``transformer.h`` (GPT-2), ``gpt_neox.layers`` (Pythia), ``model.decoder.layers``
+# (OPT).  ``model.layers`` and the VLM ``model.language_model.layers`` shape are
+# covered by the guaranteed set and the gemma composite below.
+@pytest.mark.parametrize("model_type", ["gpt2", "gpt_neox", "opt"])
+def test_untested_shapes_are_discovered_structurally(
+    model_type: str, monkeypatch: pytest.MonkeyPatch,
+):
+    import drowse.model.arch as arch
+
+    monkeypatch.setattr(arch, "_warned", set())
+    cfg = AutoConfig.for_model(
+        model_type, vocab_size=64, hidden_size=32, num_hidden_layers=3,
+        num_attention_heads=4, n_embd=32, n_layer=3, n_head=4,
+        intermediate_size=64, ffn_dim=64, word_embed_proj_dim=32,
+    )
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(cfg)
+    with pytest.warns(UserWarning, match="untested"):
+        layers = get_layers(model)
+    assert isinstance(layers, nn.ModuleList) and len(layers) == 3
+
+
+def test_multimodal_composite_resolves_its_language_model_blocks():
+    from transformers import Gemma3Config, Gemma3ForConditionalGeneration
+
+    cfg = Gemma3Config(
+        text_config=dict(_TINY_CONFIG, model_type="gemma3_text"),
+        vision_config=dict(
+            hidden_size=32, intermediate_size=64, num_hidden_layers=1,
+            num_attention_heads=2, image_size=28, patch_size=14,
+        ),
+        mm_tokens_per_image=4,
+    )
+    with torch.device("meta"):
+        model = Gemma3ForConditionalGeneration(cfg)
+    layers = get_layers(model)
+    assert len(layers) == _TINY_CONFIG["num_hidden_layers"]
+    assert layers is model.model.language_model.layers
+
+
+def test_a_model_without_a_block_list_raises():
+    class _Bare(nn.Module):
+        config = type("C", (), {"model_type": "bare"})()
+
+    with pytest.raises(ValueError, match="no transformer block list"):
+        get_layers(_Bare())  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize("model_type", GUARANTEED_ARCHS)
+def test_get_layers_resolves_full_block_list(model_type: str):
+    """``get_layers`` returns every transformer block, on the meta device.
+
+    Meta instantiation allocates no weights — this is a pure structural
+    check that the accessor path matches the architecture's real module
+    tree for the current ``transformers`` version.
+    """
+    cfg = _tiny_config(model_type)
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(cfg)
+    layers = get_layers(model)
+    assert isinstance(layers, nn.ModuleList), (
+        f"{model_type}: get_layers returned {type(layers).__name__}, "
+        f"expected nn.ModuleList"
+    )
+    assert len(layers) == cfg.num_hidden_layers, (
+        f"{model_type}: accessor found {len(layers)} blocks, config declares "
+        f"{cfg.num_hidden_layers} — accessor points at the wrong attribute"
+    )
+
+
+@pytest.mark.parametrize("model_type", GUARANTEED_ARCHS)
+def test_hidden_capture_reads_residual_per_layer(model_type: str):
+    """drowse's :class:`HiddenCapture` recovers a ``(hidden_size,)`` vector
+    from every layer.
+
+    This is the read-side contract every probe / monitor depends on: the
+    decoder block exposes the residual stream at ``output`` (bare tensor,
+    current transformers) or ``output[0]`` (legacy tuple), and the
+    last-token slice has shape ``(hidden_size,)``.
+    """
+    model, cfg = _real_model(model_type)
+    layers = get_layers(model)
+    capture = HiddenCapture()
+    capture.attach(layers, list(range(len(layers))))
+    try:
+        with torch.no_grad():
+            model(input_ids=torch.tensor([[1, 5, 9, 13]]))
+    finally:
+        latest = capture.latest_per_layer()
+        capture.detach()
+
+    assert set(latest) == set(range(len(layers))), (
+        f"{model_type}: captured layers {sorted(latest)}, expected all "
+        f"{len(layers)}"
+    )
+    for idx, vec in latest.items():
+        assert tuple(vec.shape) == (cfg.hidden_size,), (
+            f"{model_type} layer {idx}: captured shape {tuple(vec.shape)}, "
+            f"expected ({cfg.hidden_size},) — block output is not the "
+            f"residual stream the hooks assume"
+        )
+
+
+@pytest.mark.parametrize("model_type", GUARANTEED_ARCHS)
+def test_steering_vector_changes_logits(model_type: str):
+    """A :class:`SteeringManager` vector at a middle layer perturbs the
+    model's output.
+
+    Confirms the *write* side of the hook is wired to this block type:
+    injecting at layer ``L`` must propagate through ``L+1..final`` and
+    move the logits.  Random weights make the magnitude meaningless, but a
+    no-op would mean the hook never modified the residual.
+    """
+    model, cfg = _real_model(model_type)
+    layers = get_layers(model)
+    ids = torch.tensor([[1, 5, 9, 13]])
+
+    with torch.no_grad():
+        baseline = model(input_ids=ids).logits.clone()
+
+    torch.manual_seed(1)
+    direction = torch.randn(cfg.hidden_size)
+    direction = direction / direction.norm()
+
+    # 4.0: a vector lowers to a rank-1 push fragment synthesized into one
+    # merged affine subspace installed as one affine op.
+    L = len(layers) // 2
+    synth = synthesize_subspace(
+        push=[({L: direction.reshape(1, -1)}, {L: torch.tensor([1.0])}, 1.0)],
+        ablate=[], neutral_means={L: torch.zeros(cfg.hidden_size)},
+        whitener=isotropic_whitener([L], cfg.hidden_size),
+    )
+    plan = SteeringPlan()
+    plan.add_subspace("probe", synth, trigger=Trigger.BOTH)
+    mgr = SteeringManager()
+    mgr.install(plan, layers, torch.device("cpu"), torch.float32)
+    try:
+        with torch.no_grad():
+            steered = model(input_ids=ids).logits
+    finally:
+        mgr.clear_all()
+
+    assert not torch.allclose(baseline, steered, atol=1e-5), (
+        f"{model_type}: steering at layer {len(layers) // 2} left the logits "
+        f"unchanged — the hook did not modify the residual stream"
+    )

@@ -13,9 +13,7 @@
   import {
     steerRack,
     setInspectorTab,
-    removeSubspaceFromRack,
-    removeManifoldFromRack,
-    atomActions,
+    removeSteerEntry,
     currentSteeringExpression,
   } from "../lib/stores.svelte";
   import type { InspectorTab } from "../lib/stores.svelte";
@@ -49,7 +47,7 @@
           tab: "subspace",
           order: 0,
           enabled: entry.enabled,
-          remove: () => removeSubspaceFromRack(name),
+          remove: () => removeSteerEntry(name),
         };
       case "manifold":
         return {
@@ -59,7 +57,7 @@
           tab: "manifold",
           order: 2,
           enabled: entry.enabled,
-          remove: () => removeManifoldFromRack(name),
+          remove: () => removeSteerEntry(name),
         };
       case "jlens":
         return {
@@ -69,7 +67,7 @@
           tab: "lens",
           order: 1,
           enabled: entry.enabled,
-          remove: () => atomActions("jlens").remove(name),
+          remove: () => removeSteerEntry(name),
         };
       case "sae":
         return {
@@ -79,7 +77,7 @@
           tab: "sae",
           order: 1,
           enabled: entry.enabled,
-          remove: () => atomActions("sae").remove(name),
+          remove: () => removeSteerEntry(name),
         };
     }
   }
