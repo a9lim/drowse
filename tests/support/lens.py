@@ -9,10 +9,13 @@ lifecycle and the instrument use it instead of borrowing session methods.
 
 from __future__ import annotations
 
+import sys
+import types
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
 import torch
 
 from tests.support.jlens_toys import CharTokenizer, frozen_toy
@@ -22,6 +25,7 @@ __all__ = [
     "LENS_PROMPTS",
     "LensHarness",
     "TOY_MODEL_ID",
+    "fake_datasets",
     "lens_instrument",
     "lens_kwargs",
 ]
@@ -202,3 +206,21 @@ class LensHarness:
         del phase_msg
         self.exclusive_messages.append(message)
         yield
+
+
+def fake_datasets(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
+    """Install a stand-in ``datasets`` module for one test and return it.
+
+    The Hub corpus readers import the optional ``datasets`` package lazily,
+    and tests stub its two entry points, so they run without the ``hf`` extra.
+    An entry point a test did not stub fails loudly.
+    """
+    module = types.ModuleType("datasets")
+
+    def unstubbed(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("this test called a datasets entry point it did not stub")
+
+    setattr(module, "load_dataset", unstubbed)
+    setattr(module, "load_dataset_builder", unstubbed)
+    monkeypatch.setitem(sys.modules, "datasets", module)
+    return module

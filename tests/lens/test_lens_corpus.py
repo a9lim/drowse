@@ -11,6 +11,7 @@ import pytest
 
 from drowse.lens.corpus import stream_lens_corpus
 from drowse.lens.jlens import JacobianLensCancelled
+from tests.support.lens import fake_datasets
 
 
 def test_default_corpus_cancel_does_not_wait_for_blocked_provider(
@@ -277,7 +278,7 @@ def _fake_spread_dataset(
     monkeypatch: pytest.MonkeyPatch, files: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
     """Serve ``files`` (repository path → texts) as one dataset's train files."""
-    import datasets
+    datasets = fake_datasets(monkeypatch)
 
     opened: list[dict[str, Any]] = []
 
@@ -354,7 +355,7 @@ def test_spread_read_round_robins_its_files_and_outlasts_a_dry_one(
 def test_mix_read_interleaves_its_corpora_by_weight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import datasets
+    datasets = fake_datasets(monkeypatch)
 
     from drowse.lens.corpus import HfLensCorpus, LensCorpusMix, _collect_lens_corpus
 
@@ -384,7 +385,7 @@ def test_pin_resolves_revision_to_a_commit_and_names_the_default_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The resolution the corpus worker runs (in process here)."""
-    import datasets
+    datasets = fake_datasets(monkeypatch)
     import huggingface_hub
 
     from drowse.lens.corpus import HfLensCorpus, _pin_in_process
@@ -435,7 +436,7 @@ def _fake_hub_dataset(
     monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Serve ``rows`` as every streamed dataset, recording each open."""
-    import datasets
+    datasets = fake_datasets(monkeypatch)
 
     opened: list[dict[str, Any]] = []
 

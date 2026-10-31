@@ -182,11 +182,16 @@ def _rbf_eval(plan: RbfFitPlan, fit: Any, query: torch.Tensor) -> torch.Tensor:
 
 
 def _smoother(plan: RbfFitPlan, lam: float) -> torch.Tensor:
-    """Reference hat matrix ``S_λ`` by solving the saddle against ``[I; 0]``."""
+    """Reference hat matrix ``S_λ`` by solving the saddle against ``[I; 0]``, in fp64."""
     K = plan.node_count
-    rhs = torch.cat([torch.eye(K), torch.zeros(plan.Q.shape[1], K)], dim=0)
-    sol = torch.linalg.solve(plan._saddle(lam), rhs)
-    return plan.E @ sol[:K] + plan.Q @ sol[K:]
+    E, Q = plan.E.double(), plan.Q.double()
+    saddle = torch.cat([
+        torch.cat([E + lam * torch.eye(K, dtype=E.dtype), Q], dim=1),
+        torch.cat([Q.T, torch.zeros(Q.shape[1], Q.shape[1], dtype=E.dtype)], dim=1),
+    ], dim=0)
+    rhs = torch.cat([torch.eye(K, dtype=E.dtype), torch.zeros(Q.shape[1], K, dtype=E.dtype)], dim=0)
+    sol = torch.linalg.solve(saddle, rhs)
+    return E @ sol[:K] + Q @ sol[K:]
 
 
 def test_rbf_reproduces_natural_cubic():
@@ -358,12 +363,19 @@ def test_demmler_reinsch_matches_smoother_reference():
     ``select_lambda`` must pick the same grid point a brute-force smoother
     sweep does, ``edf`` must match ``tr S_λ`` across the grid, and the fixed-λ
     ``gcv`` must match the oracle at the selected ``λ``.
+
+    The inputs are deterministic and well spread (unscrambled Sobol nodes, a
+    smooth signal plus a rough one) and the oracle runs in fp64: random nodes
+    can land nearly on top of each other, where two fp32 routes to the same
+    ill-conditioned GCV drift apart by whole percents and differ by platform.
     """
-    torch.manual_seed(7)
     for k, m, r in [(12, 2, 3), (20, 1, 1), (9, 3, 2), (15, 2, 5)]:
-        plan = RbfFitPlan.build(torch.randn(k, m), smoothing="auto")
-        values = torch.randn(k, r, dtype=torch.float32)
-        eye = torch.eye(k)
+        nodes = torch.quasirandom.SobolEngine(m, scramble=False).draw(k + 1)[1:]
+        j = torch.arange(1, r + 1, dtype=torch.float32)
+        index = torch.arange(k, dtype=torch.float32).unsqueeze(1)
+        values = torch.sin(3.0 * j * nodes.sum(dim=1, keepdim=True) + j) + 0.3 * torch.cos(2.4 * index * j)
+        plan = RbfFitPlan.build(nodes, smoothing="auto")
+        eye = torch.eye(k, dtype=torch.float64)
         ref_lam, ref_edf, ref_gcv = float(plan.grid[0]), float(k), math.inf
         best = math.inf
         for lam_t in plan.grid:
@@ -372,7 +384,7 @@ def test_demmler_reinsch_matches_smoother_reference():
             tr = float(im_s.diagonal().sum())
             if tr <= 0.0:
                 continue
-            gcv = k * float((im_s @ values).pow(2).sum()) / (tr * tr)
+            gcv = k * float((im_s @ values.double()).pow(2).sum()) / (tr * tr)
             assert plan.edf(lam) == pytest.approx(k - tr, rel=1e-3, abs=1e-4)
             if gcv < best:
                 best = gcv

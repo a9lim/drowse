@@ -7,6 +7,8 @@ reuse (a real ``DynamicCache``) and the fan run on a real tiny session.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -288,7 +290,9 @@ class TestRunnerSweep:
             "0.2 warm + 0.3 honest", "0.2 warm + 0.6 honest",
         ]
 
-    def test_prebuilt_base_steering_renders_canonically(self) -> None:
+    def test_prebuilt_base_steering_renders_canonically(self, isolated_home: Path) -> None:
+        # Its own home: once another test has materialized the bundled
+        # manifolds, a bare ``warm`` resolves to the ``warm.clinical`` pole.
         runner, engine = _runner()
         runner.sweep(
             "test", {"honest": [0.3]},

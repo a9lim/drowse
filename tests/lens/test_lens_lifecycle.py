@@ -44,7 +44,7 @@ from drowse.lens.store import (
 from tests.support.jlens_toys import CharTokenizer
 from tests.support.lens import LENS_PROMPTS as _PROMPTS
 from tests.support.lens import TOY_MODEL_ID as _MODEL_ID
-from tests.support.lens import LensHarness
+from tests.support.lens import LensHarness, fake_datasets
 
 pytestmark = pytest.mark.usefixtures("isolated_home")
 
@@ -735,7 +735,7 @@ def test_fit_tops_up_a_hub_corpus_by_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A larger read of the same pinned Hub corpus fits only the new rows."""
-    import datasets
+    datasets = fake_datasets(monkeypatch)
 
     import drowse.lens.fit as jlens_module
     from drowse.lens.corpus import HfLensCorpus, _collect_lens_corpus
@@ -774,7 +774,7 @@ def test_fit_tops_up_a_corpus_mix_by_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Growing a fit on a weighted mix fits only the newly scheduled rows."""
-    import datasets
+    datasets = fake_datasets(monkeypatch)
 
     import drowse.lens.fit as jlens_module
     from drowse.lens.corpus import (
