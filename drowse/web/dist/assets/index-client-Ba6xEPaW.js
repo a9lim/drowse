@@ -1,1 +1,0 @@
-export{X as tick}from"./index-client-S2mwursc.js";

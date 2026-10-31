@@ -1,1 +1,0 @@
-import"./DrawerCloseButton-CFSvh4PS.js";import{B as e,R as t,f as n,r,u as i}from"./index-client-S2mwursc.js";var a=e(`<span>[BASE]</span>`);function o(e,o){let s=r(o,`plain`,3,!1);var c=a();n(c,()=>({class:`base-tag`,"aria-description":`Base model · continues text without chat instructions`,[i]:{plain:s()}}),void 0,void 0,void 0,`svelte-1ove6n8`),t(e,c)}export{o as t};

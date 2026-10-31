@@ -1,0 +1,1 @@
+export{Z as tick}from"./index-client-CoJhqGNv.js";
