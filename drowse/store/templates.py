@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, RequestError
 from drowse.base.atomic import artifact_lock, write_json_atomic
 from drowse.base.integrity import LABEL_REGEX, NAME_REGEX, canonical_json
 from drowse.base.paths import ensure_within, templates_dir
@@ -55,7 +55,7 @@ TEMPLATE_FORMAT_VERSION = 2
 _VALID_ROLES = ("system", "user", "assistant")
 
 
-class TemplateFormatError(ValueError, DrowseError):
+class TemplateFormatError(RequestError):
     """A template artifact violates the on-disk format or an invariant."""
 
 
@@ -496,7 +496,7 @@ def iter_template_folders() -> Iterator[TemplateFolder]:
                 continue
 
 
-class AmbiguousTemplateError(ValueError, DrowseError):
+class AmbiguousTemplateError(RequestError):
     """A bare template name resolves to more than one namespace."""
 
 

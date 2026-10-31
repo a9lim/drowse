@@ -35,7 +35,7 @@ from typing import Any
 
 import torch
 
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, RequestError
 from drowse.lens.decompose import token_atom_norms
 from drowse.lens.key import LensKey
 
@@ -86,18 +86,12 @@ class JacobianLensCancelled(JacobianLensError):
         return (409, str(self) or "Jacobian-lens fit cancelled")
 
 
-class MultiTokenWordError(ValueError, DrowseError):
+class MultiTokenWordError(RequestError):
     """Raised when a ``jlens/<word>`` atom has no single-token vocabulary id."""
 
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
-
-class InvalidTokenIdError(ValueError, DrowseError):
+class InvalidTokenIdError(RequestError):
     """Raised when a ``jlens/#<id>`` atom is malformed or outside the vocabulary."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 def resolve_token_atom(tokenizer: Any, atom: str, *, vocab_size: int) -> int:

@@ -1057,6 +1057,9 @@ class TestCommit:
             msg = ws.receive_json()
         assert msg["type"] == "error"
         assert msg["status"] == 400
+        # A client-input frame shares the request-error code; "ValueError"
+        # names a scrubbed engine failure.
+        assert msg["code"] == "RequestError"
         assert "text" in msg["message"].lower()
 
     def test_invalid_role_400(self, session_and_client: Any):

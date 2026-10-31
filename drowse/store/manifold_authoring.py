@@ -56,6 +56,7 @@ from drowse.naming import RESERVED_NAMESPACES
 # Every authoring entry point that changes the installed manifold roster drops
 # the resolver's memoized walks itself — callers carry no invalidation duty.
 from drowse.store.selectors import invalidate as invalidate_selector_index
+from drowse.errors import RequestError
 
 
 def _lock_namespace_name(func: Any) -> Any:
@@ -670,7 +671,7 @@ def merge_discover_manifolds(
     carry across modes).
     """
     if len(sources) < 2:
-        raise ValueError(f"merge needs >= 2 sources, got {len(sources)}: {sources!r}")
+        raise RequestError(f"merge needs >= 2 sources, got {len(sources)}: {sources!r}")
     label = f"{target_namespace}/{target_name}"
     folders: list[tuple[str, ManifoldFolder]] = []
     for ns, name in sources:

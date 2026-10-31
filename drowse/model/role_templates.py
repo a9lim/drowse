@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, RequestError
 
 
 # ---------------------------------------------------------------------------
@@ -244,11 +244,8 @@ class RoleTemplateDriftError(DrowseError, RuntimeError):
         return (500, str(self) or self.__class__.__name__)
 
 
-class InvalidRoleError(DrowseError, ValueError):
+class InvalidRoleError(RequestError):
     """Raised when the requested custom role label fails slug validation."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 def validate_role(role: str) -> None:

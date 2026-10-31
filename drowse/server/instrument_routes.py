@@ -561,7 +561,7 @@ def register_instrument_routes(app: FastAPI) -> None:
         layers: str | None = None,
     ) -> MeasurementsEnvelope:
         """The instrument owns the whole replay, envelope included; a knob it
-        cannot honor is a ``ValueError`` → 400, never silently dropped."""
+        cannot honor is a ``RequestError`` → 400, never silently dropped."""
         caps = _capabilities(session, family)
         if not caps.token_readout:
             raise HTTPException(404, f"{family} has no token readout")

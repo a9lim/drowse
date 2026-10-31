@@ -10,7 +10,7 @@ from typing import Any
 
 import torch
 
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, RequestError
 
 
 class _SaeCaptureComplete(BaseException):
@@ -54,7 +54,7 @@ def _token_rows(tokenizer: Any, documents: Sequence[str], seq_len: int) -> list[
         if len(ids) >= 2:
             rows.append(ids)
     if not rows:
-        raise ValueError("SAE training corpus has no documents with at least two tokens")
+        raise RequestError("SAE training corpus has no documents with at least two tokens")
     return rows
 
 
@@ -133,11 +133,11 @@ def train_residual_sae(
     the L1 objective cannot be evaded through encoder/decoder rescaling.
     """
     if not 0 <= layer < len(layers):
-        raise ValueError(f"SAE layer {layer} is outside model layers 0..{len(layers) - 1}")
+        raise RequestError(f"SAE layer {layer} is outside model layers 0..{len(layers) - 1}")
     if tokens <= 0 or seq_len <= 0 or batch_size <= 0 or expansion <= 0:
-        raise ValueError("tokens, seq_len, batch_size, and expansion must be positive")
+        raise RequestError("tokens, seq_len, batch_size, and expansion must be positive")
     if learning_rate <= 0 or l1_coefficient < 0 or dead_feature_threshold < 0:
-        raise ValueError("invalid SAE optimizer/sparsity parameters")
+        raise RequestError("invalid SAE optimizer/sparsity parameters")
     rows = _token_rows(tokenizer, documents, seq_len)
     first_parameter = next(model.parameters(), None)
     if first_parameter is None:
@@ -161,7 +161,7 @@ def train_residual_sae(
     d_model = int(initial.shape[-1])
     width = int(d_sae if d_sae is not None else d_model * expansion)
     if width <= 0:
-        raise ValueError("SAE feature width must be positive")
+        raise RequestError("SAE feature width must be positive")
     generator = torch.Generator(device="cpu").manual_seed(int(seed))
     decoder_init = torch.randn(width, d_model, generator=generator)
     decoder_init = decoder_init / decoder_init.norm(dim=1, keepdim=True).clamp_min(1e-8)

@@ -5,14 +5,11 @@ from __future__ import annotations
 import math
 import re
 
-from drowse.errors import DrowseError
+from drowse.errors import RequestError
 
 
-class AlphaListError(ValueError, DrowseError):
+class AlphaListError(RequestError):
     """Raised when :func:`parse_alpha_list` cannot parse its input."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 _LINSPACE_RE = re.compile(

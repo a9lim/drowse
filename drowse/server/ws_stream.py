@@ -183,7 +183,7 @@ _TokenQueueItem = _TokenFrame | _TokenDone
 def _error_frame(
     message: str,
     *,
-    code: str = "ValueError",
+    code: str = "RequestError",
     status: int = 400,
     node_id: str | None = None,
     sibling_index: int = 0,
@@ -215,7 +215,7 @@ class _WSRequestError(Exception):
         self,
         message: str,
         *,
-        code: str = "ValueError",
+        code: str = "RequestError",
         status: int = 400,
         node_id: str | None = None,
         sibling_index: int = 0,

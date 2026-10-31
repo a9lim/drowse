@@ -42,6 +42,7 @@ from drowse.generation.sampling import (
 from drowse.loom.recipe import Recipe, derive_seed_schedule
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
+from drowse.errors import GenerationRequestError
 
 if TYPE_CHECKING:
     from drowse.generation.token_callback import TokenSink
@@ -550,7 +551,7 @@ class BatchRunner:
         composes onto none.
         """
         if n < 1:
-            raise ValueError(f"n must be >= 1, got {n}")
+            raise GenerationRequestError(f"n must be >= 1, got {n}")
         start_node_id = (
             self._tree().active_node_id
             if not stateless and parent_node_id is None else None
@@ -589,7 +590,7 @@ class BatchRunner:
         """N prompts under one steering; see :meth:`DrowseSession.generate_batch`."""
         prompts_in: Any = prompts
         if not isinstance(prompts_in, list) or not prompts_in:
-            raise ValueError("generate_batch: prompts must be a non-empty list")
+            raise GenerationRequestError("generate_batch: prompts must be a non-empty list")
         if self._fast is not None:
             fast = self._fast.run(
                 prompts,
@@ -648,11 +649,11 @@ class BatchRunner:
         """Cartesian alpha sweep; see :meth:`DrowseSession.generate_sweep`."""
         sweep_in: Any = sweep
         if not isinstance(sweep_in, dict) or not sweep_in:
-            raise ValueError("generate_sweep: sweep dict must be non-empty")
+            raise GenerationRequestError("generate_sweep: sweep dict must be non-empty")
         for name, alphas in sweep.items():
             alphas_in: Any = alphas
             if not isinstance(alphas_in, (list, tuple)) or not alphas_in:
-                raise ValueError(
+                raise GenerationRequestError(
                     f"generate_sweep: sweep['{name}'] must be a non-empty "
                     f"list of alpha values"
                 )

@@ -13,6 +13,8 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 import torch
 
+from drowse.errors import SaeModelMismatchError
+
 
 def _commit_pinned_converter(converter: Any, revision: str) -> Any:
     """Clone a SAELens converter with every Hub read pinned to one commit.
@@ -505,7 +507,7 @@ def resolve_sae_backend(
         and backend.model_fingerprint is not None
         and backend.model_fingerprint != model_fingerprint()
     ):
-        raise ValueError(
+        raise SaeModelMismatchError(
             f"local SAE {release!r} was trained against different "
             "loaded model weights"
         )

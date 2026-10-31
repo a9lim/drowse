@@ -17,14 +17,19 @@ from drowse.errors import (
     ConcurrentGenerationError,
     GenerationRequestError,
     ManifoldArityError,
+    ManifoldSpecError,
     OverlappingManifoldError,
+    PoisednessError,
     ProfileError,
+    RequestError,
     SaeBackendImportError,
     SaeCoverageError,
     SaeModelMismatchError,
     SaeReleaseNotFoundError,
     DrowseError,
+    SourceSpecError,
     SteeringCompositionError,
+    UnknownManifoldLabelError,
     UnknownVariantError,
     WhitenerError,
 )
@@ -66,7 +71,12 @@ _OVERRIDES: list[tuple[type[DrowseError], int]] = [
     (ManifoldArityError, 422),
     (OverlappingManifoldError, 422),
     (ConcurrentGenerationError, 409),
+    (RequestError, 400),
     (GenerationRequestError, 400),
+    (SourceSpecError, 400),
+    (ManifoldSpecError, 400),
+    (PoisednessError, 400),
+    (UnknownManifoldLabelError, 404),
     # session/session.py
     (ProfileNotRegisteredError, 404),
     # steering/grammar.py
@@ -130,6 +140,13 @@ def test_unknown_variant_strips_keyerror_quotes():
     """``KeyError`` would render as ``"'foo'"``; the override uses ``args[0]``."""
     _code, msg = UnknownVariantError("missing variant").user_message()
     assert msg == "missing variant"
+
+
+def test_unknown_manifold_label_strips_keyerror_quotes():
+    """Regression: the label error returned ``str(self)``, so the 404 text
+    reached clients wrapped in KeyError's repr quotes."""
+    _code, msg = UnknownManifoldLabelError("manifold 'm' has no node labeled 'x'").user_message()
+    assert msg == "manifold 'm' has no node labeled 'x'"
 
 
 def test_concurrent_generation_carries_message():
@@ -273,6 +290,20 @@ def test_every_public_exception_is_a_drowse_error() -> None:
         "DrowseError to the bases, keeping the stdlib base first, and give "
         "it a user_message()):\n  " + "\n  ".join(escapees)
     )
+
+
+def test_every_request_error_is_a_400_carrying_its_text() -> None:
+    """A :class:`RequestError` is the server's "client input" family: it keeps
+    the ``ValueError`` base and answers 400 with its own text, so a subclass
+    that overrides ``user_message`` must not drift off either."""
+    classes = [cls for cls in _public_exception_classes() if issubclass(cls, RequestError)]
+    assert len(classes) > 20, "walk found suspiciously few request errors"
+    drift = []
+    for cls in classes:
+        status, message = cls("specific test payload").user_message()
+        if not issubclass(cls, ValueError) or status != 400 or "specific test payload" not in message:
+            drift.append(f"{cls.__module__}.{cls.__qualname__} -> {status}")
+    assert not drift, "request errors off the 400 contract:\n  " + "\n  ".join(drift)
 
 
 def test_cancellation_errors_agree_across_preparation_families() -> None:

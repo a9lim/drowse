@@ -10,22 +10,19 @@ if TYPE_CHECKING:
     from transformers import PreTrainedModel
     from drowse.session.session import DrowseSession
 
-from drowse.errors import DrowseError
+from drowse.errors import RequestError
 from drowse.model.readout import get_unembedding
 from drowse.generation.sampling import SamplingConfig
 from drowse.steering.terms import Steering
 
 
-class UnsupportedContentError(ValueError, DrowseError):
+class UnsupportedContentError(RequestError):
     """Non-text content parts submitted to a text-only endpoint."""
 
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
-
-class InvalidSamplingError(ValueError, DrowseError):
-    def user_message(self) -> tuple[int, str]:
-        return 400, str(self)
+class InvalidSamplingError(RequestError):
+    """A sampling field the loaded model cannot honor (a ``logit_bias``
+    token id outside its vocabulary)."""
 
 
 def validate_logit_bias(sampling: SamplingConfig | None, session: DrowseSession) -> None:

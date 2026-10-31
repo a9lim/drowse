@@ -44,6 +44,7 @@ from drowse.lens.store import (
     lens_identity,
     lens_layers,
 )
+from drowse.errors import RequestError
 
 #: The corpus identity a fit records: sha256 of the consumed token-id rows.
 CORPUS_HASH_KIND = "token_ids_v1"
@@ -414,18 +415,18 @@ class LensFitRequest:
 
     def __post_init__(self) -> None:
         if self.kind not in FITTABLE_KINDS:
-            raise ValueError(
+            raise RequestError(
                 f"lens kind must be one of {', '.join(FITTABLE_KINDS)}, "
                 f"got {self.kind!r}"
             )
         if self.dim_batch <= 0:
-            raise ValueError("dim_batch must be > 0")
+            raise RequestError("dim_batch must be > 0")
         if self.prompt_batch is not None and self.prompt_batch <= 0:
-            raise ValueError("prompt_batch must be > 0")
+            raise RequestError("prompt_batch must be > 0")
         if self.seq_len <= 0:
-            raise ValueError("seq_len must be > 0")
+            raise RequestError("seq_len must be > 0")
         if self.checkpoint_every <= 0:
-            raise ValueError("checkpoint_every must be > 0")
+            raise RequestError("checkpoint_every must be > 0")
 
 
 class LensFitter:

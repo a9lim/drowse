@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, cast, overload
 
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, SourceSpecError
 
 log = logging.getLogger(__name__)
 
@@ -75,13 +75,13 @@ class HfLensCorpus:
 
     def __post_init__(self) -> None:
         if not self.text_field:
-            raise ValueError("the corpus text field must not be empty")
+            raise SourceSpecError("the corpus text field must not be empty")
         if self.files is not None and self.files < 1:
-            raise ValueError("files must be at least 1")
+            raise SourceSpecError("files must be at least 1")
         if self.seed < 0:
-            raise ValueError("seed must not be negative")
+            raise SourceSpecError("seed must not be negative")
         if self.seed and self.files is None:
-            raise ValueError("seed applies only with files=K")
+            raise SourceSpecError("seed applies only with files=K")
 
     @property
     def pinned(self) -> bool:
@@ -139,9 +139,9 @@ class LensCorpusMix:
 
     def __post_init__(self) -> None:
         if len(self.parts) < 2 or len(self.weights) != len(self.parts):
-            raise ValueError("a corpus mix needs one weight per corpus, ≥ 2")
+            raise SourceSpecError("a corpus mix needs one weight per corpus, ≥ 2")
         if any(weight < 1 for weight in self.weights):
-            raise ValueError("corpus weights must be at least 1")
+            raise SourceSpecError("corpus weights must be at least 1")
 
     @property
     def pinned(self) -> bool:
@@ -178,7 +178,7 @@ def parse_lens_corpus(sources: Sequence[str] | None) -> LensCorpus:
     many data files), ``seed`` (their order, default 0), and ``weight`` (a mix
     member's share, default 1).  Several sources make a
     :class:`LensCorpusMix`; none is the default corpus.  Raises
-    ``ValueError`` for a malformed source.
+    :class:`~drowse.errors.SourceSpecError` for a malformed source.
     """
     if not sources:
         return DEFAULT_LENS_CORPUS
@@ -186,7 +186,7 @@ def parse_lens_corpus(sources: Sequence[str] | None) -> LensCorpus:
     if len(parsed) == 1:
         corpus, weight = parsed[0]
         if weight is not None:
-            raise ValueError("weight applies only to a mix of several corpora")
+            raise SourceSpecError("weight applies only to a mix of several corpora")
         return corpus
     return LensCorpusMix(
         tuple(corpus for corpus, _weight in parsed),
@@ -203,7 +203,7 @@ def _parse_source(raw: str) -> tuple[HfLensCorpus, int | None]:
         or (colon and not config) or (at and not revision)
         or ":" in revision
     ):
-        raise ValueError(
+        raise SourceSpecError(
             f"bad Hugging Face corpus {raw!r} (want "
             "REPO[:CONFIG][@REV][,KEY=VALUE…], e.g. "
             "HuggingFaceFW/dclm_100BT-shuffled)"
@@ -212,7 +212,7 @@ def _parse_source(raw: str) -> tuple[HfLensCorpus, int | None]:
     for option in options:
         key, eq, value = option.partition("=")
         if key not in _SOURCE_OPTIONS or not eq or not value or key in values:
-            raise ValueError(
+            raise SourceSpecError(
                 f"bad corpus option {option!r} in {raw!r} (want KEY=VALUE, "
                 f"KEY one of {', '.join(_SOURCE_OPTIONS)}, each at most once)"
             )
@@ -223,19 +223,19 @@ def _parse_source(raw: str) -> tuple[HfLensCorpus, int | None]:
             for key in ("files", "seed", "weight") if key in values
         }
     except ValueError:
-        raise ValueError(
+        raise SourceSpecError(
             f"files, seed, and weight take integers, in {raw!r}"
         ) from None
     weight = ints.get("weight")
     if weight is not None and weight < 1:
-        raise ValueError("corpus weights must be at least 1")
+        raise SourceSpecError("corpus weights must be at least 1")
     corpus = HfLensCorpus(
         repo, config or None, revision or None,
         values.get("text_field", "text"), ints.get("files"),
         ints.get("seed", 0),
     )
     if "seed" in ints and corpus.files is None:
-        raise ValueError("seed applies only with files=K")
+        raise SourceSpecError("seed applies only with files=K")
     return corpus, weight
 
 

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from drowse.errors import RequestError
+
 #: The named selector modes.
 LAYER_MODES = ("all", "workspace", "sample")
 #: How many layers ``"sample"`` picks.
@@ -35,12 +37,12 @@ def parse_layer_selector(text: str | None) -> list[int] | str | None:
     try:
         layers = [int(part) for part in text.split(",") if part.strip()]
     except ValueError:
-        raise ValueError(
+        raise RequestError(
             f"malformed layers {text!r} (want a comma-separated index list, "
             "all, workspace, or sample)"
         ) from None
     if not layers:
-        raise ValueError("layers must name at least one layer")
+        raise RequestError("layers must name at least one layer")
     return layers
 
 
@@ -73,7 +75,7 @@ def resolve_layer_selector(
             step = (len(pool) - 1) / (SAMPLE_COUNT - 1)
             return sorted({pool[round(i * step)] for i in range(SAMPLE_COUNT)})
         allowed = ", ".join(m for m in LAYER_MODES if allow_sample or m != "sample")
-        raise ValueError(
+        raise RequestError(
             f"unknown layer mode {selector!r} (want {allowed}, or an index list)"
         )
     return [int(layer) for layer in selector]
@@ -92,15 +94,15 @@ def resolve_model_layers(selector: LayerSelector, n_layers: int) -> list[int]:
     if isinstance(selector, str):
         parsed = parse_layer_selector(selector)
         if parsed is None:
-            raise ValueError("layers must name at least one layer")
+            raise RequestError("layers must name at least one layer")
         selector = parsed
     requested = sorted(set(resolve_layer_selector(
         selector, range(n_layers), n_layers=n_layers, allow_sample=False,
     )))
     if not requested:
-        raise ValueError("layers must name at least one layer")
+        raise RequestError("layers must name at least one layer")
     if requested[0] < 0 or requested[-1] >= n_layers:
-        raise ValueError(f"layers must lie in [0, {n_layers}); got {requested}")
+        raise RequestError(f"layers must lie in [0, {n_layers}); got {requested}")
     return requested
 
 

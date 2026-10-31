@@ -14,14 +14,13 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from drowse.errors import DrowseError
+from drowse.errors import RequestError
 
 log = logging.getLogger(__name__)
 
 
-class ConfigFileError(ValueError, DrowseError):
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
+class ConfigFileError(RequestError):
+    """A config YAML file that does not parse or validate."""
 
 
 @dataclass

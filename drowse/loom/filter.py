@@ -60,7 +60,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
-from drowse.errors import DrowseError
+from drowse.errors import RequestError
 from drowse.readout.types import Axis, parse_gate_ref
 
 
@@ -68,11 +68,8 @@ AggOp = Literal["agg", "any", "last"]
 CompareOp = Literal[">", ">=", "<", "<="]
 
 
-class FilterParseError(ValueError, DrowseError):
+class FilterParseError(RequestError):
     """Raised when a filter expression cannot be parsed."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 # Per-clause numeric helper — accepts ``>``/``>=``/``<``/``<=``.

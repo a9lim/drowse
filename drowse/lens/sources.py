@@ -28,11 +28,12 @@ import yaml
 from drowse.base.atomic import artifact_lock, write_json_atomic
 # The three Hub indirections are imported (not redefined) so ``base.hf`` stays
 # the single monkeypatchable HF seam; tests patch them on this module.
-from drowse.base.hf import _hf_api, _hf_hub_download, _hf_snapshot_download
+from drowse.base.hf import HFError, _hf_api, _hf_hub_download, _hf_snapshot_download
 from drowse.base.integrity import hash_file
 from drowse.base.source_registry import LOCAL, SourceFamily, SourceRef
 from drowse.lens.jlens import JacobianLens
 from drowse.lens.key import LENS_SIDES, LOCAL_LENS_NAME, LensKey, local_lens_kind
+from drowse.errors import RequestError, SourceSpecError
 
 LENS_SOURCE_FORMAT_VERSION = 2
 LENS_BINDING_FORMAT_VERSION = 2
@@ -378,20 +379,20 @@ def _resolve_model_for_fetch(model_id: str) -> tuple[str, int, int]:
 
     model_revision = resolve_model_revision(model_id)
     if model_revision is None:
-        raise ValueError(
+        raise RequestError(
             f"could not resolve immutable Hugging Face model revision for {model_id}"
         )
     try:
         d_model, n_layers = _config_dimensions(model_id, model_revision)
     except ValueError as exc:
-        raise ValueError(f"could not resolve model dimensions for {model_id}") from exc
+        raise RequestError(f"could not resolve model dimensions for {model_id}") from exc
     return model_revision, d_model, n_layers
 
 
 def _repo_commit(repo_id: str, revision: str) -> str:
     sha = getattr(_hf_api().model_info(repo_id, revision=revision), "sha", None)
     if not isinstance(sha, str) or not sha:
-        raise ValueError(f"could not resolve immutable revision for {repo_id}")
+        raise HFError(f"could not resolve immutable revision for {repo_id}")
     return sha
 
 
@@ -588,7 +589,7 @@ def fetch_lens_source(
     """
     provider = LENS_PROVIDERS.get(source)
     if provider is None:
-        raise ValueError(
+        raise SourceSpecError(
             f"unknown lens fetch source {source!r}; expected "
             + ", ".join(sorted(LENS_PROVIDERS))
         )

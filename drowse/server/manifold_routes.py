@@ -38,7 +38,6 @@ from drowse.store.manifold_authoring import (
 )
 from drowse.store.manifold_lifecycle import manifold_summary, remove_manifold_folder
 from drowse.base.paths import manifold_dir
-from drowse.server.errors import classify_extraction_error
 from drowse.server.operations import ProgressCallback, run_operation
 from drowse.server.runtime import NativeRequest, refuse_if_busy, run_in_thread, session_lock
 from drowse.server.response_models import (
@@ -693,6 +692,4 @@ def register_manifold_routes(app: FastAPI) -> None:
         async def job(on_progress: ProgressCallback) -> ManifoldInfo:
             return await run_in_thread(fit, on_progress)
 
-        return await run_operation(
-            request, job, failure="Manifold fit failed", classify=classify_extraction_error,
-        )
+        return await run_operation(request, job, failure="Manifold fit failed")

@@ -35,6 +35,7 @@ from drowse.readout.types import (
     next_prep_token,
     parse_gate_ref,
 )
+from drowse.errors import RequestError
 
 if TYPE_CHECKING:
     from drowse.geometry.manifold import Manifold
@@ -519,12 +520,12 @@ class GeometryInstrument:
         from drowse.readout.measurements import build_measurements
 
         if top_k is not None:
-            raise ValueError(
+            raise RequestError(
                 "geometry token-readout takes no top_k (a whitened probe "
                 "reading has no top-k width)"
             )
         if layers is not None:
-            raise ValueError(
+            raise RequestError(
                 "geometry token-readout takes no layers (the attached "
                 "roster's own fitted layers drive the capture)"
             )
@@ -534,7 +535,7 @@ class GeometryInstrument:
             "attach one with session.add_probe(selector) first"
         )
         if not self.names:
-            raise ValueError(no_probes)
+            raise RequestError(no_probes)
 
         def roster_layers() -> list[int]:
             # Resolved inside the exclusive section, where roster mutation
@@ -542,7 +543,7 @@ class GeometryInstrument:
             # surfaces as the caller-facing error, not as a capture over
             # layers the read can no longer score.
             if not monitor.probe_names:
-                raise ValueError(no_probes)
+                raise RequestError(no_probes)
             return sorted(monitor.probe_layers())
 
         def read(hidden: dict[int, torch.Tensor]) -> dict[str, Any]:

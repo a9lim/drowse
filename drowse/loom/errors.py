@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from drowse.errors import DrowseError
+from drowse.errors import DrowseError, RequestError
 
 
 class LoomTreeError(DrowseError):
@@ -36,12 +36,9 @@ class InvalidNodeOperationError(ValueError, LoomTreeError):
         return (400, str(self) or self.__class__.__name__)
 
 
-class RecipeOverrideError(ValueError, DrowseError):
+class RecipeOverrideError(RequestError):
     """Raised when a ``recipe_override`` string is not a mode or a valid partial
     recipe (unknown field, duplicate, malformed or out-of-range value)."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 class MutationDuringGenerationError(RuntimeError, LoomTreeError):

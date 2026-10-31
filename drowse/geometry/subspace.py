@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Sequence
 import torch
 
 from drowse.geometry.rbf import RbfFit, RbfFitPlan, eval_rbf
+from drowse.errors import ManifoldSpecError
 
 if TYPE_CHECKING:
     from drowse.geometry.whitener import LayerWhitener
@@ -528,7 +529,7 @@ def fit_affine_subspace(
     centroids = centroids.to(torch.float32)
     K = int(centroids.shape[0])
     if K < 2:
-        raise ValueError(f"an affine subspace needs >= 2 nodes, got {K}")
+        raise ManifoldSpecError(f"an affine subspace needs >= 2 nodes, got {K}")
     mu, X, basis, anchor, ev_ratio = _frame(
         centroids, n_components=n_components, whitener=whitener, layer=layer,
         neutral_mean=neutral_mean, whitened_gram=whitened_gram,
@@ -603,7 +604,7 @@ def fit_curved_subspace(
     centroids = centroids.to(torch.float32)
     K = centroids.shape[0]
     if K < 3:
-        raise ValueError(f"a manifold needs >= 3 nodes to fit, got {K}")
+        raise ManifoldSpecError(f"a manifold needs >= 3 nodes to fit, got {K}")
     plan = (
         layout if isinstance(layout, RbfFitPlan)
         else RbfFitPlan.build(layout, smoothing=smoothing)

@@ -66,6 +66,7 @@ from drowse.model.layers import LayerSelector
 from drowse.lens.lifecycle import LensFitRequest, LensFitter, LiveConfig
 from drowse.lens.runtime import CaptureHidden, LensRuntime, select_rows
 from drowse.readout.protocol import LatestSlices
+from drowse.errors import RequestError
 
 _log = logging.getLogger(__name__)
 
@@ -861,7 +862,7 @@ class LensInstrument:
         """
         word = selector.split("/", 1)[1]
         if not word:
-            raise ValueError("empty jlens probe word")
+            raise RequestError("empty jlens probe word")
         name = as_name if as_name is not None else selector
         runtime = self.runtime
         with self._exclusive(
@@ -1291,7 +1292,7 @@ class LensInstrument:
                 layers = sorted(set(int(l) for l in layers))
                 missing = [l for l in layers if l not in lens.jacobians]
                 if missing:
-                    raise ValueError(
+                    raise RequestError(
                         f"layers {missing} not in the fitted lens "
                         f"(fitted: {lens.source_layers[0]}.."
                         f"{lens.source_layers[-1]})"
@@ -1401,7 +1402,7 @@ class LensInstrument:
 
         width = 8 if top_k is None else int(top_k)
         if not 1 <= width <= 256:
-            raise ValueError("top_k must be in [1, 256]")
+            raise RequestError("top_k must be in [1, 256]")
         runtime = self.runtime
         lens = self._require()
         req = runtime.resolve_layers(lens, layers if layers is not None else "all")

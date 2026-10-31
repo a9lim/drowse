@@ -8,10 +8,17 @@ so callers (and the HTTP server) can catch the whole family with a single
 
 Every subclass returns an HTTP-style status code through
 :meth:`DrowseError.user_message`, which the server and CLI consume to translate
-exceptions consistently. The
-default ``(500, str(self))`` matches today's behaviour for any subclass
-that doesn't override; subclasses lift the status (and optionally rewrite
-the message) by overriding the method.
+exceptions consistently. The default is ``(500, str(self))``; subclasses
+lift the status (and optionally rewrite the message) by overriding the
+method.
+
+**Request errors.**  Input a caller can get wrong — a malformed spec, an
+out-of-range parameter, a name that cannot apply — raises a
+:class:`RequestError` (400, text verbatim) at the point it is validated.  A
+*bare* ``ValueError`` means an engine invariant broke: the server logs it
+and answers a scrubbed 500, so its text never reaches a client.  When a new
+validation can be triggered by a request, raise from this family, not a
+bare ``ValueError``.
 
 **Ownership rule.**  This module is the single home for the *core engine's*
 error classes — the ones raised across module boundaries by
@@ -52,12 +59,43 @@ def is_out_of_memory_error(exc: BaseException) -> bool:
     )
 
 
-class GenerationRequestError(ValueError, DrowseError):
-    """A generation or scoring request the caller got wrong (bad ``n``, an
-    empty choice set, mismatched labels): a 400, never an engine failure."""
+class RequestError(ValueError, DrowseError):
+    """Input the caller got wrong: malformed, out of range, or naming
+    something that cannot apply.
+
+    Raised where the input is validated, so the server answers 400 with this
+    text verbatim — the text is the user-facing contract.  A bare
+    ``ValueError`` is an engine invariant instead, which the server logs and
+    scrubs to a 500; anything a client can trigger by sending a bad value
+    belongs in this family.  Subclasses name a failure a client keys on;
+    the rest raise this directly.
+    """
 
     def user_message(self) -> tuple[int, str]:
         return (400, str(self) or self.__class__.__name__)
+
+
+class GenerationRequestError(RequestError):
+    """A generation or scoring request the caller got wrong (bad ``n``, an
+    empty choice set, mismatched labels): a 400, never an engine failure."""
+
+
+class SourceSpecError(RequestError):
+    """A malformed or unknown source specification: a lens or SAE source
+    (``local:<name>``, a provider, a release), a Hugging Face corpus spec,
+    or a manifold install target."""
+
+
+class ManifoldSpecError(RequestError):
+    """A manifold authoring or fit request the geometry cannot honor: an
+    invalid domain spec, too few nodes for the resolved topology, or fit
+    overrides that do not apply to the folder."""
+
+
+class PoisednessError(ManifoldSpecError):
+    """The node coordinates cannot determine an RBF interpolant (too few
+    nodes, or nodes that do not affinely span the embedding).  The client
+    keys its layout hint on this class name, which is the wire ``code``."""
 
 
 class WhitenerError(ValueError, DrowseError):
@@ -84,15 +122,12 @@ class ProfileError(ValueError, DrowseError):
         return (400, str(self) or self.__class__.__name__)
 
 
-class MergeError(ValueError, DrowseError):
+class MergeError(RequestError):
     """Raised when an offline direction merge or bake cannot be built.
 
     Covers the additive-subset grammar checks of ``manifold bake`` and the
     layer-coverage check of :func:`~drowse.geometry.profile.linear_sum`.
     """
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 class UnknownManifoldLabelError(KeyError, DrowseError):
@@ -106,7 +141,9 @@ class UnknownManifoldLabelError(KeyError, DrowseError):
     """
 
     def user_message(self) -> tuple[int, str]:
-        return (404, str(self))
+        # ``str(KeyError("x"))`` is repr-quoted; ``args[0]`` is the message.
+        msg = self.args[0] if self.args else self.__class__.__name__
+        return (404, str(msg))
 
 
 class SaeBackendImportError(ImportError, DrowseError):
@@ -116,25 +153,16 @@ class SaeBackendImportError(ImportError, DrowseError):
         return (400, str(self) or self.__class__.__name__)
 
 
-class SaeReleaseNotFoundError(ValueError, DrowseError):
+class SaeReleaseNotFoundError(RequestError):
     """Raised when a requested SAELens release does not exist."""
 
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
-
-class SaeModelMismatchError(ValueError, DrowseError):
+class SaeModelMismatchError(RequestError):
     """Raised when an SAE's base model does not match the drowse model."""
 
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
-
-class SaeCoverageError(ValueError, DrowseError):
+class SaeCoverageError(RequestError):
     """Raised when an SAE release covers zero of the model's layers."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 class SaeNotLoadedError(RuntimeError, DrowseError):
@@ -144,11 +172,8 @@ class SaeNotLoadedError(RuntimeError, DrowseError):
         return (404, str(self) or self.__class__.__name__)
 
 
-class SaeFeatureError(ValueError, DrowseError):
+class SaeFeatureError(RequestError):
     """Raised when an SAE feature id is malformed or outside the resident width."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 class RelpUnsupportedError(RuntimeError, DrowseError):
@@ -163,7 +188,7 @@ class RelpUnsupportedError(RuntimeError, DrowseError):
         return (422, str(self) or self.__class__.__name__)
 
 
-class UnsupportedProbeChannelError(ValueError, DrowseError):
+class UnsupportedProbeChannelError(RequestError):
     """Raised at steering-composition preflight when a probe gate references
     a channel its instrument family can never produce (e.g.
     ``@when:sae/123:membership`` — SAE readings carry only the activation
@@ -171,15 +196,9 @@ class UnsupportedProbeChannelError(ValueError, DrowseError):
     this step (prefill, capture unavailable), which stays quietly inactive.
     """
 
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
-
-class AmbiguousVariantError(ValueError, DrowseError):
+class AmbiguousVariantError(RequestError):
     """Raised when a :sae selector matches more than one extracted release."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 class UnknownVariantError(KeyError, DrowseError):
@@ -203,7 +222,7 @@ class RoleBaselineMismatchWarning(UserWarning):
     """
 
 
-class SteeringExprError(ValueError, DrowseError):
+class SteeringExprError(RequestError):
     """Raised when a steering expression string cannot be parsed."""
 
     def __init__(self, msg: str, *, col: int | None = None) -> None:
@@ -211,9 +230,6 @@ class SteeringExprError(ValueError, DrowseError):
         if col is not None:
             msg = f"{msg} (col {col})"
         super().__init__(msg)
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 class SteeringCompositionError(ValueError, DrowseError):
