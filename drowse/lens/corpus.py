@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, cast, overload
 
-from drowse.errors import DrowseError, SourceSpecError
+from drowse.errors import RequestError, SourceSpecError
 
 log = logging.getLogger(__name__)
 
@@ -647,11 +647,8 @@ def _start_lens_corpus_process(job: Any, *args: Any) -> tuple[Any, Any]:
     return process, receiver
 
 
-class EmptyCorpusError(ValueError, DrowseError):
+class EmptyCorpusError(RequestError):
     """A local corpus file holds no non-empty documents."""
-
-    def user_message(self) -> tuple[int, str]:
-        return (400, str(self) or self.__class__.__name__)
 
 
 def read_corpus_file(path: Path, n: int) -> list[str]:

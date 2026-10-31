@@ -658,7 +658,7 @@ def test_corpus_file_reads_text_lines_and_refuses_missing_or_empty_files(
     """The ``lens fit --corpus`` / ``sae train --corpus`` reader: JSON lines
     contribute their ``text``, blanks are skipped, and a missing or empty
     file is a typed error (exit 1 / exit 2 at the CLI)."""
-    from drowse.errors import DrowseError
+    from drowse.errors import RequestError
     from drowse.lens.corpus import EmptyCorpusError, read_corpus_file
 
     path = tmp_path / "corpus.txt"
@@ -669,4 +669,4 @@ def test_corpus_file_reads_text_lines_and_refuses_missing_or_empty_files(
     path.write_text("\n  \n")
     with pytest.raises(EmptyCorpusError, match="no non-empty documents") as err:
         read_corpus_file(path, 2)
-    assert isinstance(err.value, DrowseError) and err.value.user_message()[0] == 400
+    assert isinstance(err.value, RequestError) and err.value.user_message()[0] == 400
