@@ -285,7 +285,7 @@ def test_lens_probe_scores_strength_channel() -> None:
     assert compat.membership == 1.0
 
 
-def test_gated_lens_probe_keys_and_gate_scalars() -> None:
+def test_lens_gate_scalars_emit_one_strength_channel_and_arm_the_step_stash() -> None:
     """The gate scalar key space: ``jlens/<word>`` = strength (the one
     channel), emitted by ``scalar_gate_keys`` over the native readings — no
     ``:fraction`` / ``:membership`` constants."""

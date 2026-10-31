@@ -5,103 +5,22 @@ import time
 from typing import Any, cast
 from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
-from drowse.readout.types import (
-    GeometryLiveState,
-    LensLiveState,
-    SaeLiveState,
-)
 from fastapi.testclient import TestClient
 
 from drowse.errors import DrowseError, GenerationRequestError
 from drowse.generation.decode import GenerationConfig
 from drowse.generation.results import GenerationResult, RunSet
 from drowse.server.ws_models import WSSamplingParams, build_sampling_config
-from tests._fakes import make_mock_session
+from tests.support.server import mock_session, script_generate
 from tests.support.tokens import emit_token
 
 
 def _mock_session():
-    # Shared native-API wiring lives in tests/_fakes.py; the routes here need
-    # a real GenerationConfig rather than the shared config mock.
-    session = make_mock_session(config=GenerationConfig())
-    session.renderer.model_type = "gemma2"
-
-    session.tree = MagicMock()
-    session.tree.messages_for.return_value = []
-    session.tree.active_node_id = "test-assistant"
-    session.tree.get.return_value.mean_logprob = None
-    session.tree.get.return_value.mean_surprise = None
-    session.manifolds = {}
-    session.is_base_model = False
-    session.lens.has_compatible.return_value = False
-    session.scene_grammar = None
-    session.joint_logprob_cache = {}
-    # Read plane: the three instrument faces the routes and session_info read.
-    session.geometry.names = []
-    session.geometry.specs.return_value = {}
-    session.geometry.active_source = None
-    session.geometry.live_state = GeometryLiveState(enabled=True)
-    session.lens.names = []
-    session.lens.specs.return_value = {}
-    session.lens.active_source = None
-    session.lens.live_state = LensLiveState(enabled=False)
-    session.sae.names = []
-    session.sae.specs.return_value = {}
-    session.sae.active_source = None
-    session.sae.live_state = SaeLiveState(enabled=False)
-    session.instruments = {
-        "geometry": session.geometry,
-        "lens": session.lens,
-        "sae": session.sae,
-    }
-
-    monitor = MagicMock()
-    monitor.probe_names = []
-    monitor.attached_probes.return_value = {}
-    session.monitor = monitor
-    session.tokenizer = MagicMock()
-    session.chat_traits = SimpleNamespace(
-        supports_thinking=False, thinking_optional=False,
-    )
-    session._layers = []
-    session.last_per_token_scores = None
-    session.last_result = None
-
-    gen_state = MagicMock()
-    gen_state.finish_reason = "stop"
-    gen_state.emit_map = []
-    session.generation_state = gen_state
-
-    # EventBus mock with subscribe/unsubscribe support.
-    _event_subscribers = []
-
-    def _subscribe(cb: Any) -> Any:
-        _event_subscribers.append(cb)
-        def _unsub() -> None:
-            try:
-                _event_subscribers.remove(cb)
-            except ValueError:
-                pass
-        return _unsub
-
-    def _emit(event: Any) -> None:
-        for cb in list(_event_subscribers):
-            try:
-                cb(event)
-            except Exception:
-                pass
-
-    events = MagicMock()
-    events.subscribe = _subscribe
-    events.emit = _emit
-    session.events = events
-    session._event_subscribers = _event_subscribers
-
-    return session
+    # The native routes need a real GenerationConfig rather than a config mock.
+    return mock_session(config=GenerationConfig())
 
 
 @pytest.fixture
@@ -329,11 +248,10 @@ class TestProbes:
         assert resp.json()["probes"] == []
 
     def test_attach(self, session_and_client: Any) -> None:
-        from types import SimpleNamespace
         import torch
 
         from drowse.geometry.fold import fold_directions_to_subspace
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
 
         session, client = session_and_client
         # Unified attach: body-carried selector → session.add_probe, 201 + info.
@@ -644,9 +562,7 @@ class TestExtract:
             "honest.deceptive:role-pirate", profile,
         )
 
-    def test_extract_rejects_legacy_polymorphic_shape(
-        self, session_and_client: Any,
-    ) -> None:
+    def test_extract_rejects_unknown_fields(self, session_and_client: Any) -> None:
         session, client = session_and_client
         resp = client.post(
             "/drowse/v1/sessions/default/extract",
@@ -657,18 +573,8 @@ class TestExtract:
             },
         )
         assert resp.status_code == 400
+        assert "Extra inputs are not permitted" in resp.text
         session.extract.assert_not_called()
-
-    def test_raw_profile_load_route_is_removed(
-        self, session_and_client: Any,
-    ) -> None:
-        session, client = session_and_client
-        resp = client.post(
-            "/drowse/v1/sessions/default/profiles",
-            json={"name": "custom", "source_path": "/tmp/profile.pt"},
-        )
-        assert resp.status_code == 405
-        session.registry.put_profile.assert_not_called()
 
 
 # ---- WebSocket token+probe co-stream ------------------------------------
@@ -681,34 +587,9 @@ def test_ws_sampling_can_disable_final_probe_readings() -> None:
 
 
 class TestWebSocket:
-    def _attach_generate(self, session: Any, tokens: Any) -> None:
-        """Install a fake ``session.generate`` that drives ``on_token``."""
-        def _gen(input: Any, *, steering: Any = None, sampling: Any = None,
-                 stateless: Any = False, raw: Any = False, thinking: Any = None,
-                 on_token: Any = None, parent_node_id: Any = None, n: Any = 1,
-                 append_same_role: Any = True) -> Any:
-            for i, tok in enumerate(tokens):
-                emit_token(on_token, tok, 1000 + i, index=i)
-                time.sleep(0.001)
-            result = GenerationResult(
-                text="".join(tokens), tokens=list(range(1000, 1000 + len(tokens))),
-                token_count=len(tokens), tok_per_sec=50.0, elapsed=0.05,
-                finish_reason="stop",
-            )
-            session.last_result = result
-            session.last_result = result
-            per_token = {
-                "happy": [0.1 * (i + 1) for i in range(len(tokens))],
-            }
-            session.last_per_token_scores = per_token
-            session.last_per_token_scores = per_token
-            return RunSet([result])
-
-        session.generate.side_effect = _gen
-
     def test_generate_happy_path(self, session_and_client: Any) -> None:
         session, client = session_and_client
-        self._attach_generate(session, ["Hello", " ", "world"])
+        script_generate(session, ["Hello", " ", "world"])
 
         with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({"type": "generate", "input": "hi"})
@@ -814,7 +695,7 @@ class TestWebSocket:
         under default labels would be a different prompt than the one being
         shadowed."""
         session, client = session_and_client
-        self._attach_generate(session, ["ok"])
+        script_generate(session, ["ok"])
         with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             ws.send_json({
                 "type": "generate",
@@ -938,7 +819,7 @@ class TestWebSocket:
         repeatedly so any regression of that pattern surfaces.
         """
         session, client = session_and_client
-        self._attach_generate(session, ["a", "b"])
+        script_generate(session, ["a", "b"])
 
         with client.websocket_connect("/drowse/v1/sessions/default/stream") as ws:
             for _ in range(3):
@@ -1061,7 +942,7 @@ class TestWebSocket:
         import drowse.steering.grammar as _sx
 
         session, client = session_and_client
-        self._attach_generate(session, ["ok"])
+        script_generate(session, ["ok"])
 
         real_parse = _sx.parse_expr
 
@@ -1098,30 +979,6 @@ class TestWebSocket:
             assert tokens == ["ok"]
 
 
-# ---- Deleted surfaces ------------------------------------------------------
-
-
-class TestDeletedTraitsStream:
-    """The traits SSE stream is gone — the WS ``measurements`` envelope and the
-    OpenAI/Ollama ``x-drowse-probe-readings`` extension are the live per-token
-    delivery channels."""
-
-    def test_traits_stream_route_is_not_registered(
-        self, session_and_client: Any,
-    ) -> None:
-        _, client = session_and_client
-        resp = client.get("/drowse/v1/sessions/default/traits/stream")
-        assert resp.status_code == 404
-
-    def test_session_has_no_trait_queue_plumbing(self) -> None:
-        from drowse.session.session import DrowseSession
-
-        for attr in (
-            "register_trait_queue", "unregister_trait_queue", "_trait_queues",
-        ):
-            assert not hasattr(DrowseSession, attr)
-
-
 # ---- score_single_token (monitor) ----------------------------------------
 
 
@@ -1132,7 +989,7 @@ class TestScoreSingleToken:
         from drowse.readout.types import ProbeReading
         from drowse.geometry.fold import fold_directions_to_subspace
 
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
         dim = 16
         probe_vec = torch.randn(dim)
         means = {0: torch.zeros(dim)}
@@ -1615,91 +1472,65 @@ class TestAnalyticsMultiNodeProbe:
     not 500 on ``folded_directions`` (regression: a rank-8 probe attached
     while the web UI polled ``/correlation`` aborted the request)."""
 
-    def _wire(self, session_and_client: Any) -> tuple[Any, TestClient]:
-        import threading
-
+    @pytest.fixture
+    def wired(
+        self, tiny_session: Any, app_client: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[Any, TestClient]:
+        """A real session with one registered steering vector (``vx``), one
+        foldable R=1 vector probe (``vp``) and one rank-3 multi-node probe
+        (``fan``, the shape that used to crash), at the session's width."""
         import torch
 
-        from drowse.geometry.whitener import LayerWhitener
         from drowse.geometry.domains import CustomDomain
-        from drowse.geometry.subspace import LayerSubspace
-        from drowse.geometry.manifold import Manifold
-        from drowse.session.session import DrowseSession
         from drowse.geometry.fold import fold_directions_to_subspace
+        from drowse.geometry.manifold import Manifold
+        from drowse.geometry.subspace import LayerSubspace
+        from tests.support.sessions import register_vectors
 
-        session, client = session_and_client
-        torch.manual_seed(3)
-
-        # One registered steering vector + one foldable (R=1) vector probe +
-        # one rank-3 multi-node probe (the shape that used to crash), all over
-        # layers {0, 1} in dim 4.
-        vx = {0: torch.randn(4), 1: torch.randn(4)}
+        session = tiny_session
+        register_vectors(session, "vx")
+        dim = int(session.model_info["hidden_dim"])
+        layers = range(len(session.layers))
         g = torch.Generator().manual_seed(11)
-        acts = {L: torch.randn(80, 4, generator=g) for L in (0, 1)}
-        means = {L: torch.zeros(4) for L in (0, 1)}
-        whitener = LayerWhitener.from_neutral_activations(acts, means)
         vp = fold_directions_to_subspace(
-            "vp", {0: torch.randn(4), 1: torch.randn(4)}, means,
-            whitener=whitener,
+            "vp", {L: torch.randn(dim, generator=g) for L in layers},
+            session.layer_means, whitener=session.whitener,
         )
-        K, R, D = 4, 3, 4
-        basis, _ = torch.linalg.qr(torch.randn(D, R))
-        basis = basis.T.contiguous()
+        K, R = 4, 3
+        node_coords = torch.randn(K, R, generator=g)
         fan = Manifold(
             name="fan",
             domain=CustomDomain(R),
             node_labels=[f"n{i}" for i in range(K)],
-            node_coords=torch.randn(K, R),
+            node_coords=node_coords,
             layers={
                 L: LayerSubspace.affine(
-                    torch.zeros(D), basis, node_coords=torch.randn(K, R),
+                    session.layer_means[L].clone(),
+                    torch.linalg.qr(torch.randn(dim, R, generator=g))[0].T.contiguous(),
+                    node_coords=node_coords.clone(),
                 )
-                for L in (0, 1)
+                for L in layers
             },
+            mahalanobis_share={L: 1.0 for L in layers},
         )
-
-        # These stubs feed the *engine's own* analytics methods, bound real
-        # below — ``analytics_names`` / ``_live_direction_tensors`` read the
-        # session's registry and ``self._monitor`` directly, so the stub seeds
-        # a real registry and the private monitor backing.
-        from drowse.session.registry import ArtifactRegistry, ModelBinding
-
-        session._registry = ArtifactRegistry(ModelBinding(
-            model=None, tokenizer=None, model_id="stub/model",
-            device=torch.device("cpu"), dtype=torch.float32,
-        ))
-        session._registry.put_profile("vx", vx)
-        session._monitor.probe_names = ["vp", "fan"]
-        session._monitor.manifolds = {"vp": vp, "fan": fan}
-        session._gen_lock = threading.Lock()
-        # ``analytics_names`` reads the roster through the geometry
-        # instrument's LOCKED ``manifolds()`` snapshot now — a bare MagicMock
-        # instrument silently yields an empty roster, so wire the real one
-        # (it reads the same ``session._monitor.manifolds`` stub above).
-        from tests.support.geometry import stub_geometry_instrument
-
-        session._geometry_instrument = stub_geometry_instrument(session)
-        # Bind the real analytics methods onto the mock so the endpoint
-        # exercises the production fold path, not a vacuous MagicMock.
-        session.analytics_names = lambda: DrowseSession.analytics_names(session)
-        session._live_direction_tensors = (
-            lambda n: DrowseSession._live_direction_tensors(session, n)
+        served = {"vp": vp, "fan": fan}
+        monkeypatch.setattr(
+            session.registry, "ensure_manifold_loaded", lambda key: served[key],
         )
-        session.analytics_profile = (
-            lambda n: DrowseSession.analytics_profile(session, n)
-        )
+        session.add_probe("vp")
+        session.add_probe("fan")
+        return session, app_client(session, default_steering=None)
 
-        session.whitener = whitener
-        return session, cast(TestClient, client)
-
-    def test_analytics_names_excludes_multinode(self, session_and_client: Any) -> None:
-        session, _ = self._wire(session_and_client)
+    def test_analytics_names_excludes_multinode(self, wired: Any) -> None:
+        session, _ = wired
         # The fan is dropped; the vector and the R=1 probe survive.
+        assert set(session.probes) == {"vp", "fan"}
         assert session.analytics_names() == ["vp", "vx"]
-        assert session._live_direction_tensors("fan") is None
+        assert session.analytics_profile("fan") is None
+        assert session.analytics_profile("vp") is not None
 
-    def test_correlation_skips_multinode_no_500(self, session_and_client: Any) -> None:
-        _, client = self._wire(session_and_client)
+    def test_correlation_skips_multinode_no_500(self, wired: Any) -> None:
+        _, client = wired
         r = client.get("/drowse/v1/sessions/default/correlation")
         assert r.status_code == 200
         body = r.json()
@@ -1708,13 +1539,13 @@ class TestAnalyticsMultiNodeProbe:
         # The surviving pair has a real (non-null) cosine cell.
         assert body["matrix"]["vp"]["vx"] is not None
 
-    def test_correlation_explicit_multinode_404(self, session_and_client: Any) -> None:
-        _, client = self._wire(session_and_client)
+    def test_correlation_explicit_multinode_404(self, wired: Any) -> None:
+        _, client = wired
         r = client.get("/drowse/v1/sessions/default/correlation?names=fan,vx")
         assert r.status_code == 404
 
-    def test_pairwise_multinode_404(self, session_and_client: Any) -> None:
-        _, client = self._wire(session_and_client)
+    def test_pairwise_multinode_404(self, wired: Any) -> None:
+        _, client = wired
         r = client.get("/drowse/v1/sessions/default/profiles/pairwise?a=fan&b=vx")
         assert r.status_code == 404
 

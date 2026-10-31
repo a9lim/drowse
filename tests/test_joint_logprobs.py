@@ -36,8 +36,7 @@ from drowse.server.tree_routes import (
     _remember_joint_logprobs,
 )
 from drowse.steering.triggers import TriggerContext
-from tests.conftest import FakeLogitsModel
-from tests.support.lens import stub_lens_instrument
+from tests.support.decode import FakeLogitsModel
 
 
 # ---------------------------------------------------------------------------
@@ -413,9 +412,7 @@ class _MockSession:
 
     def __init__(self):
 
-        from tests.support.geometry import stub_geometry_instrument
-        from tests.support.read_plane import make_read_plane
-        from tests.support.sae import stub_sae_instrument
+        from tests.support.read_plane import ReadRig
         from drowse.readout.types import ReadRequest
 
         self.tokenizer = _MockTokenizer()
@@ -439,18 +436,15 @@ class _MockSession:
             },
         )()
         self._engine = SimpleNamespace(gen_config=lambda _sampling: self.config)
-        self._geometry_instrument = stub_geometry_instrument(self)
-        self._lens_instrument = stub_lens_instrument(self)
-        self._sae_instrument = stub_sae_instrument(self)
+        rig = ReadRig(
+            capture=SimpleNamespace(detach=lambda: None), monitor=self._monitor,
+        )
+        self._geometry_instrument = rig.geometry
+        self._lens_instrument = rig.lens
+        self._sae_instrument = rig.sae
 
         request = ReadRequest(final_aggregate=False)
-        plane = make_read_plane(
-            capture=SimpleNamespace(detach=lambda: None),
-            monitor=self._monitor,
-            geometry=self._geometry_instrument,
-            lens=self._lens_instrument,
-            sae=self._sae_instrument,
-        )
+        plane = rig.plane
         plane.resolve_demand = lambda **_kwargs: None
         plane.begin = lambda *_args, **_kwargs: (
             plane.bind_runs(request, request, request) and False
@@ -459,7 +453,7 @@ class _MockSession:
         self._steering_composer = SimpleNamespace(
             steering_needs_probe_gating=lambda: False,
         )
-        self.renderer = self.mock_renderer(self._prepare_input)
+        self.renderer = self.mock_renderer(self._render)
 
     def mock_renderer(self, prepare_input: Any) -> Any:
         """The renderer surface the replay reads: the prompt render, the
@@ -495,7 +489,7 @@ class _MockSession:
             reads=self._read_plane,
         )
 
-    def _prepare_input(self, _input: Any, **kwargs: Any) -> torch.Tensor:
+    def _render(self, _input: Any, **kwargs: Any) -> torch.Tensor:
         node_id = kwargs["parent_node_id"]
         return build_chat_input(
             self.tokenizer, self.tree.messages_for(node_id),

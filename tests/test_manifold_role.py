@@ -207,7 +207,7 @@ def test_nearest_node_role_label_short_circuits():
     assert mf.nearest_node_role("professor") is None
 
 
-def test_nearest_node_role_legacy_empty():
+def test_nearest_node_role_is_none_without_roles():
     """A legacy fitted manifold without ``node_roles`` returns None."""
     mf = Manifold(
         name="legacy",

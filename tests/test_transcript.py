@@ -36,7 +36,7 @@ class _Config:
         self.system_prompt = system_prompt
 
 
-class _StubSession:
+class StubSession:
     """Tiny replacement for DrowseSession exposing the transcript API surface."""
 
     def __init__(
@@ -130,7 +130,7 @@ def test_save_load_round_trip(tmp_path: Path):
 
 
 def test_from_path_walks_active_path():
-    sess = _StubSession()
+    sess = StubSession()
     u = sess.tree.add_user_turn("hi there")
     a = sess.tree.begin_assistant(u, recipe=Recipe(steering="0.3 honest.deceptive"))
     sess.tree.finalize_assistant(
@@ -165,7 +165,7 @@ def _simple_transcript(*, model_id: str = "m1", with_assistant: bool = True) -> 
 
 
 def test_import_default_attaches_under_root():
-    sess = _StubSession()
+    sess = StubSession()
     t = _simple_transcript()
     leaf = t.import_into(sess, mode="default")
     # Walk up — should hit root_id without crossing any existing user node.
@@ -174,7 +174,7 @@ def test_import_default_attaches_under_root():
 
 
 def test_import_here_attaches_under_active():
-    sess = _StubSession()
+    sess = StubSession()
     # Seed an existing path so active != root.
     u0 = sess.tree.add_user_turn("seed")
     a0 = sess.tree.begin_assistant(u0, recipe=Recipe())
@@ -187,7 +187,7 @@ def test_import_here_attaches_under_active():
 
 
 def test_import_merge_finds_user_prefix():
-    sess = _StubSession()
+    sess = StubSession()
     # Pre-populate sess with the same first user-turn the transcript carries.
     u0 = sess.tree.add_user_turn("hi")
     a0 = sess.tree.begin_assistant(u0, recipe=Recipe())
@@ -214,7 +214,7 @@ def test_import_merge_skip_walks_existing_prefix_no_dupes():
     Post-merge u3 should attach as a descendant of u2 (the deepest
     matched user), with no u1/u2 duplicates spawned under u2.
     """
-    sess = _StubSession()
+    sess = StubSession()
     u1 = sess.tree.add_user_turn("u1_text")
     a1 = sess.tree.begin_assistant(u1, recipe=Recipe())
     sess.tree.finalize_assistant(a1, text="a1_text")
@@ -257,7 +257,7 @@ def test_import_merge_skip_walks_existing_prefix_no_dupes():
 
 
 def test_import_merge_falls_back_to_root_when_no_match():
-    sess = _StubSession()
+    sess = StubSession()
     u0 = sess.tree.add_user_turn("different")
     sess.tree.begin_assistant(u0, recipe=Recipe())
 
@@ -273,7 +273,7 @@ def test_import_merge_falls_back_to_root_when_no_match():
 
 
 def test_guard_model_mismatch_refuses_merge():
-    sess = _StubSession(model_id="m1")
+    sess = StubSession(model_id="m1")
     t = _simple_transcript(model_id="m2")
     with (
         pytest.warns(UserWarning, match="differs from session"),
@@ -283,7 +283,7 @@ def test_guard_model_mismatch_refuses_merge():
 
 
 def test_guard_model_mismatch_warns_on_default():
-    sess = _StubSession(model_id="m1")
+    sess = StubSession(model_id="m1")
     t = _simple_transcript(model_id="m2")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -298,7 +298,7 @@ def test_guard_model_mismatch_warns_on_default():
 
 
 def test_guard_system_prompt_mismatch_proceeds_with_warning():
-    sess = _StubSession(system_prompt="be helpful")
+    sess = StubSession(system_prompt="be helpful")
     t = Transcript(
         model_id="m1", system_prompt="be sarcastic",
         probes=[],
@@ -312,7 +312,7 @@ def test_guard_system_prompt_mismatch_proceeds_with_warning():
 
 
 def test_guard_missing_probes_warns():
-    sess = _StubSession(probe_names=("angry.calm",))
+    sess = StubSession(probe_names=("angry.calm",))
     t = Transcript(
         model_id="m1", system_prompt=None,
         probes=[ProbeRef(name="never_loaded", sha256="abc")],
@@ -326,7 +326,7 @@ def test_guard_missing_probes_warns():
 
 
 def test_guard_probe_drift_warns_then_strict_raises():
-    sess = _StubSession(
+    sess = StubSession(
         probe_names=("angry.calm",),
         probe_hashes={"angry.calm": "session_hash"},
     )
@@ -343,7 +343,7 @@ def test_guard_probe_drift_warns_then_strict_raises():
     assert any("drift" in str(w.message).lower() for w in caught)
 
     # Strict raises.
-    sess2 = _StubSession(
+    sess2 = StubSession(
         probe_names=("angry.calm",),
         probe_hashes={"angry.calm": "session_hash"},
     )
@@ -397,7 +397,7 @@ def test_v2_round_trip_speaker_and_cast(tmp_path: Path):
 
 
 def test_import_reattaches_generated_user_seat_turn():
-    sess = _StubSession()
+    sess = StubSession()
     t = Transcript(
         model_id="m1", system_prompt=None, probes=[],
         turns=[
@@ -428,7 +428,7 @@ def test_import_reattaches_generated_user_seat_turn():
 def test_import_merges_cast_and_flags_conflicts():
     from drowse import CastMember
 
-    sess = _StubSession()
+    sess = StubSession()
     sess.tree.set_cast_member(
         "deer", CastMember(recipe=Recipe(steering="0.9 bold")),
     )
@@ -508,7 +508,7 @@ def test_minimal_transcript_reads_with_optional_header_fields_absent():
 def _event_session():
     from drowse.events import EventBus, LoomMutated
 
-    sess = _StubSession()
+    sess = StubSession()
     events: list[LoomMutated] = []
     bus = EventBus()
     bus.subscribe(lambda e: events.append(e) if isinstance(e, LoomMutated) else None)
@@ -589,7 +589,7 @@ def test_merge_with_nothing_new_notes_the_anchor_in_one_update():
 # ---------------------------------------------------------------------------
 
 
-class _ReplaySession(_StubSession):
+class _ReplaySession(StubSession):
     """Stub whose ``generate`` lands a finalized sibling, like the session."""
 
     def __init__(self) -> None:

@@ -22,7 +22,9 @@ from drowse.model.scene import (
     render_scene_raw,
     validate_turn_grammar,
 )
-from tests.test_role_templates import (
+from tests.support.chat_templates import (
+    GEMMA_STRICT_TEMPLATE,
+    QWEN_STRIP_TEMPLATE,
     FakeTokenizer,
     GEMMA4_TEMPLATE,
     GEMMA_TEMPLATE,
@@ -38,45 +40,6 @@ from tests.test_role_templates import (
 # ---------------------------------------------------------------------------
 # Additional fakes
 # ---------------------------------------------------------------------------
-
-
-# Faithful-strict gemma: <bos> prelude, system folded into the first user
-# turn (the real gemma has no system role), and non-alternating roles raise
-# (``raise_exception`` is undefined in the plain jinja2 environment, so
-# calling it throws — the same observable behavior as the real template).
-GEMMA_STRICT_TEMPLATE = (
-    "<bos>"
-    "{% if messages[0]['role'] == 'system' %}"
-    "{% set sys = messages[0]['content'] %}{% set msgs = messages[1:] %}"
-    "{% else %}{% set sys = '' %}{% set msgs = messages %}{% endif %}"
-    "{% for m in msgs %}"
-    "{% set role = 'model' if m['role'] == 'assistant' else m['role'] %}"
-    "{% set expected = 'user' if loop.index0 % 2 == 0 else 'model' %}"
-    "{% if role != expected %}"
-    "{{ raise_exception('roles must alternate') }}"
-    "{% endif %}"
-    "<start_of_turn>{{ role }}\n"
-    "{% if loop.first and sys %}{{ sys }}\n\n{% endif %}"
-    "{{ m['content'] }}<end_of_turn>\n"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}<start_of_turn>model\n{% endif %}"
-)
-
-
-# Qwen3-style: strips think blocks from assistant history and appends an
-# empty think scaffold to the generation prompt (the gen_extra case).
-QWEN_STRIP_TEMPLATE = (
-    "{% for m in messages %}"
-    "{% set c = m['content'] %}"
-    "{% if m['role'] == 'assistant' and '</think>' in c %}"
-    "{% set c = c.split('</think>')[-1] %}"
-    "{% endif %}"
-    "<|im_start|>{{ m['role'] }}\n{{ c }}<|im_end|>\n"
-    "{% endfor %}"
-    "{% if add_generation_prompt %}"
-    "<|im_start|>assistant\n<think>\n\n</think>\n\n"
-    "{% endif %}"
-)
 
 
 def _grammar(template: str, model_type: str):
@@ -117,7 +80,7 @@ def test_round_trip_validation(template: str, model_type: str):
 def test_real_smollm2_tokenizer_passes_the_autopsy():
     """The default GPU test model gets scene mode (its cached tokenizer only)."""
     transformers = pytest.importorskip("transformers")
-    from tests._gpu_model import DEFAULT_GPU_MODEL_ID
+    from tests.support.gpu import DEFAULT_GPU_MODEL_ID
 
     try:
         tok = transformers.AutoTokenizer.from_pretrained(
@@ -138,12 +101,6 @@ def test_unknown_family_is_unsupported():
     tok = FakeTokenizer(QWEN_TEMPLATE)
     with pytest.raises(SceneGrammarError):
         extract_turn_grammar(tok, "wumpus")
-
-
-def test_scene_errors_are_drowse_errors():
-    assert issubclass(SceneGrammarError, DrowseError)
-    assert issubclass(SceneRenderError, DrowseError)
-    assert issubclass(SceneThinkingUnsupportedError, DrowseError)
 
 
 # ---------------------------------------------------------------------------

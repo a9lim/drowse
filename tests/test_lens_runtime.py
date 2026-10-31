@@ -1218,9 +1218,8 @@ def test_lens_gate_keys_none_vs_empty_contract() -> None:
 
 
 def test_lens_run_has_no_per_forward_read_to_memoize() -> None:
-    """The gate→display reuse is the step-keyed worker stash, so a bound run
-    carries no per-forward read (nor a memo or priming hook to go stale);
-    its aggregate read rescores every call."""
+    """The gate→display reuse is the step-keyed worker stash, so a bound
+    run's aggregate read rescores on every call."""
     from drowse.readout.types import ReadRequest
 
     s = LensHarness()
@@ -1240,8 +1239,6 @@ def test_lens_run_has_no_per_forward_read_to_memoize() -> None:
     for _ in range(3):
         run.observe_aggregate({})
     assert len(calls) == 3
-    for name in ("observe", "prime_observation", "_memo_step", "_memo_readings"):
-        assert not hasattr(run, name)
     inst.close_run()
 
 

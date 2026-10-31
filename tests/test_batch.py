@@ -33,7 +33,7 @@ from drowse.session.batch import (
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
 from tests.support.sessions import TinySessionFactory, register_vectors
-from tests.support.stubs import attach_stub_instruments, wire_stub_steering
+from tests.support.composer import SteeringRig
 
 
 # ---------------------------------------------------------------------------
@@ -985,11 +985,7 @@ class TestSweepOnTinySession:
 
 class TestPrefixCacheEligibility:
     def _session(self):
-        from drowse.session.session import DrowseSession
-        session = DrowseSession.__new__(DrowseSession)
-        attach_stub_instruments(session)
-        wire_stub_steering(session)
-        return session
+        return SteeringRig()
 
     @pytest.mark.parametrize(
         "expr, expected_inactive",
@@ -1008,32 +1004,32 @@ class TestPrefixCacheEligibility:
         self, expr: "str | None", expected_inactive: bool,
     ) -> None:
         s = self._session()
-        assert s._steering_composer.steering_value_prefill_inactive(expr) is expected_inactive
+        assert s.composer.steering_value_prefill_inactive(expr) is expected_inactive
 
     def test_mixed_terms_active_if_any_steers_prefill(self) -> None:
         # One response-phase term + one default-BOTH term → prefill IS steered.
         s = self._session()
-        assert s._steering_composer.steering_value_prefill_inactive("0.5 honest@response + 0.3 warm") is False
+        assert s.composer.steering_value_prefill_inactive("0.5 honest@response + 0.3 warm") is False
 
     def test_malformed_expression_treated_as_active(self) -> None:
         # A parse failure is conservatively prefill-active so the caller skips
         # caching and lets the normal path surface the error.
         s = self._session()
-        assert s._steering_composer.steering_value_prefill_inactive("0.5 !nope~bad") is False
+        assert s.composer.steering_value_prefill_inactive("0.5 !nope~bad") is False
 
     def test_active_in_prefill_reads_the_live_stack(self) -> None:
         from drowse.steering.triggers import Trigger
 
         s = self._session()
-        s._steering_composer._stack = []
-        assert s._steering_composer.steering_active_in_prefill() is False
+        s.composer._stack = []
+        assert s.composer.steering_active_in_prefill() is False
         # Response-phase entry (prompt=False) → prefill untouched.
-        s._steering_composer._stack = [{"honest": (0.5, Trigger.GENERATED_ONLY)}]
-        assert s._steering_composer.steering_active_in_prefill() is False
+        s.composer._stack = [{"honest": (0.5, Trigger.GENERATED_ONLY)}]
+        assert s.composer.steering_active_in_prefill() is False
         # Default BOTH entry → prefill steered.
-        s._steering_composer._stack = [{"honest": (0.5, Trigger.BOTH)}]
-        assert s._steering_composer.steering_active_in_prefill() is True
+        s.composer._stack = [{"honest": (0.5, Trigger.BOTH)}]
+        assert s.composer.steering_active_in_prefill() is True
         # A probe-gated trigger reports inactive during prefill.
         gated = Trigger.when("honest.deceptive", ">", 0.4)
-        s._steering_composer._stack = [{"honest": (0.5, gated)}]
-        assert s._steering_composer.steering_active_in_prefill() is False
+        s.composer._stack = [{"honest": (0.5, gated)}]
+        assert s.composer.steering_active_in_prefill() is False

@@ -22,7 +22,7 @@ __all__ = ["ExtractionRig", "folded_vector_manifold", "make_extraction"]
 def folded_vector_manifold(name: str = "vector", direction: Any = None) -> Any:
     """A real rank-1 affine manifold (one layer), foldable to a profile."""
     from drowse.geometry.fold import fold_directions_to_subspace
-    from tests._whitener import synthetic_whitener
+    from tests.support.whitener import synthetic_whitener
 
     direction = torch.tensor([1.0, 0.0]) if direction is None else direction
     whitener = synthetic_whitener([0], int(direction.numel()))

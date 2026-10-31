@@ -30,11 +30,11 @@ from drowse.lens.jlens import (
 )
 from drowse.lens.fit import fit_jacobian_lens
 from drowse.model.readout import get_final_norm, get_unembedding
-from tests._jlens_toys import TOY_D as _D
-from tests._jlens_toys import TOY_VOCAB as _VOCAB
-from tests._jlens_toys import CharTokenizer as _CharTokenizer
-from tests._jlens_toys import ToyCausalLM as _TinyCausalLM
-from tests._jlens_toys import frozen_toy as _frozen_model
+from tests.support.jlens_toys import TOY_D as _D
+from tests.support.jlens_toys import TOY_VOCAB as _VOCAB
+from tests.support.jlens_toys import CharTokenizer as _CharTokenizer
+from tests.support.jlens_toys import ToyCausalLM as _TinyCausalLM
+from tests.support.jlens_toys import frozen_toy as _frozen_model
 
 
 def _layers(model: _TinyCausalLM) -> list[nn.Module]:

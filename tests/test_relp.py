@@ -46,7 +46,7 @@ from drowse.lens.store import (
     save_lens_checkpoint,
 )
 from drowse.lens.sources import LENS_SOURCES, list_lens_sources, use_lens_source
-from tests._jlens_toys import TOY_VOCAB, ToyCausalLM
+from tests.support.jlens_toys import TOY_VOCAB, ToyCausalLM
 from tests.support.lens import LENS_PROMPTS as _PROMPTS
 from tests.support.lens import LensHarness
 

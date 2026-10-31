@@ -17,7 +17,7 @@ import pytest
 from drowse.base import hf
 from drowse.base.paths import manifold_dir, tensor_filename
 from drowse.store import hub
-from tests.test_install import MODEL, author_manifold, write_fitted_manifold
+from tests.support.artifacts import MODEL, author_manifold, write_fitted_manifold
 
 
 def test_split_revision_plain():

@@ -12,6 +12,8 @@ import pytest
 
 from drowse.base import atomic
 from drowse.base.atomic import write_bytes_atomic, write_json_atomic
+import os
+import stat
 
 
 def test_artifact_lock_registry_releases_inactive_paths(tmp_path: Path):
@@ -171,3 +173,113 @@ def test_windows_access_denied_process_is_treated_as_live(
 
     monkeypatch.setattr(ctypes, "windll", _Windll(), raising=False)
     assert atomic._windows_process_exists(42)
+
+
+# ---------------------------------------------------------------------------
+# Private, independent staging
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_does_not_follow_a_planted_staging_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "conversation.json"
+    victim = tmp_path / "unrelated.txt"
+    victim.write_text("preserve me")
+    planted = target.with_suffix(".json.tmp")
+    planted.symlink_to(victim)
+
+    atomic.write_json_atomic(target, {"private": "conversation"})
+
+    assert victim.read_text() == "preserve me"
+    assert not target.is_symlink()
+    assert target.read_text() == '{\n  "private": "conversation"\n}\n'
+    assert planted.is_symlink()
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
+def test_atomic_state_write_is_private_even_with_permissive_umask(tmp_path: Path) -> None:
+    target = tmp_path / "conversation.json"
+    previous = os.umask(0)
+    try:
+        atomic.write_json_atomic(target, {"private": "conversation"})
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+def test_simultaneous_atomic_writes_publish_complete_independent_payloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "state.json"
+    barrier = threading.Barrier(2)
+    replace = atomic.os.replace
+    published: list[bytes] = []
+    guard = threading.Lock()
+
+    def publish(source: Path, destination: Path) -> None:
+        barrier.wait(timeout=3)
+        with guard:
+            published.append(Path(source).read_bytes())
+            replace(source, destination)
+
+    monkeypatch.setattr(atomic.os, "replace", publish)
+    payloads = [b"a" * 8192, b"b" * 8192]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writes = [pool.submit(atomic.write_bytes_atomic, target, payload) for payload in payloads]
+        for write in writes:
+            write.result(timeout=5)
+    assert sorted(published) == payloads
+    assert target.read_bytes() in payloads
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["state.json"]
+
+def test_failed_publication_cleans_staging_and_preserves_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "state.json"
+    target.write_bytes(b"original")
+
+    def fail_replace(source: Path, destination: Path) -> None:
+        raise PermissionError("injected publication failure")
+
+    monkeypatch.setattr(atomic.os, "replace", fail_replace)
+    with pytest.raises(PermissionError):
+        atomic.write_bytes_atomic(target, b"replacement")
+    assert target.read_bytes() == b"original"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["state.json"]
+
+def test_atomic_write_supports_long_valid_destination_names(tmp_path: Path) -> None:
+    target = tmp_path / ("x" * 240 + ".json")
+    atomic.write_bytes_atomic(target, b"complete")
+    assert target.read_bytes() == b"complete"
+    assert list(tmp_path.iterdir()) == [target]
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory sync")
+def test_atomic_write_syncs_payload_before_publication_and_directory_afterward(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = []
+    original_replace = atomic.os.replace
+
+    def sync(fd: int) -> None:
+        events.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "payload")
+
+    def publish(source: Path, destination: Path) -> None:
+        events.append("publish")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(atomic.os, "fsync", sync)
+    monkeypatch.setattr(atomic.os, "replace", publish)
+    atomic.write_bytes_atomic(tmp_path / "state.json", b"complete")
+    assert events == ["payload", "publish", "directory"]
+
+def test_atomic_write_preserves_original_when_payload_sync_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "state.json"
+    target.write_bytes(b"original")
+
+    def fail_sync(fd: int) -> None:
+        raise OSError("injected storage failure")
+
+    monkeypatch.setattr(atomic.os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="storage failure"):
+        atomic.write_bytes_atomic(target, b"replacement")
+    assert target.read_bytes() == b"original"
+    assert list(tmp_path.iterdir()) == [target]

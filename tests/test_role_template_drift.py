@@ -21,7 +21,9 @@ and refresh every family before a release.
 """
 from __future__ import annotations
 
+import functools
 import os
+from typing import Any
 
 import pytest
 
@@ -76,6 +78,15 @@ def test_every_supported_family_is_tested():
     )
 
 
+@functools.cache
+def _load_tokenizer(model_id: str) -> Any:
+    """One tokenizer load per checkpoint (families share several)."""
+    from transformers import AutoTokenizer
+
+    allow_download = os.environ.get("DROWSE_TEST_LIVE_TOKENIZERS") == "1"
+    return AutoTokenizer.from_pretrained(model_id, local_files_only=not allow_download)
+
+
 @pytest.mark.parametrize("family", _supported_families())
 def test_role_header_matches_live_template(family: str):
     """The registered ``RoleHeader`` splice key is present in the
@@ -88,15 +99,10 @@ def test_role_header_matches_live_template(family: str):
     (or raise :class:`RoleTemplateDriftError` at runtime).
     """
     pytest.importorskip("transformers")
-    from transformers import AutoTokenizer
 
     model_id = _REPRESENTATIVE_TOKENIZERS[family]
-    allow_download = os.environ.get("DROWSE_TEST_LIVE_TOKENIZERS") == "1"
     try:
-        tok = AutoTokenizer.from_pretrained(
-            model_id,
-            local_files_only=not allow_download,
-        )
+        tok = _load_tokenizer(model_id)
     except Exception as e:
         pytest.skip(
             f"could not load tokenizer for {family} ({model_id}): {e}. "

@@ -25,8 +25,12 @@ from drowse.model.scene import (
     render_scene,
     validate_turn_grammar,
 )
-from tests.test_role_templates import FakeTokenizer, QWEN_TEMPLATE
-from tests.test_scene import GEMMA_STRICT_TEMPLATE
+from tests.support.chat_templates import (
+    GEMMA_STRICT_TEMPLATE,
+    QWEN_STRIP_TEMPLATE,
+    QWEN_TEMPLATE,
+    FakeTokenizer,
+)
 
 
 # Qwen3-style enable_thinking switch: the generation prompt carries an
@@ -296,7 +300,6 @@ def test_seat_stop_skipped_for_assistant_raw_and_no_grammar():
 def test_message_thinking_flows_through_build_chat_input():
     """A ``"thinking"`` key on a chat message reaches the stitcher, and
     renders that differ only in thinking never collide in the cache."""
-    from tests.test_scene import QWEN_STRIP_TEMPLATE
 
     tok = _tok(QWEN_STRIP_TEMPLATE)
     grammar = extract_turn_grammar(
@@ -355,7 +358,6 @@ def test_commit_thinking_gate():
     can't render it (no grammar / no think delimiters)."""
     from drowse.loom.ops import append_turn
     from drowse.model.scene import SceneThinkingUnsupportedError
-    from tests.test_scene import QWEN_STRIP_TEMPLATE
 
     def commit(grammar: Any, thinking: str | None) -> tuple[LoomTree, str]:
         tree = LoomTree()
@@ -391,7 +393,6 @@ def test_authored_same_roles_coalesce_before_scene_seating_rules():
     """Same effective roles append in place on every renderer; scene mode
     still permits distinct-label same-seat turns that legacy templates reject."""
     from drowse.loom.ops import append_turn
-    from tests.test_scene import QWEN_STRIP_TEMPLATE
 
     def appender(grammar: Any) -> tuple[LoomTree, Any]:
         tree = LoomTree()

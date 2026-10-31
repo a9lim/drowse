@@ -2,7 +2,6 @@
 
 import json
 from typing import Any, cast
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,7 +13,8 @@ from drowse.readout.types import (
 from fastapi.testclient import TestClient
 
 from drowse.generation.results import GenerationResult, RunSet, TokenEvent
-from tests._generation_stream import TestGenerationStream
+from tests.support.streams import FakeGenerationStream
+from tests.support.server import mock_session
 from drowse.errors import ConcurrentGenerationError, ProfileNotRegisteredError
 
 
@@ -23,69 +23,18 @@ from drowse.errors import ConcurrentGenerationError, ProfileNotRegisteredError
 # ---------------------------------------------------------------------------
 
 def _mock_session():
-    """Create a mock DrowseSession with realistic attributes."""
-    session = MagicMock()
-    session.model_id = "test/model"
-    session.model_info = {
-        "model_type": "gemma2",
-        "num_layers": 26,
-        "hidden_dim": 2304,
-        "vram_used_gb": 5.2,
-        "param_count": 2_614_000_000,
-        "device": "cpu",
-        "dtype": "torch.bfloat16",
-    }
-    session.model = MagicMock()
-    session.renderer.model_type = "gemma2"
-    session.layers = [MagicMock() for _ in range(26)]
+    """A mock DrowseSession with realistic attributes."""
+    return mock_session()
 
-    session.config = MagicMock()
-    session.config.temperature = 1.0
-    session.config.top_p = 0.9
-    session.config.top_k = None
-    session.config.max_new_tokens = 1024
-    session.config.system_prompt = None
-    session.config.thinking = None
 
-    session.profiles = {}
-    session.probes = {}
-    session.tree = MagicMock()
-    session.tree.messages_for.return_value = []
-    session.tree.active_node_id = "test-assistant"
-    session.tree.get.return_value.mean_logprob = None
-    session.tree.get.return_value.mean_surprise = None
-    session.is_base_model = False
-    session.lens.has_compatible.return_value = False
-    session.scene_grammar = None
-    session.joint_logprob_cache = {}
-    # Read plane: the three instrument faces the routes and session_info read.
-    session.geometry.names = []
-    session.geometry.specs.return_value = {}
-    session.geometry.active_source = None
-    session.geometry.live_state = GeometryLiveState(enabled=True)
-    session.lens.names = []
-    session.lens.specs.return_value = {}
-    session.lens.active_source = None
-    session.lens.live_state = LensLiveState(enabled=False)
-    session.sae.names = []
-    session.sae.specs.return_value = {}
-    session.sae.active_source = None
-    session.sae.live_state = SaeLiveState(enabled=False)
-    session.instruments = {
-        "geometry": session.geometry,
-        "lens": session.lens,
-        "sae": session.sae,
-    }
-
-    # Gen state carries the real finish_reason after each generation.
-    gen_state = MagicMock()
-    gen_state.finish_reason = "stop"
-    gen_state.emit_map = []
-    session.generation_state = gen_state
-    session.last_result = None
-    session.tokenizer = MagicMock()
-    session.tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
-    return session
+def test_mock_session_rejects_names_and_calls_the_session_lacks() -> None:
+    """The shared route mock is an autospec, so a route reaching a removed
+    session method, or calling one with a stale signature, fails."""
+    session = _mock_session()
+    with pytest.raises(AttributeError):
+        session.no_such_session_method  # noqa: B018
+    with pytest.raises(TypeError):
+        session.generate("hi", no_such_kwarg=1)
 
 
 def _single_run(**kwargs: Any) -> RunSet:
@@ -192,7 +141,7 @@ class TestChatCompletions:
             text="Hello world", tokens=[1, 2], token_count=2,
             tok_per_sec=5.0, elapsed=0.4, finish_reason="stop",
         )
-        session.generate_stream.return_value = TestGenerationStream([
+        session.generate_stream.return_value = FakeGenerationStream([
             TokenEvent(text="Hello", token_id=1, index=0),
             TokenEvent(text=" world", token_id=2, index=1),
         ], result)
@@ -220,7 +169,7 @@ class TestChatCompletions:
     def test_streaming_drowse_error_is_sent_in_band(self, session_and_client: Any) -> None:
         session, client = session_and_client
 
-        session.generate_stream.return_value = TestGenerationStream(
+        session.generate_stream.return_value = FakeGenerationStream(
             [], None,
             error=ProfileNotRegisteredError("No profile registered for 'missing'"),
         )
@@ -251,7 +200,7 @@ class TestChatCompletions:
         self, session_and_client: Any,
     ) -> None:
         session, client = session_and_client
-        session.generate_stream.return_value = TestGenerationStream(
+        session.generate_stream.return_value = FakeGenerationStream(
             [], None, error=ConcurrentGenerationError("busy"),
         )
         resp = client.post("/v1/chat/completions", json={
@@ -282,7 +231,7 @@ class TestChatCompletions:
             yield
 
         monkeypatch.setattr(compat_module, "session_lock", _never_acquires)
-        session.generate_stream.return_value = TestGenerationStream([], None)
+        session.generate_stream.return_value = FakeGenerationStream([], None)
 
         resp = client.post("/v1/chat/completions", json={
             "messages": [{"role": "user", "content": "Hi"}],
@@ -379,7 +328,7 @@ class TestCompletions:
             text="42", tokens=[1], token_count=1,
             tok_per_sec=5.0, elapsed=0.2,
         )
-        session.generate_stream.return_value = TestGenerationStream([
+        session.generate_stream.return_value = FakeGenerationStream([
             TokenEvent(text="42", token_id=1, index=0),
         ], session.last_result)
 
@@ -392,48 +341,6 @@ class TestCompletions:
         call_kwargs = session.generate_stream.call_args.kwargs
         assert call_kwargs["live_scores"] is False
         assert call_kwargs["live_readouts"] is False
-
-
-# ---------------------------------------------------------------------------
-# CLI arg parsing
-# ---------------------------------------------------------------------------
-
-class TestCLIParsing:
-    def test_serve_subcommand(self):
-        from drowse.cli.main import parse_args
-        args = parse_args(["serve", "google/gemma-2-2b-it", "--port", "9000"])
-        assert args.command == "serve"
-        assert args.model == "google/gemma-2-2b-it"
-        assert args.port == 9000
-
-    def test_serve_steer_flag(self):
-        from drowse.cli.main import parse_args
-        args = parse_args([
-            "serve", "m", "--steer", "0.2 cheerful + 0.3 warm",
-        ])
-        assert args.steer == "0.2 cheerful + 0.3 warm"
-
-    def test_serve_cors(self):
-        from drowse.cli.main import parse_args
-        args = parse_args(["serve", "m", "--cors", "http://localhost:3000", "--cors", "*"])
-        assert args.cors == ["http://localhost:3000", "*"]
-
-    def test_serve_no_web_flag_default_off(self):
-        from drowse.cli.main import parse_args
-        # Dashboard is on by default; ``args.no_web`` defaults to False
-        # so create_app will receive ``web=True`` from the runner.
-        args = parse_args(["serve", "m"])
-        assert args.no_web is False
-
-    def test_serve_no_web_flag_opt_out(self):
-        from drowse.cli.main import parse_args
-        args = parse_args(["serve", "m", "--no-web"])
-        assert args.no_web is True
-
-    # Manifold lifecycle coverage (rm / clear / refresh, and the GGUF
-    # export driver) lives in tests/test_manifolds_io.py and
-    # tests/test_cli_manifold_fold.py; the CLI flag grammar around them is
-    # in tests/test_cli_flags.py.
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +631,7 @@ class TestOllamaApi:
             text="Hello world", tokens=[1, 2], token_count=2, prompt_tokens=3,
             tok_per_sec=5.0, elapsed=0.4,
         )
-        session.generate_stream.return_value = TestGenerationStream([
+        session.generate_stream.return_value = FakeGenerationStream([
             TokenEvent(text="Hello", token_id=1, index=0),
             TokenEvent(text=" world", token_id=2, index=1),
         ], result)
@@ -753,7 +660,7 @@ class TestOllamaApi:
     def test_chat_streaming_materialization_error_is_ndjson(self, session_and_client: Any) -> None:
         session, client = session_and_client
 
-        session.generate_stream.return_value = TestGenerationStream(
+        session.generate_stream.return_value = FakeGenerationStream(
             [], None,
             error=ProfileNotRegisteredError("No profile registered for 'missing'"),
         )
@@ -1122,11 +1029,11 @@ def test_joint_logprobs_lock_timeout_is_a_503_without_model_work(monkeypatch: An
 
     import drowse.server.runtime as runtime
     from drowse.server import create_app
-    from tests.test_server_loom import _StubSession
+    from tests.support.server import StubSession
 
     monkeypatch.setattr(runtime, "SESSION_LOCK_TIMEOUT_SECONDS", 0.05)
     computed: list[Any] = []
-    session: Any = _StubSession()
+    session: Any = StubSession()
     session.joint_logprobs = lambda *args, **kwargs: computed.append(args)
     session.joint_logprob_cache = {}
     user_id = session.tree.add_user_turn("hi")

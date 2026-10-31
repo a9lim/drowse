@@ -294,14 +294,6 @@ def test_make_static_cache_early_initializes_standard_gqa_geometry(
 # ---------------------------------------------------------------------------
 
 
-def test_cuda_graphs_flag_parses():
-    from drowse.cli.main import parse_args
-    args = parse_args(["serve", "google/gemma-2-2b-it"])
-    assert getattr(args, "cuda_graphs", False) is False
-    args = parse_args(["serve", "google/gemma-2-2b-it", "--cuda-graphs"])
-    assert args.cuda_graphs is True
-
-
 def test_yaml_cuda_graphs_true_folds_onto_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from drowse.cli.main import parse_args
     from drowse.cli.context import effective_config

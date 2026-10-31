@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.lens import stub_lens_kwargs
+from tests.support.lens import lens_kwargs
 
 from drowse.readout.types import DepthSummary, ProbeReading, ScalarReading
 from drowse.readout.measurements import (
@@ -309,7 +309,7 @@ class TestReplayEnvelopes:
         from all three families, so the route dispatches without a branch."""
         from drowse.lens.instrument import LensInstrument
         from tests.support.geometry import stub_geometry_instrument
-        from tests.support.sae import make_resident, stub_sae_instrument
+        from tests.support.sae import make_resident, sae_instrument
 
         session = SimpleNamespace(
             model_id="test/model",
@@ -321,14 +321,14 @@ class TestReplayEnvelopes:
             session, replay=_canned_replay({"formal.casual": _geometry_reading()}),
         )
         lens = LensInstrument(
-            **stub_lens_kwargs(session, replay=_canned_replay((
+            **lens_kwargs(replay=_canned_replay((
             {0: [("a", 0.5, 7)]}, [("a", 0.5, 0.0, 0.0)],
         ))),
         )
         # No fitted lens on the stub: resolve a stand-in over one layer.
         lens._require = lambda: object()  # type: ignore[method-assign]
         lens.runtime.resolve_layers = lambda _lens, _layers: [0]  # type: ignore[method-assign]
-        sae = stub_sae_instrument(session, replay=_canned_replay([(3, 1.5)]))
+        sae = sae_instrument(session, replay=_canned_replay([(3, 1.5)]))
         make_resident(sae.runtime, layer=14)
         for instrument in (geometry, lens, sae):
             out = _token_readout(instrument, instrument.family)
@@ -371,13 +371,13 @@ class TestRejectedKnobs:
     @staticmethod
     def _instrument(family: str) -> Any:
         from tests.support.geometry import stub_geometry_instrument
-        from tests.support.sae import stub_sae_instrument
+        from tests.support.sae import sae_instrument
 
         # The knob is refused before any replay work: the replay is unwired.
         session = SimpleNamespace(model_id="test/model")
         if family == "geometry":
             return stub_geometry_instrument(session)
-        return stub_sae_instrument(session)
+        return sae_instrument(session)
 
     def test_geometry_rejects_top_k(self) -> None:
         with pytest.raises(ValueError, match="no top_k"):

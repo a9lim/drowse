@@ -428,7 +428,7 @@ def test_cli_generate_plans_then_fills_with_the_seed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     from drowse.cli.main import main
-    from tests._cli_fakes import FakeSession, install_fake_session
+    from tests.support.cli import FakeSession, install_fake_session
 
     class _Generator(FakeSession):
         def generate_manifold(self, plan: Any, **kwargs: Any) -> None:

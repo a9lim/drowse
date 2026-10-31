@@ -7,7 +7,7 @@ own status goes to ``log.info``, which nothing configures for a library, and
 neither the whitener build nor the probe bootstrap had a narration surface at
 all.  These tests pin the ``on_progress`` chain that closes it:
 ``load_model`` → ``DrowseSession.__init__`` → whitener build /
-``_bootstrap_manifold_probes``, plus the CLI's printing sink.
+``bootstrap_probe_roster``, plus the CLI's printing sink.
 """
 from __future__ import annotations
 

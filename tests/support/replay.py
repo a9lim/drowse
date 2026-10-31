@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import torch
 
-from tests._jlens_toys import CharTokenizer, frozen_toy
+from tests.support.jlens_toys import CharTokenizer, frozen_toy
 
 if TYPE_CHECKING:
     from drowse.generation.render import PromptRenderer

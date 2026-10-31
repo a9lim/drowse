@@ -13,13 +13,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 import torch
 from fastapi.testclient import TestClient
 
 from drowse.geometry.profile import Profile
+from tests.support.server import mock_session
 
 
 # ---------------------------------------------------------------------------
@@ -46,43 +46,21 @@ class _IdentityWhitener:
         return vec.float().cpu()
 
 
-def _mock_session_with_vectors(vectors: dict[str, Profile]):
-    session = MagicMock()
-    session.model_id = "test/model"
-    session.model_info = {"model_type": "gemma2", "num_layers": 4, "hidden_dim": 16}
-    session._device = "cpu"
-    session._dtype = "torch.bfloat16"
-    session._created_ts = 1_700_000_000
-
-    session.config = MagicMock()
-    session.config.temperature = 1.0
-    session.config.top_p = 0.9
-    session.config.top_k = None
-    session.config.max_new_tokens = 64
-    session.config.system_prompt = None
-    session.config.thinking = None
+def _mock_session_with_vectors(vectors: dict[str, Profile]) -> Any:
+    """The shared mock session serving ``vectors`` through the analytics
+    surface the correlation/pairwise routes read (CPU snapshots)."""
+    from drowse.generation.decode import GenerationConfig
 
     # The profile registry stores raw per-layer tensor dicts; the route wraps
-    # each in a Profile for the wire.  Analytics still read Profiles below.
-    session.profiles = {
-        name: dict(prof.items()) for name, prof in vectors.items()
-    }
-    session.probes = {}
-    session.history = []
-    session.monitor = MagicMock()
-    session.monitor.probe_names = []
-    # Read-side analytics now flow through a CPU-snapshot cache so the polled
-    # correlation/pairwise endpoints never touch the GPU.  Mirror that shape
-    # against the mock's (already-CPU) vector Profiles.
-    session.analytics_names = lambda: sorted(vectors.keys())
-    session.analytics_profile = lambda name: vectors.get(name)
-    session._tokenizer = MagicMock()
-    session._layers = []
-    session.whitener = _IdentityWhitener()
-
-    session.events = MagicMock()
-    session.events.subscribe = lambda cb: (lambda: None)
-    session.events.emit = lambda event: None
+    # each in a Profile for the wire.  Analytics read the Profiles.
+    session = mock_session(
+        config=GenerationConfig(max_new_tokens=64),
+        model_info={"model_type": "gemma2", "num_layers": 4, "hidden_dim": 16},
+        profiles={name: dict(prof.items()) for name, prof in vectors.items()},
+        whitener=_IdentityWhitener(),
+    )
+    session.analytics_names.side_effect = lambda: sorted(vectors)
+    session.analytics_profile.side_effect = vectors.get
     return session
 
 
@@ -314,7 +292,7 @@ class TestPerLayerScores:
         from drowse.readout.monitor import Monitor
         from drowse.geometry.fold import fold_directions_to_subspace
 
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
         means = {0: torch.zeros(4)}
         whit = isotropic_whitener([0], 4)
         # Mahalanobis-only: an isotropic whitener reproduces the Euclidean
@@ -346,7 +324,7 @@ class TestPerLayerScores:
     def test_empty_input_returns_empty(self) -> None:
         from drowse.readout.monitor import Monitor
         from drowse.geometry.fold import fold_directions_to_subspace
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}
         whit = isotropic_whitener([0], 4)
@@ -360,7 +338,7 @@ class TestPerLayerScores:
     def test_layers_outside_probe_cache_omitted(self) -> None:
         from drowse.readout.monitor import Monitor
         from drowse.geometry.fold import fold_directions_to_subspace
-        from tests._whitener import isotropic_whitener
+        from tests.support.whitener import isotropic_whitener
 
         means = {0: torch.zeros(4)}
         whit = isotropic_whitener([0], 4)

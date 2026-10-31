@@ -6,7 +6,6 @@ needed.
 """
 from __future__ import annotations
 
-import hashlib
 import gc
 import json
 import threading
@@ -19,105 +18,23 @@ import pytest
 import torch
 
 from drowse.fit import capture as V
+from tests.support.capture import (
+    DIM,
+    N_LAYERS,
+    StubHandle,
+    install_capture,
+    label_encoder_batch,
+)
 from drowse.events import EventBus, ManifoldExtracted
 from drowse.fit.pipeline import ManifoldExtractionPipeline
 from tests.support.sae import MockSaeBackend
 from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 from drowse.store.manifold_folder import ManifoldFolder
 from drowse.base.paths import tensor_filename
-from tests._whitener import synthetic_means, synthetic_whitener
-from tests.support.stubs import wire_stub_steering
+from tests.support.whitener import synthetic_whitener
 from tests.support.extraction import make_extraction
-from tests.support.engine import attach_engine, seed_prefix_cache
 
 _LABELS = ["calm", "uneasy", "afraid", "frantic", "numb"]
-_DIM = 8
-_N_LAYERS = 4
-
-
-class _CaptureTokenizer:
-    chat_template = None
-    pad_token_id = 0
-    eos_token_id = 0
-    bos_token_id = 0
-    all_special_ids: list[int] = []
-    added_tokens_encoder: dict[str, int] = {}
-
-    def __call__(
-        self, texts: list[str], *, add_special_tokens: bool = False,
-    ) -> dict[str, list[list[int]]]:
-        del add_special_tokens
-        return {
-            "input_ids": [
-                [1 + (ord(char) % 97) for char in text] or [1] for text in texts
-            ],
-        }
-
-
-def _stub_encoder(
-    model: Any, tokenizer: Any, prompt: str, response: str, layers: Any,
-    device: Any, **_kwargs: Any,
-) -> dict[int, torch.Tensor]:
-    """Synthetic per-layer activations, deterministic per node label.
-
-    Conversational signature: ignores the baseline ``prompt`` and keys off the
-    ``response`` (the node corpus entry, ``"<label> statement i"``)."""
-    label = response.split()[0]
-    seed = int(hashlib.sha256(label.encode("utf-8")).hexdigest()[:8], 16)
-    g = torch.Generator().manual_seed(seed)
-    base = torch.randn(_DIM, generator=g)
-    out: dict[int, torch.Tensor] = {}
-    for layer in range(len(layers)):
-        v = base.clone()
-        v[2] = 0.5 * layer            # layer-varying offset
-        out[layer] = v + 0.01 * torch.randn(_DIM)
-    return out
-
-
-def _stub_encoder_batch(
-    model: Any, tokenizer: Any, prompts: Any, responses: Any, layers: Any,
-    device: Any, **kwargs: Any,
-) -> dict[int, torch.Tensor]:
-    """Batched seam matching ``capture._encode_and_capture_all_batch``.
-
-    Stacks the per-row :func:`_stub_encoder` over the chunk (same call order, so
-    the deterministic-per-label activations and RNG consumption are identical to
-    the old per-row capture).  Returns ``{layer: (B, D)}``."""
-    rows = [
-        _stub_encoder(model, tokenizer, p, r, layers, device, **kwargs)
-        for p, r in zip(prompts, responses)
-    ]
-    return {
-        idx: torch.stack([row[idx] for row in rows])
-        for idx in range(len(layers))
-    }
-
-
-class _Handle:
-    """Minimal ModelHandle stub for ``ManifoldExtractionPipeline``.
-
-    Real (identity) layer modules host the fit-scoped capture hooks; the
-    batched capture seam is monkeypatched, so they never fire.
-    """
-
-    def __init__(self) -> None:
-        self.model_id = "stub-model"
-        # Use a real nn.Module so the protocol's ``model: nn.Module`` is met.
-        self.model: torch.nn.Module = torch.nn.Linear(1, 1)
-        self.tokenizer: Any = _CaptureTokenizer()
-        self.device = torch.device("cpu")
-        self.dtype = torch.float32
-        self.layers: Any = torch.nn.ModuleList(
-            torch.nn.Identity() for _ in range(_N_LAYERS)
-        )
-        # Activation-space fits require a covering whitener (no Euclidean
-        # fallback post-4.0); synthesize one + matching neutral means on CPU.
-        self.layer_means = synthetic_means(range(_N_LAYERS), _DIM)
-        self.whitener = synthetic_whitener(
-            range(_N_LAYERS), _DIM, means=self.layer_means,
-        )
-
-
 def _box1d_domain(periodic: bool, k: int) -> dict[str, Any]:
     axis = {
         "name": "t", "periodic": periodic, "period": 1.0,
@@ -171,21 +88,18 @@ def _author_manifold(
 def _stub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     torch.manual_seed(0)
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "drowse-home"))
-    monkeypatch.setattr(V, "_encode_and_capture_all_batch", _stub_encoder_batch)
-    # Single baseline prompt so any node corpus length is a multiple of k=1
-    # (the conversational alignment invariant); the stub ignores the prompt.
-    monkeypatch.setattr(V, "_load_baseline_prompts", lambda: ["baseline prompt"])
+    install_capture(monkeypatch)
 
 
 def test_fit_produces_manifold(tmp_path: Path) -> None:
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     manifold = pipe.fit(folder)
 
     assert manifold.name == "mood"
     assert manifold.domain.intrinsic_dim == 1
     assert manifold.node_labels == _LABELS
-    assert sorted(manifold.layers) == list(range(_N_LAYERS))
+    assert sorted(manifold.layers) == list(range(N_LAYERS))
     assert manifold.feature_space == "raw"
 
 
@@ -205,7 +119,7 @@ def test_templated_fit_rematerializes_value_and_assistant_edits() -> None:
         "local", "weekday-fit", "", template_ref="local/weekday",
         fit_mode="pca",
     )
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
 
     create_template_folder(
@@ -263,12 +177,12 @@ def test_template_mutation_between_resolve_and_hash_cannot_publish_stale_inputs(
 
     monkeypatch.setattr(TemplateFolder, "sha256", _mutating_sha)
     with pytest.raises(ManifoldAuthoringChangedError):
-        ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+        ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
 
 def test_fit_can_restrict_transformer_layers(tmp_path: Path) -> None:
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     manifold = pipe.fit(folder, layer_indices=[1, 3])
     assert sorted(manifold.layers) == [1, 3]
 
@@ -283,7 +197,7 @@ def test_fit_can_restrict_transformer_layers(tmp_path: Path) -> None:
 
 def test_fit_workspace_layers_match_canonical_band(tmp_path: Path) -> None:
     folder = _author_manifold(tmp_path)
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(
         folder, layer_indices="workspace",
     )
     # Canonical predicate: 0.40 <= L/(n_layers-1) <= 0.90.
@@ -294,17 +208,17 @@ def test_fit_layer_scope_invalidates_incompatible_tensor_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder, layer_indices=[1, 3])
     captured_scopes: list[list[int]] = []
 
     def _counting(*args: Any, **kwargs: Any) -> Any:
         captured_scopes.append(list(kwargs["layer_indices"]))
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
     manifold = pipe.fit(folder)
-    assert sorted(manifold.layers) == list(range(_N_LAYERS))
+    assert sorted(manifold.layers) == list(range(N_LAYERS))
     assert captured_scopes == [[0, 2]]
 
 
@@ -312,7 +226,7 @@ def test_full_capture_cache_serves_subset_without_forward(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
 
     from drowse.store.manifold_tensors import ActivationRowStore
@@ -347,7 +261,7 @@ def test_shared_capture_stem_lock_serializes_independent_folders(
     from drowse.base import atomic
     folder_a = _author_manifold(tmp_path / "a")
     folder_b = _author_manifold(tmp_path / "b")
-    handle = _Handle()
+    handle = StubHandle()
     entered_capture = threading.Event()
     release_capture = threading.Event()
     second_waiting = threading.Event()
@@ -363,7 +277,7 @@ def test_shared_capture_stem_lock_serializes_independent_folders(
         if call_number == 1:
             entered_capture.set()
             assert release_capture.wait(timeout=5)
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     real_artifact_lock = atomic.artifact_lock
 
@@ -428,7 +342,7 @@ def test_cold_fit_prepares_token_identity_once_across_capture_lock(
         extraction_module, "prepare_manifold_capture_identity",
         _counting_prepare,
     )
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(
+    ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(
         folder, layer_indices=[0],
     )
 
@@ -474,7 +388,7 @@ def test_fit_overrides_share_manifest_transaction_without_lost_update(
     monkeypatch.setattr(
         ManifoldExtractionPipeline, "_fit_snapshot", _observe_locked,
     )
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
 
     def _run_first() -> None:
         try:
@@ -530,10 +444,10 @@ def test_distinct_model_targets_compute_concurrently(
         return object()
 
     monkeypatch.setattr(ManifoldExtractionPipeline, "_fit_snapshot", _overlap)
-    handles = [_Handle(), _Handle()]
+    handles = [StubHandle(), StubHandle()]
     handles[1].model_id = "other-model"
 
-    def _run(handle: _Handle) -> None:
+    def _run(handle: StubHandle) -> None:
         try:
             ManifoldExtractionPipeline(handle, EventBus()).fit(folder)
         except BaseException as exc:  # pragma: no cover - asserted below
@@ -552,7 +466,7 @@ def test_target_fit_lock_name_is_bounded_for_long_valid_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     folder = _author_manifold(tmp_path / ("f" * 64))
-    handle = _Handle()
+    handle = StubHandle()
     handle.model_id = "org/" + ("model" * 30)
     monkeypatch.setattr(
         ManifoldExtractionPipeline, "_fit_snapshot",
@@ -570,7 +484,7 @@ def test_reader_stays_available_and_authoring_cas_rejects_stale_fit(
     from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
     target = folder / tensor_filename("stub-model")
     entered = threading.Event()
@@ -614,7 +528,7 @@ def test_interrupted_pair_publish_is_retryable(
     import drowse.store.manifold_tensors as manifold_module
 
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     real_replace = manifold_module._replace_manifold_file
     failed = False
 
@@ -649,7 +563,7 @@ def test_interrupted_existing_pair_replacement_self_repairs(
     from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
     target = folder / tensor_filename("stub-model")
     real_replace = manifold_module._replace_manifold_file
@@ -680,7 +594,7 @@ def test_pair_committed_before_manifest_failure_self_repairs(
     from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
     target = folder / tensor_filename("stub-model")
     real_update = ManifoldFolder.update_file_hashes
@@ -716,9 +630,9 @@ def test_clear_invalidates_only_selected_inflight_target(
     from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
-    handle_a = _Handle()
+    handle_a = StubHandle()
     fit_a = ManifoldExtractionPipeline(handle_a, EventBus()).fit(folder)
-    handle_b = _Handle()
+    handle_b = StubHandle()
     handle_b.model_id = "other-model"
     fit_b = ManifoldExtractionPipeline(handle_b, EventBus()).fit(folder)
     target_a = folder / tensor_filename(handle_a.model_id)
@@ -763,7 +677,7 @@ def test_removed_and_recreated_folder_rejects_stale_publication(
     from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
-    fitted = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    fitted = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     target = folder / tensor_filename("stub-model")
     with _locked_manifest(folder):
         revision = _authoring_snapshot_locked(
@@ -792,7 +706,7 @@ def test_disjoint_layer_top_up_preserves_existing_row_cache(
 
     folder_a = _author_manifold(tmp_path / "a")
     folder_b = _author_manifold(tmp_path / "b")
-    handle = _Handle()
+    handle = StubHandle()
     ManifoldExtractionPipeline(handle, EventBus()).fit(
         folder_a, layer_indices=[0],
     )
@@ -803,7 +717,7 @@ def test_disjoint_layer_top_up_preserves_existing_row_cache(
 
     def _counting(*args: Any, **kwargs: Any) -> Any:
         scopes.append(list(kwargs["layer_indices"]))
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
     ManifoldExtractionPipeline(handle, EventBus()).fit(
@@ -832,7 +746,7 @@ def test_truncated_row_shard_recaptures_that_layer(
     from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
     capture_dir = model_dir("stub-model") / "manifold_capture"
     row_path, = capture_dir.glob("*.rows.layer_1.safetensors")
@@ -844,7 +758,7 @@ def test_truncated_row_shard_recaptures_that_layer(
 
     def _counting(*args: Any, **kwargs: Any) -> Any:
         scopes.append(list(kwargs["layer_indices"]))
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
     pipe.fit(folder)
@@ -855,7 +769,7 @@ def test_baseline_prompt_change_invalidates_final_tensor_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
     monkeypatch.setattr(V, "_load_baseline_prompts", lambda: ["changed baseline"])
     calls = 0
@@ -863,7 +777,7 @@ def test_baseline_prompt_change_invalidates_final_tensor_cache(
     def _counting(*args: Any, **kwargs: Any) -> Any:
         nonlocal calls
         calls += 1
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
     pipe.fit(folder)
@@ -872,7 +786,7 @@ def test_baseline_prompt_change_invalidates_final_tensor_cache(
 
 def test_node_label_rename_invalidates_fitted_artifact(tmp_path: Path) -> None:
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     first = pipe.fit(folder)
     data = json.loads((folder / "manifold.json").read_text())
     data["nodes"][0]["label"] = "serene"
@@ -897,10 +811,10 @@ def test_capture_does_not_retry_a_known_bad_batch_width(
         widths.append(len(responses))
         if len(responses) >= 16:
             raise RuntimeError("synthetic out of memory")
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _bounded)
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     assert widths.count(16) == 1
 
 
@@ -915,7 +829,7 @@ def test_fit_returns_node_roles_without_reload(tmp_path: Path) -> None:
         node["role"] = node["label"]
     (folder / "manifold.json").write_text(json.dumps(meta))
 
-    handle = _Handle()
+    handle = StubHandle()
     handle.model.config = SimpleNamespace(model_type="gemma2")  # type: ignore[attr-defined]
     manifold = ManifoldExtractionPipeline(handle, EventBus()).fit(folder)
 
@@ -928,7 +842,7 @@ def test_fit_returns_node_roles_without_reload(tmp_path: Path) -> None:
 
 def test_fit_writes_tensor_and_manifest(tmp_path: Path) -> None:
     folder = _author_manifold(tmp_path)
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     tensor_name = tensor_filename("stub-model")
     sidecar_name = Path(tensor_filename("stub-model")).with_suffix(".json").name
     assert (folder / tensor_name).exists()
@@ -944,18 +858,18 @@ def test_fit_emits_event(tmp_path: Path) -> None:
     seen = []
     events.subscribe(lambda e: seen.append(e)
                      if isinstance(e, ManifoldExtracted) else None)
-    ManifoldExtractionPipeline(_Handle(), events).fit(folder)
+    ManifoldExtractionPipeline(StubHandle(), events).fit(folder)
     assert len(seen) == 1
     assert seen[0].name == "mood"
 
 
 def test_fit_cache_hit_skips_forward_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
 
     calls = {"n": 0}
-    real = _stub_encoder_batch
+    real = label_encoder_batch
 
     def _counting(*args: Any, **kwargs: Any) -> dict[int, torch.Tensor]:
         calls["n"] += 1
@@ -973,7 +887,7 @@ def test_missing_whitener_fails_before_manifold_capture(
     from drowse.errors import WhitenerError
 
     folder = _author_manifold(tmp_path)
-    handle = _Handle()
+    handle = StubHandle()
     setattr(handle, "whitener", None)
     monkeypatch.setattr(
         V, "_encode_and_capture_all_batch",
@@ -990,7 +904,7 @@ def test_fitted_tensor_hit_does_not_resolve_whitener(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     folder = _author_manifold(tmp_path)
-    handle = _Handle()
+    handle = StubHandle()
     pipe = ManifoldExtractionPipeline(handle, EventBus())
     first = pipe.fit(folder)
     setattr(handle, "whitener", None)
@@ -1010,7 +924,7 @@ def test_fit_rebuilds_tampered_requested_tensor_from_capture_cache(
     from drowse.base.paths import tensor_filename
 
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
     tensor = folder / tensor_filename("stub-model")
     original = tensor.read_bytes()
@@ -1038,7 +952,7 @@ def test_capture_cache_identity_includes_node_partition(
             json.dumps(flat_rows[cursor:cursor + size])
         )
         cursor += size
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
 
     cursor = 0
@@ -1051,7 +965,7 @@ def test_capture_cache_identity_includes_node_partition(
 
     def _counting(*args: Any, **kwargs: Any) -> Any:
         calls["n"] += 1
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
     pipe.fit(folder)
@@ -1091,7 +1005,7 @@ def test_foreign_centroid_shard_is_a_miss(
     from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
     shard, = (model_dir("stub-model") / "manifold_capture").glob(
         "*.centroids.layer_2.safetensors"
@@ -1104,7 +1018,7 @@ def test_foreign_centroid_shard_is_a_miss(
 
     def _counting(*args: Any, **kwargs: Any) -> Any:
         scopes.append(list(kwargs["layer_indices"]))
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
     pipe.fit(folder)
@@ -1120,11 +1034,11 @@ def test_fit_force_bypasses_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     ``force``.
     """
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
 
     calls = {"n": 0}
-    real = _stub_encoder_batch
+    real = label_encoder_batch
 
     def _counting(*args: Any, **kwargs: Any) -> dict[int, torch.Tensor]:
         calls["n"] += 1
@@ -1142,7 +1056,7 @@ def test_forced_subset_preserves_unselected_capture_shards(
     from drowse.base.paths import model_dir
 
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
     capture_dir = model_dir("stub-model") / "manifold_capture"
     before = {
@@ -1154,7 +1068,7 @@ def test_forced_subset_preserves_unselected_capture_shards(
 
     def _counting(*args: Any, **kwargs: Any) -> Any:
         scopes.append(list(kwargs["layer_indices"]))
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
     pipe.fit(folder, layer_indices=[1], force=True)
@@ -1176,14 +1090,14 @@ def test_curved_raw_fit_reuses_retained_rows_for_sigma_field(
     """Known-curved raw fits should not re-run capture for the sigma field."""
     folder = _author_manifold(tmp_path)
     calls = {"n": 0}
-    real = _stub_encoder_batch
+    real = label_encoder_batch
 
     def _counting(*args: Any, **kwargs: Any) -> dict[int, torch.Tensor]:
         calls["n"] += 1
         return real(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     # Five one-response nodes now share one fit-wide batch; sigma reuses those
     # retained rows rather than adding a second pass.
@@ -1194,7 +1108,7 @@ def test_curved_raw_fit_reuses_retained_rows_for_sigma_field(
 
 def test_fit_cache_miss_on_corpus_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
 
     (folder / "nodes" / "00_calm.json").write_text(
@@ -1202,7 +1116,7 @@ def test_fit_cache_miss_on_corpus_change(tmp_path: Path, monkeypatch: pytest.Mon
     )
 
     calls = {"n": 0}
-    real = _stub_encoder_batch
+    real = label_encoder_batch
 
     def _counting(*args: Any, **kwargs: Any) -> dict[int, torch.Tensor]:
         calls["n"] += 1
@@ -1215,7 +1129,7 @@ def test_fit_cache_miss_on_corpus_change(tmp_path: Path, monkeypatch: pytest.Mon
 
 def test_fit_cache_miss_on_domain_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     folder = _author_manifold(tmp_path, periodic=True)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder)
 
     # Move a node coordinate — the geometry changes, so the cached
@@ -1225,7 +1139,7 @@ def test_fit_cache_miss_on_domain_change(tmp_path: Path, monkeypatch: pytest.Mon
     (folder / "manifold.json").write_text(json.dumps(meta))
 
     calls = {"n": 0}
-    real = _stub_encoder_batch
+    real = label_encoder_batch
 
     def _counting(*args: Any, **kwargs: Any) -> dict[int, torch.Tensor]:
         calls["n"] += 1
@@ -1241,14 +1155,14 @@ def test_fit_cache_miss_on_domain_change(tmp_path: Path, monkeypatch: pytest.Mon
 def test_fit_sae_variant(tmp_path: Path) -> None:
     folder = _author_manifold(tmp_path)
     sae = MockSaeBackend(
-        layers=frozenset(range(_N_LAYERS)), d_model=_DIM,
+        layers=frozenset(range(N_LAYERS)), d_model=DIM,
         release="mock-rel",
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(
         folder, sae=sae,
     )
     assert manifold.feature_space == "sae-mock-rel"
-    assert sorted(manifold.layers) == list(range(_N_LAYERS))
+    assert sorted(manifold.layers) == list(range(N_LAYERS))
     assert (folder / tensor_filename("stub-model", release="mock-rel")).exists()
 
 
@@ -1273,14 +1187,14 @@ def test_multi_node_sae_fit_releases_raw_centroid_layers_during_reconstruction(
         return features.clone()
 
     sae = MockSaeBackend(
-        layers=frozenset(range(_N_LAYERS)), d_model=_DIM,
+        layers=frozenset(range(N_LAYERS)), d_model=DIM,
         release="memory-rel", fingerprint="memory-rel-fingerprint",
         encode_fn=encode, decode_fn=decode,
     )
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder, sae=sae)
+    ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder, sae=sae)
 
     gc.collect()
-    assert len(raw_refs) == _N_LAYERS
+    assert len(raw_refs) == N_LAYERS
     assert all(ref() is None for _idx, ref in raw_refs)
 
 
@@ -1311,7 +1225,7 @@ def test_curved_fit_releases_centroid_rosters_before_covariance(
         nonlocal covariance_calls
         covariance_calls += 1
         gc.collect()
-        assert len(stack_refs) == _N_LAYERS
+        assert len(stack_refs) == N_LAYERS
         assert all(ref() is None for ref in stack_refs)
         assert all(ref() is None for ref in whitened_refs)
         assert all(ref() is None for ref in gram_refs)
@@ -1322,7 +1236,7 @@ def test_curved_fit_releases_centroid_rosters_before_covariance(
         node_stats_module, "compute_store_reduced_covariances", check_lifetime,
     )
 
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     assert covariance_calls == 1
 
 
@@ -1331,9 +1245,9 @@ def test_fit_sae_cache_hit_resolves_identity_without_loading_weights(
 ) -> None:
     """A fitted SAE tensor resolves transform identity but loads no weights."""
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     sae = MockSaeBackend(
-        layers=frozenset(range(_N_LAYERS)), d_model=_DIM,
+        layers=frozenset(range(N_LAYERS)), d_model=DIM,
         release="mock-rel", revision="rev-1",
     )
     pipe.fit(folder, sae=sae)
@@ -1346,7 +1260,7 @@ def test_fit_sae_cache_hit_resolves_identity_without_loading_weights(
         nonlocal resolved
         resolved += 1
         return MockSaeBackend(
-            layers=frozenset(range(_N_LAYERS)), d_model=_DIM,
+            layers=frozenset(range(N_LAYERS)), d_model=DIM,
             release="mock-rel", revision="rev-1",
             fingerprint=sae.fingerprint,
             encode_fn=lambda *_args: (_ for _ in ()).throw(
@@ -1367,9 +1281,9 @@ def test_default_sae_fit_does_not_accept_partial_layer_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     folder = _author_manifold(tmp_path)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     partial_backend = MockSaeBackend(
-        layers=frozenset(range(_N_LAYERS)), d_model=_DIM,
+        layers=frozenset(range(N_LAYERS)), d_model=DIM,
         release="mock-rel", revision="rev-1",
     )
     pipe.fit(folder, sae=partial_backend, layer_indices=[1, 3])
@@ -1379,7 +1293,7 @@ def test_default_sae_fit_does_not_accept_partial_layer_artifact(
     monkeypatch.setattr(
         sae_module, "load_sae_backend",
         lambda *_args, **_kwargs: MockSaeBackend(
-            layers=frozenset(range(_N_LAYERS)), d_model=_DIM,
+            layers=frozenset(range(N_LAYERS)), d_model=DIM,
             release="mock-rel", revision="rev-1",
         ),
     )
@@ -1387,11 +1301,11 @@ def test_default_sae_fit_does_not_accept_partial_layer_artifact(
 
     def _counting(*args: Any, **kwargs: Any) -> Any:
         captured_scopes.append(list(kwargs["layer_indices"]))
-        return _stub_encoder_batch(*args, **kwargs)
+        return label_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
     full = pipe.fit(folder, sae="mock-rel", sae_revision="rev-1")
-    assert sorted(full.layers) == list(range(_N_LAYERS))
+    assert sorted(full.layers) == list(range(N_LAYERS))
     assert captured_scopes == [[0, 2]]
 
 
@@ -1400,22 +1314,22 @@ def test_fit_sae_variant_captures_only_covered_layers(
 ) -> None:
     folder = _author_manifold(tmp_path)
     sae = MockSaeBackend(
-        layers=frozenset({1, 3}), d_model=_DIM,
+        layers=frozenset({1, 3}), d_model=DIM,
         release="partial-rel",
     )
     seen: list[tuple[int, ...]] = []
 
     def _filtered_batch(*args: Any, **kwargs: Any) -> dict[int, torch.Tensor]:
         layer_indices = kwargs.get("layer_indices")
-        seen.append(tuple(layer_indices or range(_N_LAYERS)))
-        out = _stub_encoder_batch(*args, **kwargs)
+        seen.append(tuple(layer_indices or range(N_LAYERS)))
+        out = label_encoder_batch(*args, **kwargs)
         if layer_indices is None:
             return out
         return {idx: out[idx] for idx in layer_indices}
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _filtered_batch)
 
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(
         folder, sae=sae,
     )
 
@@ -1433,9 +1347,9 @@ def test_fit_sae_no_coverage_raises_before_pooling(
     from drowse.errors import SaeCoverageError
 
     folder = _author_manifold(tmp_path)
-    # SAE layers disjoint from [0, _N_LAYERS) — zero coverage.
+    # SAE layers disjoint from [0, N_LAYERS) — zero coverage.
     sae = MockSaeBackend(
-        layers=frozenset({_N_LAYERS + 1, _N_LAYERS + 2}), d_model=_DIM,
+        layers=frozenset({N_LAYERS + 1, N_LAYERS + 2}), d_model=DIM,
         release="empty-rel",
     )
 
@@ -1449,13 +1363,13 @@ def test_fit_sae_no_coverage_raises_before_pooling(
     monkeypatch.setattr(M, "compute_manifold_node_stats", _explode)
 
     with pytest.raises(SaeCoverageError, match="covers no layers"):
-        ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder, sae=sae)
+        ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder, sae=sae)
 
 
 def test_fit_natural_manifold(tmp_path: Path) -> None:
     from drowse.geometry.domains import BoxDomain
     folder = _author_manifold(tmp_path, periodic=False)
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     assert manifold.domain.intrinsic_dim == 1
     # The domain must be a BoxDomain (authored with box spec); narrowing
     # the type lets pyright resolve the .axes attribute.
@@ -1481,10 +1395,10 @@ def test_fit_n2_box_manifold(tmp_path: Path) -> None:
     folder = _author_manifold(
         tmp_path, labels=labels, domain=domain, coords=coords,
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     assert manifold.domain.intrinsic_dim == 2
     pt = manifold.manifold_point(0, (0.3, 0.7))
-    assert pt.shape == (_DIM,)
+    assert pt.shape == (DIM,)
 
 
 def test_fit_rejects_poisedness_failure(tmp_path: Path) -> None:
@@ -1508,7 +1422,7 @@ def test_fit_rejects_poisedness_failure(tmp_path: Path) -> None:
     )
     ManifoldFolder.load(folder)
     with pytest.raises(ValueError, match="poisedness"):
-        ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+        ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
 
 # ============================================================ discover mode ===
@@ -1562,7 +1476,7 @@ def test_discover_pca_produces_custom_domain(tmp_path: Path) -> None:
         tmp_path, fit_mode="pca",
         hyperparams={"max_dim": 4, "var_threshold": 0.70},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     # CustomDomain with identity embedding — intrinsic_dim == embed_dim.
     from drowse.geometry.domains import CustomDomain
@@ -1575,7 +1489,7 @@ def test_discover_pca_produces_custom_domain(tmp_path: Path) -> None:
     assert manifold.node_coords.shape[1] == manifold.domain.intrinsic_dim
 
     # Per-layer fits cover every layer in the model.
-    assert sorted(manifold.layers) == list(range(_N_LAYERS))
+    assert sorted(manifold.layers) == list(range(N_LAYERS))
 
 
 def test_discover_pca_produces_affine_subspaces(tmp_path: Path) -> None:
@@ -1589,7 +1503,7 @@ def test_discover_pca_produces_affine_subspaces(tmp_path: Path) -> None:
         tmp_path, fit_mode="pca",
         hyperparams={"max_dim": 4, "var_threshold": 0.70},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     assert manifold.layers  # at least one layer survived DLS
     for sub in manifold.layers.values():
         assert sub.is_affine                          # flat — no RBF surface
@@ -1620,7 +1534,7 @@ def test_discover_pca_layout_is_neutral_centered(tmp_path: Path) -> None:
         tmp_path, fit_mode="pca",
         hyperparams={"max_dim": 4, "var_threshold": 0.99},
     )
-    m = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    m = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     k = m.domain.intrinsic_dim
     centroid = m.node_coords.mean(dim=0)                    # (k,)
 
@@ -1653,7 +1567,7 @@ def test_discover_records_fit_mode_and_diagnostics(tmp_path: Path) -> None:
         tmp_path, fit_mode="pca",
         hyperparams={"max_dim": 4, "var_threshold": 0.70},
     )
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     sidecar = json.loads((folder / Path(tensor_filename("stub-model")).with_suffix(".json").name).read_text())
     assert sidecar["fit_mode"] == "pca"
@@ -1673,9 +1587,9 @@ def test_discover_cache_hit_skips_forward_passes(
     """A second fit with unchanged inputs short-circuits to the cached tensor."""
     folder = _discover_folder(tmp_path, fit_mode="pca")
     # One handle for both fits: the cache identity folds in the loaded-model
-    # fingerprint, and a fresh ``_Handle`` re-initializes its stub module, so
+    # fingerprint, and a fresh ``StubHandle`` re-initializes its stub module, so
     # two handles are legitimately different models.
-    handle = _Handle()
+    handle = StubHandle()
     ManifoldExtractionPipeline(handle, EventBus()).fit(folder)
 
     # Patch the fit-wide capture pass to crash if called — a cache hit must
@@ -1694,14 +1608,14 @@ def test_discover_cache_invalidates_on_hyperparam_change(tmp_path: Path) -> None
     folder = _discover_folder(
         tmp_path, fit_mode="pca", hyperparams={"max_dim": 4},
     )
-    m1 = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    m1 = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     # Rewrite manifest with a different max_dim.
     data = json.loads((folder / "manifold.json").read_text())
     data["hyperparams"] = {"max_dim": 2}
     (folder / "manifold.json").write_text(json.dumps(data))
 
-    m2 = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    m2 = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     # The two fits agree on at most max_dim=2, so the second's intrinsic
     # dim is bounded by 2; if cache had hit we'd still see m1's dim.
     assert m1.domain.intrinsic_dim >= m2.domain.intrinsic_dim
@@ -1720,7 +1634,7 @@ def test_discover_cache_invalidates_on_fit_mode_change(tmp_path: Path) -> None:
         tmp_path, fit_mode="pca", labels=labels,
         hyperparams={"max_dim": 4},
     )
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     sidecar_path = folder / Path(tensor_filename("stub-model")).with_suffix(".json").name
     sidecar_pca = json.loads(sidecar_path.read_text())
     assert sidecar_pca["fit_mode"] == "pca"
@@ -1729,7 +1643,7 @@ def test_discover_cache_invalidates_on_fit_mode_change(tmp_path: Path) -> None:
     data["fit_mode"] = "spectral"
     (folder / "manifold.json").write_text(json.dumps(data))
 
-    ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     sidecar_spec = json.loads(sidecar_path.read_text())
     assert sidecar_spec["fit_mode"] == "spectral"
 
@@ -1741,7 +1655,7 @@ def test_discover_round_trip_through_load_manifold(tmp_path: Path) -> None:
     folder = _discover_folder(
         tmp_path, fit_mode="pca", hyperparams={"max_dim": 4},
     )
-    m1 = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    m1 = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     m2 = load_manifold(folder / tensor_filename("stub-model"))
     assert isinstance(m2.domain, CustomDomain)
     assert m2.domain.intrinsic_dim == m1.domain.intrinsic_dim
@@ -1774,7 +1688,7 @@ def test_discover_subspace_inject_translates_by_target(tmp_path: Path) -> None:
     folder = _discover_folder(
         tmp_path, fit_mode="pca", hyperparams={"max_dim": 4},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     layer = 0
     sub = manifold.layers[layer]
@@ -1785,7 +1699,7 @@ def test_discover_subspace_inject_translates_by_target(tmp_path: Path) -> None:
     # Hidden states far from any natural manifold point so the translate is
     # well-resolved against the background activation.
     g = torch.Generator().manual_seed(0)
-    hidden = 3.0 * torch.randn(1, 3, _DIM, generator=g)
+    hidden = 3.0 * torch.randn(1, 3, DIM, generator=g)
     seed = position.reshape((1,) * 2 + (n,)).expand(1, 3, n)
     out, _foot = subspace_inject(
         hidden, sub, domain, position, seed,
@@ -1817,7 +1731,7 @@ def test_discover_pca_two_node_is_steering_vector(tmp_path: Path) -> None:
         labels=["angry", "calm"],
         hyperparams={"max_dim": 4, "var_threshold": 0.70},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     assert manifold.domain.intrinsic_dim == 1          # rank-1 == a vector
     assert manifold.node_labels == ["angry", "calm"]
@@ -1848,7 +1762,7 @@ def test_two_node_pca_reads_as_affine_pole_push(tmp_path: Path) -> None:
         labels=["angry", "calm"],
         hyperparams={"max_dim": 4, "var_threshold": 0.70},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     basis_angry, coord_angry = affine_manifold_push(manifold, "angry")
     assert set(basis_angry) == set(manifold.layers)
@@ -1875,7 +1789,7 @@ def test_affine_push_coord_form_equals_label_at_node(tmp_path: Path) -> None:
         tmp_path, name="trio", fit_mode="pca", labels=["a", "b", "c"],
         hyperparams={"max_dim": 2, "var_threshold": 0.999},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     assert all(sub.is_affine for sub in manifold.layers.values())
 
     for idx, label in enumerate(manifold.node_labels):
@@ -1900,7 +1814,7 @@ def test_affine_push_coord_form_interpolates_between_nodes(tmp_path: Path) -> No
         tmp_path, name="trio2", fit_mode="pca", labels=["a", "b", "c"],
         hyperparams={"max_dim": 2, "var_threshold": 0.999},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     mid = (manifold.node_coords[0] + manifold.node_coords[1]) / 2
     w = rbf_cardinal_weights(manifold.node_coords, mid)
@@ -1928,7 +1842,7 @@ def test_affine_push_coord_form_arity_mismatch_raises(tmp_path: Path) -> None:
         tmp_path, name="trio3", fit_mode="pca", labels=["a", "b", "c"],
         hyperparams={"max_dim": 2, "var_threshold": 0.999},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     n = manifold.domain.intrinsic_dim
     with pytest.raises(ManifoldArityError) as exc:
         affine_manifold_push(manifold, tuple([0.0] * (n + 1)))
@@ -1947,7 +1861,7 @@ def test_discover_pca_flat_fit_skips_rbf_floor(tmp_path: Path) -> None:
         tmp_path, fit_mode="pca", labels=["a", "b", "c"],
         hyperparams={"max_dim": 2, "var_threshold": 0.999},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
     assert manifold.domain.intrinsic_dim <= 2
     assert manifold.layers
     for sub in manifold.layers.values():
@@ -1971,14 +1885,14 @@ def _circle_encoder_batch(
     for r in responses:
         i = int(r.split()[0][4:])           # "node07 statement 2" -> 7
         ang = 2.0 * _math.pi * i / 12.0
-        base = torch.zeros(_DIM)
+        base = torch.zeros(DIM)
         base[0] = _math.cos(ang)
         base[1] = _math.sin(ang)
         out: dict[int, torch.Tensor] = {}
         for layer in range(len(layers)):
             v = base.clone()
             v[2] = 0.3 * layer
-            out[layer] = v + 0.02 * torch.randn(_DIM)
+            out[layer] = v + 0.02 * torch.randn(DIM)
         rows.append(out)
     return {
         idx: torch.stack([row[idx] for row in rows]) for idx in range(len(layers))
@@ -1991,7 +1905,7 @@ def test_auto_records_resolution_metadata(tmp_path: Path) -> None:
         tmp_path, name="autoflat", fit_mode="auto",
         labels=[f"n{i:02d}" for i in range(8)], hyperparams={"max_dim": 4},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     assert manifold.layers
     meta = manifold.metadata
@@ -2014,7 +1928,7 @@ def test_auto_detects_circle_as_periodic(
         tmp_path, name="autocircle", fit_mode="auto",
         labels=[f"node{i:02d}" for i in range(12)], hyperparams={"max_dim": 4},
     )
-    manifold = ManifoldExtractionPipeline(_Handle(), EventBus()).fit(folder)
+    manifold = ManifoldExtractionPipeline(StubHandle(), EventBus()).fit(folder)
 
     assert isinstance(manifold.domain, BoxDomain)
     assert manifold.domain.axes[0].periodic
@@ -2051,7 +1965,7 @@ def test_auto_curved_partial_topup_reuses_durable_rows_without_recapture(
         return _circle_encoder_batch(*args, **kwargs)
 
     monkeypatch.setattr(V, "_encode_and_capture_all_batch", _counting)
-    pipe = ManifoldExtractionPipeline(_Handle(), EventBus())
+    pipe = ManifoldExtractionPipeline(StubHandle(), EventBus())
     pipe.fit(folder, layer_indices=[0])
     row_zero, = (
         model_dir("stub-model") / "manifold_capture"
@@ -2078,26 +1992,31 @@ def _fold_test_direction(name: str, direction: torch.Tensor):
     )
 
 
-def _registry_stub(
-    *, manifolds: Any, profiles: Any, monitor: Any, probe_hashes: dict[str, str],
-) -> Any:
-    """A session skeleton with the real registry, the probe roster as its
-    swap listener (cached geometry digests seeded) and a fake monitor."""
-    from drowse.session.session import DrowseSession
-    from tests.support.stubs import wire_stub_read_plane
+class _RegistryRig:
+    """The real artifact registry with the probe roster as its swap listener
+    (cached geometry digests seeded) over a fake monitor."""
 
-    session: Any = object.__new__(DrowseSession)
-    session._monitor = monitor
-    wire_stub_steering(session, profiles=profiles, manifolds=manifolds)
-    wire_stub_read_plane(session)
-    session._roster._hashes["geometry"].update(probe_hashes)
-    session._registry.on_swap(session._roster.swap)
-    seed_prefix_cache(attach_engine(session))
-    return session
+    def __init__(
+        self, *, manifolds: Any, profiles: Any, monitor: Any,
+        probe_hashes: dict[str, str],
+    ) -> None:
+        from tests.support.composer import SteeringRig
+        from tests.support.read_plane import ReadRig
 
+        self.steering = SteeringRig(profiles=profiles, manifolds=manifolds)
+        self.reads = ReadRig(monitor=monitor)
+        self.registry = self.steering.registry
+        self.monitor = monitor
+        self.reads.roster._hashes["geometry"].update(probe_hashes)
+        self.registry.on_swap(self.reads.roster.swap)
 
-def _cached_digests(session: Any) -> dict[str, str]:
-    return dict(session._roster._hashes["geometry"])
+    def cached_digests(self) -> dict[str, str]:
+        return dict(self.reads.roster._hashes["geometry"])
+
+    def prefix_cache_kept(self) -> bool:
+        """Neither the steering nor the probe roster asked the session to
+        drop its (unsteered) prefix cache."""
+        return self.steering.prefill_changes == 0 and self.reads.roster_changes == 0
 
 
 def _analytics_probe(session: Any, name: str) -> Any:
@@ -2105,7 +2024,7 @@ def _analytics_probe(session: Any, name: str) -> Any:
     import threading
 
     def _snapshot() -> Any:
-        return session._registry.analytics_snapshot(
+        return session.registry.analytics_snapshot(
             name, live=_live, lock=threading.Lock(),
         )
 
@@ -2147,7 +2066,7 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_and_profile(
                 manifold=manifold, top_n=top_n,
             )
 
-    session = _registry_stub(
+    session = _RegistryRig(
         manifolds={"local/mood": old, "other/mood": other},
         profiles={
             "local/mood": {0: torch.tensor([1.0, 0.0])},
@@ -2158,24 +2077,24 @@ def test_adopt_fitted_manifold_rebinds_loaded_probe_and_profile(
     )
     snapshots = _analytics_probe(session, "local/mood")
 
-    session._registry.adopt_fitted(tmp_path / "local" / "mood", new)
+    session.registry.adopt_fitted(tmp_path / "local" / "mood", new)
 
-    live = session._registry.manifolds["local/mood"]
+    live = session.registry.manifolds["local/mood"]
     assert torch.equal(live.layers[0].basis, new.layers[0].basis)
-    attached = session._monitor.probes["mood-probe"]
+    attached = session.monitor.probes["mood-probe"]
     assert attached.manifold is live
     assert attached.top_n == 4
     from drowse.geometry.fold import folded_directions
 
     assert torch.allclose(
-        session._registry.profiles["local/mood"][0], folded_directions(new)[0],
+        session.registry.profiles["local/mood"][0], folded_directions(new)[0],
     )
     # The cached prefix is unsteered, so a re-fit leaves it valid
     # (test_engine::test_registry_changes_keep_the_unsteered_prefix).
-    assert session._engine.prefix_cache
+    assert session.prefix_cache_kept()
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
-    assert "mood-probe" not in _cached_digests(session)
+    assert "mood-probe" not in session.cached_digests()
 
 
 def test_failed_fit_override_evicts_stale_manifold_consumers(
@@ -2199,7 +2118,7 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
         def remove_probe(self, name: str) -> None:
             self.probes.pop(name)
 
-    session = _registry_stub(
+    session = _RegistryRig(
         manifolds={"local/mood": old, "other/mood": other},
         profiles={
             "local/mood": {0: torch.tensor([1.0, 0.0])},
@@ -2220,8 +2139,8 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
 
     rig = make_extraction(
         monkeypatch, fit=_fail_fit,
-        adopt=session._registry.adopt_fitted,
-        evict=session._registry.evict_artifact,
+        adopt=session.registry.adopt_fitted,
+        evict=session.registry.evict_artifact,
     )
 
     with pytest.raises(RuntimeError, match="override fit failure"):
@@ -2230,11 +2149,11 @@ def test_failed_fit_override_evicts_stale_manifold_consumers(
             fit_mode="pca", hyperparams={"max_dim": 1},
         )
 
-    assert dict(session._registry.manifolds) == {"other/mood": other}
-    assert set(session._registry.profiles) == {"other/mood"}
-    assert set(session._monitor.probes) == {"other-mood-probe"}
-    assert _cached_digests(session) == {"other-mood-probe": "other"}
-    assert session._engine.prefix_cache  # unsteered, so still valid
+    assert dict(session.registry.manifolds) == {"other/mood": other}
+    assert set(session.registry.profiles) == {"other/mood"}
+    assert set(session.monitor.probes) == {"other-mood-probe"}
+    assert session.cached_digests() == {"other-mood-probe": "other"}
+    assert session.prefix_cache_kept()  # unsteered, so still valid
     snapshots()
     assert snapshots.builds == 2, "the analytics snapshot must be rebuilt"
 
@@ -2248,7 +2167,7 @@ def test_override_validation_failure_preserves_unchanged_consumers(
         def attached_probes(self) -> dict[str, Any]:
             return {}
 
-    session = _registry_stub(
+    session = _RegistryRig(
         manifolds={"local/mood": old},
         profiles={"local/mood": {0: torch.tensor([1.0, 0.0])}},
         monitor=_Monitor(),
@@ -2263,15 +2182,15 @@ def test_override_validation_failure_preserves_unchanged_consumers(
 
     rig = make_extraction(
         monkeypatch, fit=_fail_without_write,
-        adopt=session._registry.adopt_fitted,
-        evict=session._registry.evict_artifact,
+        adopt=session.registry.adopt_fitted,
+        evict=session.registry.evict_artifact,
     )
 
     with pytest.raises(ValueError, match="discover-mode only"):
         rig.extraction.fit(folder, fit_mode="pca")
 
-    assert dict(session._registry.manifolds) == {"local/mood": old}
-    assert set(session._registry.profiles) == {"local/mood"}
+    assert dict(session.registry.manifolds) == {"local/mood": old}
+    assert set(session.registry.profiles) == {"local/mood"}
 
 
 def test_dls_false_keeps_every_axis(
@@ -2297,7 +2216,7 @@ def test_dls_false_keeps_every_axis(
 
     monkeypatch.setattr(C, "compute_dls_axes", _spy)
 
-    handle = _Handle()
+    handle = StubHandle()
     folder = _discover_folder(
         tmp_path / "off", fit_mode="pca",
         hyperparams={"max_dim": 4, "var_threshold": 0.70},
@@ -2311,7 +2230,7 @@ def test_dls_false_keeps_every_axis(
     # ...and nothing was pruned: every requested layer is fitted, each at the
     # full derived layout rank.
     layout_dim = int(manifold.node_coords.shape[1])
-    assert sorted(manifold.layers) == list(range(_N_LAYERS))
+    assert sorted(manifold.layers) == list(range(N_LAYERS))
     for sub in manifold.layers.values():
         assert sub.rank == layout_dim
 
@@ -2332,7 +2251,7 @@ def test_dls_true_passes_the_real_baseline(
 
     monkeypatch.setattr(C, "compute_dls_axes", _spy)
 
-    handle = _Handle()
+    handle = StubHandle()
     folder = _discover_folder(
         tmp_path / "on", fit_mode="pca",
         hyperparams={"max_dim": 4, "var_threshold": 0.70},

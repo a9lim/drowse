@@ -16,7 +16,7 @@ from drowse.store.manifold_schema import ManifoldSidecar
 from drowse.store.manifold_tensors import load_manifold
 from drowse.geometry.fold import fold_directions_to_subspace, folded_directions
 from drowse.base.paths import encode_release_id, model_dir, safe_model_id, tensor_filename
-from tests._whitener import isotropic_whitener
+from tests.support.whitener import isotropic_whitener
 
 
 # --------------------------------------------------------- expr parsing ---
@@ -398,7 +398,7 @@ def test_merge_into_manifold_explicit_model(monkeypatch: pytest.MonkeyPatch, tmp
     assert not (dst / tensor_filename("qwen")).is_file()
 
 
-def test_legacy_projected_bake_requires_rebake(
+def test_component_provenance_refuses_unknown_fields(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))

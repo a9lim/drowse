@@ -34,11 +34,8 @@ from drowse.store.manifold_folder import ManifoldFolder
 from drowse.store.manifold_schema import ManifoldSidecar
 from drowse.fit.preflight import preflight_manifold_fit_noop
 from drowse.base.paths import tensor_filename
-from tests._whitener import synthetic_means, synthetic_whitener
-from tests.test_manifold_extraction import (
-    _CaptureTokenizer,
-    _stub_encoder_batch,
-)
+from tests.support.whitener import synthetic_means, synthetic_whitener
+from tests.support.capture import CaptureTokenizer, install_capture, label_encoder_batch
 
 _MODEL_ID = "stub/model"
 _SOURCE_FP = "5c" * 32
@@ -62,7 +59,7 @@ class _ProvableHandle:
         self.model_id = _MODEL_ID
         self.model: torch.nn.Module = torch.nn.Linear(1, 1)
         self.model._drowse_source_fingerprint = _SOURCE_FP  # type: ignore[assignment]
-        self.tokenizer: Any = _CaptureTokenizer()
+        self.tokenizer: Any = CaptureTokenizer()
         self.device = torch.device("cpu")
         self.dtype = torch.float32
         self.layers: Any = torch.nn.ModuleList(
@@ -79,8 +76,7 @@ def fitted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     """A published fit plus every stub the preflight's model touchpoints need."""
     torch.manual_seed(0)
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(V, "_encode_and_capture_all_batch", _stub_encoder_batch)
-    monkeypatch.setattr(V, "_load_baseline_prompts", lambda: ["baseline prompt"])
+    install_capture(monkeypatch)
 
     folder = create_discover_manifold_folder(
         "local", "mood", "", fit_mode="pca", node_corpora=dict(_CORPORA),
@@ -112,7 +108,7 @@ def fitted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     )
     monkeypatch.setattr(
         transformers.AutoTokenizer, "from_pretrained",
-        classmethod(lambda _cls, *_a, **_k: _CaptureTokenizer()),
+        classmethod(lambda _cls, *_a, **_k: CaptureTokenizer()),
     )
     return SimpleNamespace(
         folder=folder, handle=handle, loaded_fp=loaded_fp,
@@ -333,7 +329,7 @@ def test_stale_fit_is_overwritten_by_the_next_fit(
     from drowse.store.manifold_schema import MANIFOLD_FORMAT_VERSION
 
     _rewrite_sidecar(fitted, format_version=MANIFOLD_FORMAT_VERSION - 1)
-    monkeypatch.setattr(V, "_encode_and_capture_all_batch", _stub_encoder_batch)
+    monkeypatch.setattr(V, "_encode_and_capture_all_batch", label_encoder_batch)
 
     manifold = ManifoldExtractionPipeline(fitted.handle, EventBus()).fit(
         fitted.folder,
@@ -395,7 +391,7 @@ def _run_cli(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> list[str]:
     the load and stops there with ``RuntimeError``.
     """
     from drowse.cli.main import main
-    from tests._cli_fakes import poison_session
+    from tests.support.cli import poison_session
 
     attempts = poison_session(monkeypatch)
     try:

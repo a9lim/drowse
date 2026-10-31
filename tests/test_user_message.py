@@ -169,34 +169,10 @@ def test_steering_expr_error_carries_col_in_message():
 
 def test_server_routes_user_message_status_codes():
     """The server's exception handlers honor ``user_message()`` status."""
-    from unittest.mock import MagicMock
-
     from fastapi.testclient import TestClient
 
     from drowse.server import create_app
-
-    def _mock_session():
-        s = MagicMock()
-        s.model_id = "test/model"
-        s.model_info = {
-            "model_type": "gemma2",
-            "num_layers": 26,
-            "hidden_dim": 2304,
-            "vram_used_gb": 5.2,
-            "param_count": 2_614_000_000,
-            "dtype": "torch.bfloat16",
-        }
-        s.config = MagicMock()
-        s.config.temperature = 1.0
-        s.config.top_p = 0.9
-        s.config.max_new_tokens = 1024
-        s.config.system_prompt = None
-        s.profiles = {}
-        s.probes = {}
-        s.history = []
-        s._tokenizer = MagicMock()
-        s._tokenizer.decode.side_effect = lambda ids: f"<{ids[0]}>" if ids else ""
-        return s
+    from tests.support.server import mock_session
 
     # 409: ConcurrentGenerationError already pinned by test_server.py;
     # we add coverage for one more family per status to confirm
@@ -209,7 +185,7 @@ def test_server_routes_user_message_status_codes():
     ]
 
     for exc, expected_status in cases:
-        session = _mock_session()
+        session = mock_session()
         session.generate.side_effect = exc
         app = create_app(session)
         client = TestClient(app)
@@ -304,6 +280,49 @@ def test_every_request_error_is_a_400_carrying_its_text() -> None:
         if not issubclass(cls, ValueError) or status != 400 or "specific test payload" not in message:
             drift.append(f"{cls.__module__}.{cls.__qualname__} -> {status}")
     assert not drift, "request errors off the 400 contract:\n  " + "\n  ".join(drift)
+
+
+def _stdlib_base_cases() -> list[tuple[type[BaseException], type[BaseException]]]:
+    from drowse.errors import (
+        AmbiguousVariantError,
+        ProfileError,
+        SaeBackendImportError,
+        SaeCoverageError,
+        SaeModelMismatchError,
+        SaeReleaseNotFoundError,
+        UnknownVariantError,
+    )
+    from drowse.model.role_templates import (
+        InvalidRoleError,
+        RoleSubstitutionUnsupportedError,
+        RoleTemplateDriftError,
+    )
+
+    return [
+        (ProfileError, ValueError),
+        (SaeBackendImportError, ImportError),
+        (SaeReleaseNotFoundError, ValueError),
+        (SaeModelMismatchError, ValueError),
+        (SaeCoverageError, ValueError),
+        (AmbiguousVariantError, ValueError),
+        (UnknownVariantError, KeyError),
+        (RoleSubstitutionUnsupportedError, ValueError),
+        (InvalidRoleError, ValueError),
+        (RoleTemplateDriftError, RuntimeError),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cls", "stdlib_base"), _stdlib_base_cases(), ids=lambda value: value.__name__,
+)
+def test_drowse_errors_keep_their_stdlib_base(
+    cls: type[BaseException], stdlib_base: type[BaseException],
+) -> None:
+    """Reparenting under ``DrowseError`` keeps the stdlib base, so existing
+    ``except ValueError`` (etc.) sites still catch it; the walker above
+    pins the ``DrowseError`` half for every public class."""
+    assert cls in _public_exception_classes()
+    assert issubclass(cls, stdlib_base)
 
 
 def test_cancellation_errors_agree_across_preparation_families() -> None:

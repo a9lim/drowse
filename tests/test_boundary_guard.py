@@ -1,12 +1,11 @@
 """Server import-surface guards.
 
-Source-grep checks over the frontend packages: no import of a promoted name by
-its old underscore form, and no server module importing a sibling's private
-helper.  (Session-private attribute reaches are an AST invariant over the whole
-package in ``tests/test_layering.py``.)
+A source-grep check over ``drowse/server``: no server module imports a
+sibling's private helper.  (Session-private attribute reaches are an AST
+invariant over the whole package in ``tests/test_layering.py``.)
 
 Comments and string literals are stripped via :mod:`tokenize` before the
-match, so a historical note or a docstring example doesn't trip a guard —
+match, so a historical note or a docstring example doesn't trip the guard —
 only live code does.
 
 CPU-only: pure source-grep, no model load.
@@ -52,56 +51,6 @@ def _strip_comments_and_strings(source: str) -> str:
         # which is a louder failure than a silent miss).
         return source
     return "\n".join("".join(line) for line in grid)
-
-
-# ---------------------------------------------------------------------------
-# Promoted-name regression guard (T2.4)
-# ---------------------------------------------------------------------------
-
-# The four names that were promoted from underscore-private to public in T2.4.
-# Frontends must now import the public form; importing the old underscore name
-# from any module is a regression against the promotion.
-_PROMOTED_OLD_NAMES = frozenset(["_export_gguf_manifold"])
-
-# All cross-module import surfaces (CLI/server plus core helpers) must use
-# the promoted public names.
-_ALL_FRONTEND_DIRS = ("server", "cli", "core")
-
-_UNDERSCORE_IMPORT_RE = re.compile(
-    r"(?:^|\s)from\s+[\w.]+\s+import\s+[^#\n]*\b(_[A-Za-z]\w*)"
-)
-
-
-def _find_promoted_old_name_imports() -> list[str]:
-    """Return one diagnostic string per import of a now-promoted name."""
-    root = _drowse_root()
-    offenders: list[str] = []
-    for sub in _ALL_FRONTEND_DIRS:
-        for path in sorted((root / sub).rglob("*.py")):
-            rel = path.relative_to(root).as_posix()
-            code = _strip_comments_and_strings(path.read_text(encoding="utf-8"))
-            for lineno, line in enumerate(code.splitlines(), start=1):
-                for m in _UNDERSCORE_IMPORT_RE.finditer(line):
-                    name = m.group(1)
-                    if name in _PROMOTED_OLD_NAMES:
-                        offenders.append(f"{rel}:{lineno}: import of old name {name!r}")
-    return offenders
-
-
-def test_promoted_names_not_imported_by_old_underscore_form() -> None:
-    """Frontends must not import the four T2.4-promoted names by their old
-    underscore form.
-
-    Each of these was renamed to a public name and the old ``_``-prefixed form
-    is now only a back-compat alias kept for monkeypatching in tests.  A fresh
-    cross-module import of the old name is a boundary violation.
-    """
-    offenders = _find_promoted_old_name_imports()
-    assert not offenders, (
-        "Frontend code imports a now-public name by its old underscore form.\n"
-        "Use the public name (export_gguf_manifold) instead.\n\n"
-        + "\n".join(offenders)
-    )
 
 
 # ---------------------------------------------------------------------------

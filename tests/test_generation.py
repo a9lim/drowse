@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Callable, cast
+from typing import Any, cast
 
 import pytest
 import torch
@@ -19,39 +19,13 @@ from drowse.model.chat import chat_eos_ids, logits_keep_kwarg
 from drowse.readout.types import ProbeReading
 from drowse.generation.types import GenState
 from drowse.readout.planner import CaptureMode, CaptureState
-from tests.conftest import FakeLogitsModel
+from tests.support.decode import NoCacheModel, StopTokenizer, scripted_model
 from tests.support.read_plane import (
     fake_readout_family,
     finalize,
     gate_refs,
-    make_read_plane,
+    ReadRig,
 )
-
-
-class _StopTokenizer:
-    name_or_path = "stop-tokenizer"
-    vocab_size = 4
-    eos_token_id = 3
-    added_tokens_encoder = {}
-    all_special_ids = [3]
-
-    _pieces = {
-        0: "Hello",
-        1: " STOP",
-        2: " ignored",
-        3: "",
-    }
-
-    def batch_decode(self, ids: Any) -> list[str]:
-        return [self._pieces[row[0]] for row in ids]
-
-    def decode(self, ids: Any, skip_special_tokens: bool = False) -> str:
-        pieces = []
-        for tid in ids:
-            if skip_special_tokens and tid in self.all_special_ids:
-                continue
-            pieces.append(self._pieces[int(tid)])
-        return "".join(pieces)
 
 
 def test_logits_keep_detection_is_keyed_by_forward_implementation() -> None:
@@ -66,68 +40,26 @@ def test_logits_keep_detection_is_keyed_by_forward_implementation() -> None:
     assert logits_keep_kwarg(CurrentModel()) == "logits_to_keep"
     assert logits_keep_kwarg(LegacyModel()) == "num_logits_to_keep"
 
+    class KwargsModel:
+        def forward(self, input_ids: Any, **kwargs: Any) -> Any:
+            del input_ids, kwargs
+
+    assert logits_keep_kwarg(KwargsModel()) is None
+    assert logits_keep_kwarg(SimpleNamespace()) is None
+
 
 def test_eos_ids_are_not_shared_between_models_with_the_same_tokenizer() -> None:
-    tokenizer = _StopTokenizer()
+    tokenizer = StopTokenizer()
     first = SimpleNamespace(generation_config=SimpleNamespace(eos_token_id=1))
     second = SimpleNamespace(generation_config=SimpleNamespace(eos_token_id=2))
 
     assert chat_eos_ids(first, tokenizer) == {1, 3}
     assert chat_eos_ids(second, tokenizer) == {2, 3}
+    listed = SimpleNamespace(generation_config=SimpleNamespace(eos_token_id=[1, 2]))
+    assert chat_eos_ids(listed, tokenizer) == {1, 2, 3}
 
 
-def _scripted_logits(
-    tokens: list[int], vocab_size: int,
-) -> Callable[[torch.Tensor], torch.Tensor]:
-    """A scripted-argmax ``logits_fn``: forward *i* forces ``tokens[i]``
-    (clamped at the last entry), ignoring ``input_ids`` entirely."""
-    step = 0
-
-    def _logits(_input_ids: torch.Tensor) -> torch.Tensor:
-        nonlocal step
-        tid = tokens[min(step, len(tokens) - 1)]
-        step += 1
-        out = torch.full((1, 1, vocab_size), -100.0)
-        out[0, 0, tid] = 100.0
-        return out
-
-    return _logits
-
-
-class _NoCacheModel(FakeLogitsModel):
-    """The scripted model with its KV cache withheld — the modeling files
-    that ignore ``past_key_values`` and drive the O(N²) fallback."""
-
-    def __call__(
-        self,
-        input_ids: torch.Tensor | None = None,
-        *,
-        use_cache: bool | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        out = super().__call__(input_ids, use_cache=use_cache, **kwargs)
-        out.past_key_values = None
-        return out
-
-
-def _scripted_model(
-    tokens: list[int],
-    *,
-    vocab_size: int = 4,
-    eos_token_id: int = 3,
-    model_cls: type[FakeLogitsModel] = FakeLogitsModel,
-) -> Any:
-    """A decode stub forcing a fixed token sequence, with a fresh KV-cache
-    sentinel per forward.  ``model_cls=_NoCacheModel`` withholds the cache."""
-    return model_cls(
-        _scripted_logits(tokens, vocab_size),
-        with_past_key_values=True,
-        config=SimpleNamespace(vocab_size=vocab_size),
-        generation_config=SimpleNamespace(eos_token_id=eos_token_id),
-    )
-
-
-class _SplitStopTokenizer(_StopTokenizer):
+class _SplitStopTokenizer(StopTokenizer):
     name_or_path = "split-stop-tokenizer"
     vocab_size = 5
     _pieces = {
@@ -139,8 +71,8 @@ class _SplitStopTokenizer(_StopTokenizer):
 
 
 def test_stop_sequence_trimmed_text_is_final_result_text():
-    model: Any = _scripted_model([0, 1, 2])
-    tokenizer: Any = _StopTokenizer()
+    model: Any = scripted_model([0, 1, 2])
+    tokenizer: Any = StopTokenizer()
     state = GenerationState()
     emitted: list[str] = []
 
@@ -160,9 +92,9 @@ def test_stop_sequence_trimmed_text_is_final_result_text():
     assert state.response_text == "Hello"
     assert state.response_aggregate_index == 0
 
-    plane = make_read_plane(
+    plane = ReadRig(
         capture=SimpleNamespace(stacked=lambda: {}), tokenizer=tokenizer,
-    )
+    ).plane
     result, _ = finalize(plane, generated_ids, state=state, tokenizer=tokenizer)
     assert result.text == "Hello"
 
@@ -174,10 +106,10 @@ def test_finalize_owns_the_rate_floor(elapsed: float, expected: float) -> None:
     # Regression: ``finalize_generation`` defaulted to a 1e-9 floor and only
     # honored ``MIN_ELAPSED_FOR_RATE`` because the session passed it in; a
     # direct call reported a noise rate for a near-instant generation.
-    tokenizer = _StopTokenizer()
-    plane = make_read_plane(
+    tokenizer = StopTokenizer()
+    plane = ReadRig(
         capture=SimpleNamespace(stacked=lambda: {}), tokenizer=tokenizer,
-    )
+    ).plane
     result, _ = finalize(
         plane, [0, 2], state=GenerationState(), tokenizer=tokenizer, elapsed=elapsed,
     )
@@ -194,8 +126,8 @@ def test_decode_loop_hands_one_step_id_to_sink_gate_and_tap():
     forward's gate and display reads."""
     from drowse.steering.triggers import TriggerContext
 
-    model: Any = _scripted_model([0, 1, 2])
-    tokenizer: Any = _StopTokenizer()
+    model: Any = scripted_model([0, 1, 2])
+    tokenizer: Any = StopTokenizer()
     state = GenerationState()
     sink_steps: list[int] = []
     gate_steps: list[int] = []
@@ -225,7 +157,7 @@ def test_decode_loop_hands_one_step_id_to_sink_gate_and_tap():
     assert tap_steps == [0, 1, 2]
 
 
-class _Utf8SplitTokenizer(_StopTokenizer):
+class _Utf8SplitTokenizer(StopTokenizer):
     """ids 1 and 2 are partial UTF-8 pieces that only decode as a group."""
 
     name_or_path = "utf8-split-tokenizer"
@@ -247,7 +179,7 @@ def test_buffered_utf8_group_emits_carry_the_flush_forwards_step():
     """Partial-UTF-8 tokens buffer in ``pending_ids`` and flush as a group
     — every emit in the group carries the FLUSHING forward's step (the
     group's readings semantics: they all read that forward's captures)."""
-    model: Any = _scripted_model(
+    model: Any = scripted_model(
         [0, 1, 2, 3], vocab_size=5, eos_token_id=4,
     )
     tokenizer: Any = _Utf8SplitTokenizer()
@@ -274,7 +206,7 @@ def test_buffered_utf8_group_emits_carry_the_flush_forwards_step():
 def test_post_loop_utf8_flush_uses_the_last_forwards_step():
     """A generation ending with a still-buffered partial flushes post-loop
     with ``last_forward_step`` (no fresh forward ran since)."""
-    model: Any = _scripted_model([0, 1], vocab_size=5, eos_token_id=4)
+    model: Any = scripted_model([0, 1], vocab_size=5, eos_token_id=4)
     tokenizer: Any = _Utf8SplitTokenizer()
     state = GenerationState()
     emits: list[tuple[str, int]] = []
@@ -301,7 +233,7 @@ def test_alt_token_decode_does_not_break_partial_utf8_buffering():
     """Top-K alternative decoding shares the lazy decode cache with the emit
     path; a partial-UTF-8 id decoded as an alternative must still buffer when
     it is emitted (no replacement character reaches the stream)."""
-    model: Any = _scripted_model(
+    model: Any = scripted_model(
         [0, 1, 2, 3], vocab_size=5, eos_token_id=4,
     )
     tokenizer: Any = _Utf8SplitTokenizer()
@@ -328,8 +260,8 @@ def test_alt_token_decode_does_not_break_partial_utf8_buffering():
 def test_perplexity_is_none_when_not_requested():
     """``want_perplexity=False`` reports ``None`` (not computed), never NaN —
     the value every ``float | None`` consumer is typed for."""
-    model: Any = _scripted_model([0, 1, 2])
-    tokenizer: Any = _StopTokenizer()
+    model: Any = scripted_model([0, 1, 2])
+    tokenizer: Any = StopTokenizer()
     state = GenerationState()
     ppls: list[float | None] = []
 
@@ -348,8 +280,8 @@ def test_perplexity_is_none_when_not_requested():
 
 
 def test_perplexity_is_a_float_when_requested():
-    model: Any = _scripted_model([0, 1, 2])
-    tokenizer: Any = _StopTokenizer()
+    model: Any = scripted_model([0, 1, 2])
+    tokenizer: Any = StopTokenizer()
     state = GenerationState()
     ppls: list[float | None] = []
 
@@ -368,7 +300,7 @@ def test_perplexity_is_a_float_when_requested():
 
 
 def test_stop_sequence_split_across_tokens_trims_final_text():
-    model: Any = _scripted_model([0, 1, 3], vocab_size=5)
+    model: Any = scripted_model([0, 1, 3], vocab_size=5)
     tokenizer: Any = _SplitStopTokenizer()
     state = GenerationState()
     emitted: list[str] = []
@@ -391,8 +323,8 @@ def test_stop_sequence_split_across_tokens_trims_final_text():
 
 
 def test_stop_sequence_probe_aggregate_uses_visible_endpoint():
-    model: Any = _scripted_model([0, 1, 2])
-    tokenizer: Any = _StopTokenizer()
+    model: Any = scripted_model([0, 1, 2])
+    tokenizer: Any = StopTokenizer()
     state = GenerationState()
     generated_ids = generate_steered(
         model,
@@ -411,10 +343,10 @@ def test_stop_sequence_probe_aggregate_uses_visible_endpoint():
         def stacked(self) -> dict[int, torch.Tensor]:
             raise AssertionError("incremental stop aggregate should not stack")
 
-    plane = make_read_plane(
+    plane = ReadRig(
         capture=Capture(), monitor=SimpleNamespace(probe_names=["toy"]),
         tokenizer=tokenizer,
-    )
+    ).plane
     plane.state = CaptureState(mode=CaptureMode.INCREMENTAL)
     plane._rows = [{"toy": visible}, {"toy": hidden_stop}]
     result, _ = finalize(plane, generated_ids, state=state, tokenizer=tokenizer)
@@ -424,7 +356,7 @@ def test_stop_sequence_probe_aggregate_uses_visible_endpoint():
 
 
 def test_stop_sequence_only_tap_can_skip_full_token_table():
-    class CountingStopTokenizer(_StopTokenizer):
+    class CountingStopTokenizer(StopTokenizer):
         name_or_path = "stop-tokenizer-no-table"
 
         def __init__(self) -> None:
@@ -434,7 +366,7 @@ def test_stop_sequence_only_tap_can_skip_full_token_table():
             self.batch_decode_calls += 1
             return super().batch_decode(ids)
 
-    model: Any = _scripted_model([0, 1, 2])
+    model: Any = scripted_model([0, 1, 2])
     tokenizer = CountingStopTokenizer()
     state = GenerationState()
     emitted: list[str] = []
@@ -498,8 +430,8 @@ def test_finalize_reuses_scored_probe_aggregate() -> None:
     capture = Capture()
     state = GenerationState()
     state.finish_reason = "length"
-    tokenizer = _StopTokenizer()
-    plane = make_read_plane(capture=capture, monitor=Monitor(), tokenizer=tokenizer)
+    tokenizer = StopTokenizer()
+    plane = ReadRig(capture=capture, monitor=Monitor(), tokenizer=tokenizer).plane
 
     result, per_token = finalize(plane, [0, 1], state=state, tokenizer=tokenizer)
 
@@ -533,8 +465,8 @@ def test_finalize_incremental_probe_path_does_not_stack_capture() -> None:
 
     state = GenerationState()
     state.finish_reason = "length"
-    tokenizer = _StopTokenizer()
-    plane = make_read_plane(capture=Capture(), monitor=Monitor(), tokenizer=tokenizer)
+    tokenizer = StopTokenizer()
+    plane = ReadRig(capture=Capture(), monitor=Monitor(), tokenizer=tokenizer).plane
     plane.state = CaptureState(mode=CaptureMode.INCREMENTAL)
     plane._rows = [{"toy": reading0}, {"toy": reading1}]
 
@@ -608,8 +540,8 @@ def test_finalize_lean_incremental_probe_path() -> None:
     monitor = Monitor()
     state = GenerationState()
     state.finish_reason = "length"
-    tokenizer = _StopTokenizer()
-    plane = make_read_plane(capture=Capture(), monitor=monitor, tokenizer=tokenizer)
+    tokenizer = StopTokenizer()
+    plane = ReadRig(capture=Capture(), monitor=monitor, tokenizer=tokenizer).plane
     plane.state = CaptureState(mode=CaptureMode.LEAN_INCREMENTAL)
     plane._rows = [{"toy": lean0}, {"toy": lean1}]
 
@@ -669,8 +601,8 @@ def test_finalize_gating_subset_probe_path() -> None:
     monitor = Monitor()
     state = GenerationState()
     state.finish_reason = "length"
-    tokenizer = _StopTokenizer()
-    plane = make_read_plane(capture=Capture(), monitor=monitor, tokenizer=tokenizer)
+    tokenizer = StopTokenizer()
+    plane = ReadRig(capture=Capture(), monitor=monitor, tokenizer=tokenizer).plane
     # GATING_SUBSET: CaptureState.aggregate_only returns True for this mode.
     plane.state = CaptureState(
         mode=CaptureMode.GATING_SUBSET, gating_subset={"toy"}, gating_keys={"toy"},
@@ -725,8 +657,8 @@ def test_finalize_reuses_one_aggregate_pool_for_monitor_lens_and_sae() -> None:
     state.finish_reason = "length"
     # The aggregate position: a forward the ring still holds.
     state.response_aggregate_index = 1
-    tokenizer = _StopTokenizer()
-    plane = make_read_plane(
+    tokenizer = StopTokenizer()
+    plane = ReadRig(
         capture=capture,
         monitor=Monitor(),
         lens=fake_readout_family(
@@ -736,7 +668,7 @@ def test_finalize_reuses_one_aggregate_pool_for_monitor_lens_and_sae() -> None:
             ("sae/0",), score_aggregate=_scorer("sae", sae_reading, "sae/0"),
         ),
         tokenizer=tokenizer,
-    )
+    ).plane
     plane.state = CaptureState(mode=CaptureMode.AGGREGATE_ONLY)
 
     result, _ = finalize(plane, [0, 1], state=state, tokenizer=tokenizer)
@@ -799,7 +731,7 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
             raise AssertionError("missing gate keys should use cached plans")
 
     monitor = Monitor()
-    plane = make_read_plane(capture=Capture(), monitor=monitor)
+    plane = ReadRig(capture=Capture(), monitor=monitor).plane
     plane.state = CaptureState(
         mode=CaptureMode.INCREMENTAL, gating_keys={"toy@nearest", "toy@hidden"},
     )
@@ -860,9 +792,9 @@ def test_readout_only_gates_skip_monitor_probe_scoring(
         )
         for fam in ("lens", "sae")
     }
-    plane = make_read_plane(
+    plane = ReadRig(
         capture=Capture(), monitor=Monitor(), gate_refs=gate_refs(expr), **families,
-    )
+    ).plane
 
     assert plane.gate_score_callback()(0) == expected
 
@@ -900,7 +832,7 @@ def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
             raise AssertionError("exact monitor gate keys should avoid full scoring")
 
     monitor = Monitor()
-    plane = make_read_plane(
+    plane = ReadRig(
         capture=Capture(),
         monitor=monitor,
         lens=fake_readout_family(
@@ -908,7 +840,7 @@ def test_mixed_monitor_and_lens_gates_score_only_monitor_gate_keys() -> None:
             gate_scalars=lambda _step, _hidden, _keys: {"jlens/g": 0.7},
         ),
         gate_refs=gate_refs("0.3 toy@when:toy>0.1 + 0.2 jlens/g@when:jlens/g>0.4"),
-    )
+    ).plane
 
     scores = plane.gate_score_callback()(0)
 
@@ -928,8 +860,8 @@ def test_stateless_zero_token_probe_result_does_not_use_history() -> None:
 
     state = GenerationState()
     state.finish_reason = "length"
-    tokenizer = _StopTokenizer()
-    plane = make_read_plane(capture=Capture(), monitor=Monitor(), tokenizer=tokenizer)
+    tokenizer = StopTokenizer()
+    plane = ReadRig(capture=Capture(), monitor=Monitor(), tokenizer=tokenizer).plane
 
     result, per_token = finalize(plane, [], state=state, tokenizer=tokenizer)
 
@@ -952,14 +884,14 @@ def test_return_probe_readings_false_skips_probe_finalization() -> None:
 
     state = GenerationState()
     state.finish_reason = "length"
-    tokenizer = _StopTokenizer()
-    plane = make_read_plane(
+    tokenizer = StopTokenizer()
+    plane = ReadRig(
         capture=Capture(),
         monitor=Monitor(),
         lens=fake_readout_family(("jlens/x",), score_aggregate=_disabled("lens")),
         sae=fake_readout_family(("sae/0",), score_aggregate=_disabled("sae")),
         tokenizer=tokenizer,
-    )
+    ).plane
 
     result, _ = finalize(
         plane, [0], state=state, tokenizer=tokenizer, return_probe_readings=False,
@@ -983,8 +915,8 @@ def test_penalty_state_applies_sparse_counts_on_device():
 
 
 def test_no_cache_fallback_does_not_cat_each_step(monkeypatch: pytest.MonkeyPatch) -> None:
-    model: Any = _scripted_model([0, 1, 3], model_cls=_NoCacheModel)
-    tokenizer: Any = _StopTokenizer()
+    model: Any = scripted_model([0, 1, 3], model_cls=NoCacheModel)
+    tokenizer: Any = StopTokenizer()
     state = GenerationState()
 
     def _forbid_cat(*_args: Any, **_kwargs: Any) -> None:

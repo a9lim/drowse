@@ -21,16 +21,15 @@ from drowse.server import create_app
 from drowse.server.errors import install_error_handlers
 from drowse.server.operations import register_operation_routes, run_operation
 from drowse.server.runtime import finish_worker
-from tests.test_generation import _StopTokenizer, _scripted_model
-from tests.test_server_loom import _StubSession
-from tests.support.engine import attach_engine
+from tests.support.decode import StopTokenizer, scripted_model
+from tests.support.server import StubSession
 
 STREAM_PATH = "/drowse/v1/sessions/default/stream"
 
 
 @asynccontextmanager
 async def _socket(
-    session: _StubSession, send_gate: asyncio.Event | None = None, *, app: Any = None,
+    session: StubSession, send_gate: asyncio.Event | None = None, *, app: Any = None,
 ) -> AsyncIterator[tuple[Any, Any, asyncio.Task[Any]]]:
     incoming: asyncio.Queue[Message] = asyncio.Queue()
     outgoing: asyncio.Queue[Message] = asyncio.Queue()
@@ -60,7 +59,7 @@ async def _socket(
 
 
 def test_foreign_origin_cannot_subscribe_or_mutate() -> None:
-    session = _StubSession()
+    session = StubSession()
     with TestClient(create_app(cast(DrowseSession, session))) as client:
         with pytest.raises(WebSocketDisconnect):
             with client.websocket_connect(STREAM_PATH, headers={"Origin": "https://untrusted.example"}):
@@ -70,7 +69,7 @@ def test_foreign_origin_cannot_subscribe_or_mutate() -> None:
 
 def test_websocket_flood_is_rejected_while_session_locked() -> None:
     async def scenario() -> None:
-        session = _StubSession()
+        session = StubSession()
         app = create_app(cast(DrowseSession, session))
         lock = app.state.session_lock
         await lock.acquire()
@@ -97,15 +96,17 @@ def test_websocket_flood_is_rejected_while_session_locked() -> None:
     asyncio.run(scenario())
 
 
-def test_stream_close_before_first_read_waits_for_worker_and_survives_reset() -> None:
+def test_stream_close_before_first_read_waits_for_worker_and_survives_reset(
+    tiny_session: Any,
+) -> None:
     entered = threading.Event()
     release = threading.Event()
     finished = threading.Event()
     closed = threading.Event()
     generated: list[int] = []
     errors: list[BaseException] = []
-    session: Any = DrowseSession.__new__(DrowseSession)
-    engine = attach_engine(session)
+    session = tiny_session
+    engine = session._engine
 
     def worker(*_args: Any, **kwargs: Any) -> GenerationResult:
         import torch
@@ -114,7 +115,7 @@ def test_stream_close_before_first_read_waits_for_worker_and_survives_reset() ->
         engine.state.reset()
         try:
             generated.extend(generate_steered(
-                _scripted_model([0] * 20), cast(Any, _StopTokenizer()),
+                scripted_model([0] * 20), cast(Any, StopTokenizer()),
                 torch.tensor([[0]]), GenerationConfig(max_new_tokens=20, temperature=0),
                 engine.state,
             ))
@@ -219,7 +220,7 @@ def test_sse_disconnect_keeps_lock_until_real_worker_exits() -> None:
 
 
 def test_idle_authenticated_socket_disconnect_does_not_stop_other_client() -> None:
-    session = _StubSession()
+    session = StubSession()
     session._block_until_stop = True
     app = create_app(cast(DrowseSession, session), api_key="test-secret")
     with TestClient(app) as client:
@@ -240,7 +241,7 @@ def test_idle_authenticated_socket_disconnect_does_not_stop_other_client() -> No
 
 
 def test_unexpected_commit_error_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _StubSession()
+    session = StubSession()
 
     def fail(*_args: Any, **_kwargs: Any) -> None:
         raise OSError("/home/private-user/private-model-cache/config.json secret=synthetic")
@@ -271,7 +272,7 @@ def test_unexpected_commit_error_is_scrubbed(monkeypatch: pytest.MonkeyPatch) ->
 ])
 @pytest.mark.parametrize("key", [None, "test-secret"])
 def test_websocket_origin_policy(origin: str, allowed: list[str], accepted: bool, key: str | None) -> None:
-    app = create_app(cast(DrowseSession, _StubSession()), cors_origins=allowed, api_key=key)
+    app = create_app(cast(DrowseSession, StubSession()), cors_origins=allowed, api_key=key)
     headers = {"Origin": origin, **({"Authorization": f"Bearer {key}"} if key else {})}
     with TestClient(app) as client:
         if accepted:
@@ -285,7 +286,7 @@ def test_websocket_origin_policy(origin: str, allowed: list[str], accepted: bool
 
 
 def test_unkeyed_dns_rebinding_host_is_rejected() -> None:
-    app = create_app(cast(DrowseSession, _StubSession()))
+    app = create_app(cast(DrowseSession, StubSession()))
     headers = {"Host": "rebind.example", "Origin": "http://rebind.example"}
     with TestClient(app) as client:
         with pytest.raises(WebSocketDisconnect):
@@ -296,7 +297,7 @@ def test_unkeyed_dns_rebinding_host_is_rejected() -> None:
 
 def test_websocket_duplicate_origin_is_rejected() -> None:
     import httpx
-    with TestClient(create_app(cast(DrowseSession, _StubSession()))) as client:
+    with TestClient(create_app(cast(DrowseSession, StubSession()))) as client:
         with pytest.raises(WebSocketDisconnect):
             with client.websocket_connect(STREAM_PATH, headers=httpx.Headers([
                 ("Origin", "http://testserver"), ("Origin", "https://untrusted.example"),
@@ -332,7 +333,7 @@ def test_websocket_oversized_message_closes_without_mutation() -> None:
     from drowse.server.ws_stream import MAX_WS_MESSAGE_BYTES
 
     async def scenario() -> None:
-        session = _StubSession()
+        session = StubSession()
         async with _socket(session) as (incoming, outgoing, _):
             incoming.put_nowait({"type": "websocket.receive", "text": json.dumps({
                 "type": "submit", "text": "x" * MAX_WS_MESSAGE_BYTES, "authored_role": "user",
@@ -345,7 +346,7 @@ def test_websocket_oversized_message_closes_without_mutation() -> None:
 
 def test_queued_socket_disconnect_never_runs_its_request() -> None:
     async def scenario() -> None:
-        session = _StubSession()
+        session = StubSession()
         app = create_app(cast(DrowseSession, session))
         lock = app.state.session_lock
         await lock.acquire()
@@ -366,7 +367,7 @@ def test_queued_socket_disconnect_never_runs_its_request() -> None:
 
 
 def test_active_socket_disconnect_joins_its_worker() -> None:
-    session = _StubSession()
+    session = StubSession()
     session._block_until_stop = True
     app = create_app(cast(DrowseSession, session))
     with TestClient(app) as client:
@@ -415,9 +416,9 @@ def test_repeated_cancellation_keeps_worker_lock() -> None:
     asyncio.run(scenario())
 
 
-def test_closed_stream_does_not_cancel_a_later_generation() -> None:
-    session: Any = DrowseSession.__new__(DrowseSession)
-    engine = attach_engine(session)
+def test_closed_stream_does_not_cancel_a_later_generation(tiny_session: Any) -> None:
+    session = tiny_session
+    engine = session._engine
     engine.generate_one = lambda *args, **kwargs: GenerationResult(  # type: ignore[method-assign]
         text="", tokens=[], token_count=0, tok_per_sec=0, elapsed=0,
     )
@@ -433,7 +434,7 @@ def test_closed_stream_does_not_cancel_a_later_generation() -> None:
 
 def test_serve_default_is_loopback_and_remote_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
     from drowse.cli.main import main, parse_args
-    from tests._cli_fakes import poison_session
+    from tests.support.cli import poison_session
 
     assert parse_args(["serve", "model"]).host == "127.0.0.1"
     monkeypatch.delenv("DROWSE_API_KEY", raising=False)
@@ -515,7 +516,7 @@ def test_slow_tree_subscriber_is_disconnected() -> None:
     from drowse.server.ws_stream import MAX_WS_OUTBOUND_EVENTS
 
     async def scenario() -> None:
-        session = _StubSession()
+        session = StubSession()
         async with _socket(session, asyncio.Event()) as (_, outgoing, task):
             for rev in range(MAX_WS_OUTBOUND_EVENTS + 10):
                 session.events.emit(LoomMutated(op="cast", rev=rev))
@@ -534,7 +535,7 @@ def test_slow_tree_subscriber_is_disconnected() -> None:
 def test_ipv6_websocket_origins(url: str, origin: str, allowed: bool) -> None:
     headers = {"Host": url.partition("://")[2], "Origin": origin}
     target = url.replace("[::1]", "testserver") + STREAM_PATH
-    with TestClient(create_app(cast(DrowseSession, _StubSession()))) as client:
+    with TestClient(create_app(cast(DrowseSession, StubSession()))) as client:
         if allowed:
             with client.websocket_connect(target, headers=headers) as ws:
                 ws.send_json({"type": "invalid"})
@@ -552,7 +553,7 @@ def test_remote_serve_honors_key_precedence_and_transport_limit(monkeypatch: pyt
     import uvicorn
     from drowse.cli.main import main
     from drowse.server.ws_stream import MAX_WS_MESSAGE_BYTES
-    from tests._cli_fakes import install_fake_session
+    from tests.support.cli import install_fake_session
 
     captured: dict[str, Any] = {}
     monkeypatch.setenv("DROWSE_API_KEY", "env-secret")
@@ -570,7 +571,7 @@ def test_remote_serve_honors_key_precedence_and_transport_limit(monkeypatch: pyt
 
 
 def test_socket_lifecycles_release_subscriptions() -> None:
-    session = _StubSession()
+    session = StubSession()
     baseline = len(session.events._subs)
     with TestClient(create_app(cast(DrowseSession, session))) as client:
         for _ in range(30):
@@ -581,9 +582,11 @@ def test_socket_lifecycles_release_subscriptions() -> None:
 
 
 @pytest.mark.parametrize("read_first", [True, False])
-def test_stream_reports_worker_error_once_and_close_is_idempotent(read_first: bool) -> None:
-    session: Any = DrowseSession.__new__(DrowseSession)
-    engine = attach_engine(session)
+def test_stream_reports_worker_error_once_and_close_is_idempotent(
+    read_first: bool, tiny_session: Any,
+) -> None:
+    session = tiny_session
+    engine = session._engine
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("worker failed")
@@ -596,3 +599,147 @@ def test_stream_reports_worker_error_once_and_close_is_idempotent(read_first: bo
         else:
             stream.close()
     stream.close()
+
+
+# ---------------------------------------------------------------------------
+# HTTP inference keeps the event loop responsive
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/completions", "/api/chat", "/api/generate"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_http_inference_leaves_event_loop_responsive(path: str, stream: bool) -> None:
+    import httpx
+    from drowse.generation.results import GenerationResult
+    from drowse.server import create_app
+    from tests.support.server import StubSession
+
+    async def scenario() -> None:
+        entered, release = threading.Event(), threading.Event()
+        session: Any = StubSession()
+        result = GenerationResult(text="ok", tokens=[1], token_count=1, tok_per_sec=1, elapsed=0.1, finish_reason="stop")
+
+        def block() -> None:
+            entered.set()
+            release.wait(2)
+
+        def generate(*args: Any, **kwargs: Any) -> Any:
+            block()
+            return SimpleNamespace(first=result)
+
+        class Stream:
+            def __init__(self) -> None:
+                self.result = result
+
+            def __iter__(self) -> Any:
+                return self
+
+            def __next__(self) -> Any:
+                block()
+                raise StopIteration
+
+            def close(self) -> None:
+                pass
+
+        iterator = Stream()
+        session.generate = generate
+        session.generate_stream = lambda *args, **kwargs: iterator
+        app = create_app(session)
+        # Release from outside the event loop so the pre-fix failure cannot hang pytest.
+        timer = threading.Timer(0.3, release.set)
+        timer.start()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://localhost") as client:
+            task = asyncio.create_task(client.post(path, json={
+                "model": session.model_id, "stream": stream, "prompt": "hi",
+                "messages": [{"role": "user", "content": "hi"}],
+            }))
+            try:
+                assert await asyncio.to_thread(entered.wait, 2)
+                assert not release.is_set(), "inference blocked the ASGI event loop"
+                assert (await client.get("/v1/models")).status_code == 200
+            finally:
+                release.set()
+                timer.cancel()
+                response = await task
+                assert response.status_code == 200, response.text
+    asyncio.run(scenario())
+
+def test_queued_openai_stream_does_not_start_model_before_owning_lock() -> None:
+    import httpx
+    from drowse.server import create_app
+    from tests.support.server import StubSession
+
+    async def scenario() -> None:
+        session: Any = StubSession()
+        starts: list[bool] = []
+        session.generate_stream = lambda *args, **kwargs: starts.append(True)
+        app = create_app(session)
+        lock = app.state.session_lock
+        await lock.acquire()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://localhost") as client:
+            task = asyncio.create_task(client.post("/v1/chat/completions", json={
+                "model": session.model_id, "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            }))
+            try:
+                await asyncio.sleep(0.03)
+                assert starts == []
+            finally:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                lock.release()
+    asyncio.run(scenario())
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/api/chat"])
+def test_http_send_failure_joins_stream_close_without_blocking_loop(path: str) -> None:
+    from starlette.requests import ClientDisconnect
+    from drowse.server import create_app
+    from tests.support.server import StubSession
+
+    async def scenario() -> None:
+        entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+        session: Any = StubSession()
+
+        class Stream:
+            result = None
+
+            def __iter__(self) -> Any:
+                return self
+
+            def __next__(self) -> Any:
+                return SimpleNamespace(text="content", thinking=False, probe_readings=None)
+
+            def close(self) -> None:
+                entered.set()
+                assert release.wait(3)
+                closed.set()
+
+        session.generate_stream = lambda *args, **kwargs: Stream()
+        app = create_app(session)
+        scope: Any = {
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "method": "POST", "scheme": "http", "path": path, "raw_path": path.encode(),
+            "root_path": "", "query_string": b"", "headers": [(b"host", b"localhost"), (b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 1234), "server": ("127.0.0.1", 80),
+        }
+        incoming: asyncio.Queue[Any] = asyncio.Queue()
+        incoming.put_nowait({"type": "http.request", "body": json.dumps({
+            "model": session.model_id, "stream": True, "messages": [{"role": "user", "content": "hi"}],
+        }).encode()})
+
+        async def send(message: Any) -> None:
+            if message["type"] == "http.response.body" and b"content" in message["body"]:
+                raise OSError("disconnected")
+
+        task = asyncio.create_task(app(scope, incoming.get, send))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            assert app.state.session_lock.locked() and not task.done()
+            assert not closed.is_set()
+        finally:
+            release.set()
+            with pytest.raises(ClientDisconnect):
+                await task
+        assert closed.is_set() and not app.state.session_lock.locked()
+    asyncio.run(scenario())

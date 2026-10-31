@@ -36,7 +36,7 @@ from drowse.generation.scoring import (
     ChoiceScores,
 )
 
-from tests.conftest import CharTokenizer, FakeLogitsModel
+from tests.support.decode import CharTokenizer, FakeLogitsModel
 
 
 # --------------------------------------------------------------------------- #
@@ -647,7 +647,7 @@ def test_real_forward_score_choices_distribution():
     produces a coherent restricted-choice distribution on a real causal LM.
     """
     from drowse import DrowseSession
-    from tests._gpu_model import gpu_model_id, load_or_skip_inaccessible
+    from tests.support.gpu import gpu_model_id, load_or_skip_inaccessible
 
     model_id = gpu_model_id()
     created = load_or_skip_inaccessible(

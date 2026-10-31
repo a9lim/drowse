@@ -27,6 +27,7 @@ from drowse import (
 from drowse.loom.errors import LoomTreeError
 from drowse.loom.ops import append_turn, check_user_send_target
 from drowse.loom.tree import TOKEN_SIDECAR_FORMAT_VERSION, TREE_FORMAT_VERSION
+from drowse.loom import tree as loom
 
 
 # ---------------------------------------------------------------------------
@@ -1372,3 +1373,55 @@ def test_cast_rides_save_load(tmp_path: Path):
 
     t2 = LoomTree.load(path)
     assert t2.cast == t.cast
+
+
+# ---------------------------------------------------------------------------
+# Import size bounds
+# ---------------------------------------------------------------------------
+
+
+def test_loom_import_bounds_main_json_before_parsing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "tree.json"
+    path.write_text(json.dumps(loom.LoomTree().to_dict()) + " " * 4096)
+    monkeypatch.setattr(loom, "_TREE_MAX_LOAD_BYTES", 1024, raising=False)
+    with pytest.raises(loom.LoomTreeError, match="import limit"):
+        loom.LoomTree.load(path)
+
+def test_loom_import_bounds_decompressed_token_sidecar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "tree.json"
+    payload = loom.LoomTree().to_dict()
+    payload["token_sidecar"] = "tree.tokens.json.gz"
+    path.write_text(json.dumps(payload))
+    sidecar = tmp_path / "tree.tokens.json.gz"
+    expanded = json.dumps({"token_sidecar_format": 2, "nodes": {}}).encode() + b" " * 65536
+    sidecar.write_bytes(gzip.compress(expanded))
+    assert sidecar.stat().st_size < 1024
+    monkeypatch.setattr(loom, "_TOKEN_SIDECAR_MAX_LOAD_BYTES", 1024, raising=False)
+    with pytest.raises(loom.LoomTreeError, match="import limit"):
+        loom.LoomTree.load(path)
+
+def test_loom_import_can_explicitly_allow_a_larger_trusted_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "tree.json"
+    tree = loom.LoomTree()
+    tree.add_user_turn("keep this conversation")
+    tree.save(path)
+    monkeypatch.setattr(loom, "_TREE_MAX_LOAD_BYTES", 64)
+    restored = loom.LoomTree.load(path, max_bytes=path.stat().st_size)
+    assert restored.messages_for() == tree.messages_for()
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5])
+def test_loom_import_rejects_invalid_size_overrides(tmp_path: Path, limit: object) -> None:
+    from typing import cast
+
+    with pytest.raises(ValueError, match="positive integer"):
+        loom.LoomTree.load(tmp_path / "not-opened.json", max_bytes=cast(int, limit))
+
+@pytest.mark.parametrize("compressed", [b"invalid gzip", gzip.compress(b"{}", mtime=0)[:-5]])
+def test_loom_import_reports_corrupt_token_sidecars(tmp_path: Path, compressed: bytes) -> None:
+    path = tmp_path / "tree.json"
+    payload = loom.LoomTree().to_dict()
+    payload["token_sidecar"] = "tree.tokens.json.gz"
+    path.write_text(json.dumps(payload))
+    (tmp_path / "tree.tokens.json.gz").write_bytes(compressed)
+    with pytest.raises(loom.LoomTreeError, match="complete gzip"):
+        loom.LoomTree.load(path)

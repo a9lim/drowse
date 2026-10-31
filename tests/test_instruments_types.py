@@ -1,5 +1,5 @@
 """Instrument-protocol vocabulary: GateRef parsing, channel validation,
-and the ScalarReading -> ProbeReading phase-1 wire bridge."""
+and the ScalarReading -> ProbeReading compatibility projection."""
 
 from typing import Any
 
@@ -126,14 +126,13 @@ def test_validate_rejects_label_channels_for_lens():
 
 
 # --------------------------------------------------------------------------
-# ScalarReading -> ProbeReading bridge (must be bit-identical to the
-# historical synthesized shapes)
+# ScalarReading -> ProbeReading compatibility projection
 # --------------------------------------------------------------------------
 
-def test_bridge_matches_lens_synthesis():
-    """The exact shape ``_score_lens_probes`` emitted: coords=(strength,),
-    coords_per_layer[l]=(p_l,), depth from the readout stats, geometry
-    fields defaulted."""
+def test_lens_reading_projects_to_probe_reading():
+    """A lens reading projects to coords=(strength,),
+    coords_per_layer[l]=(p_l,), depth from the readout stats, and the
+    geometry fields at their defaults."""
     layers = [10, 11, 12]
     per_layer = {10: 0.2, 11: 0.5, 12: 0.8}
     strength, com, spread = 0.5, 0.61, 0.07
@@ -156,10 +155,10 @@ def test_bridge_matches_lens_synthesis():
     assert reading.to_probe_reading().to_dict() == expected.to_dict()
 
 
-def test_bridge_matches_sae_synthesis():
-    """The exact shape ``_score_sae_probes`` emitted: coords=(value,),
+def test_sae_reading_projects_to_probe_reading():
+    """An SAE reading projects to coords=(value,),
     coords_per_layer={hook_layer: (value,)}, depth_com the single-layer
-    constant, depth_spread (0.0,)."""
+    constant and depth_spread (0.0,)."""
     layer, n_layers = 12, 34
     value = 0.73
     depth_center = layer / max(n_layers - 1, 1)
@@ -182,17 +181,17 @@ def test_bridge_matches_sae_synthesis():
     assert reading.to_probe_reading().to_dict() == expected.to_dict()
 
 
-def test_bridge_defaults_without_depth():
+def test_projection_defaults_without_depth():
     reading = ScalarReading(value=0.1, unit="raw_activation")
-    bridged = reading.to_probe_reading()
-    assert bridged.depth_com == ()
-    assert bridged.depth_spread == ()
-    assert bridged.membership == 1.0
-    assert bridged.assignment == []
+    projected = reading.to_probe_reading()
+    assert projected.depth_com == ()
+    assert projected.depth_spread == ()
+    assert projected.membership == 1.0
+    assert projected.assignment == []
 
 
 # --------------------------------------------------------------------------
-# Public facade wiring (P3)
+# Public facade wiring
 # --------------------------------------------------------------------------
 
 def test_session_facades_are_the_instruments(make_tiny_session: Any) -> None:

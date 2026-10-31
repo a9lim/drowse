@@ -506,7 +506,7 @@ def test_fit_affine_subspace_reuses_precomputed_whitened_gram():
     """Extraction precomputes ``X Σ⁻¹ Xᵀ`` for diagnostics / discover coords;
     the affine fit should consume that Gram instead of recomputing it."""
     from drowse.geometry.subspace import fit_affine_subspace
-    from tests._whitener import synthetic_means, synthetic_whitener
+    from tests.support.whitener import synthetic_means, synthetic_whitener
 
     torch.manual_seed(19)
     centroids = torch.randn(6, 14)

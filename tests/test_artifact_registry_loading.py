@@ -14,7 +14,7 @@ from drowse.store.manifold_schema import ManifoldFormatError
 from drowse.store.manifold_authoring import BakedTensor, publish_baked_manifold
 from drowse.store.manifold_lifecycle import transfer_manifold
 from drowse.base.paths import encode_release_id
-from tests._whitener import synthetic_means, synthetic_whitener
+from tests.support.whitener import synthetic_means, synthetic_whitener
 
 _COMPONENTS = {"0:default/x": {"selector": "default/x", "alpha": 1.0, "tensor_sha256": "0" * 64}}
 

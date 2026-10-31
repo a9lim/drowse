@@ -30,7 +30,7 @@ from drowse.geometry.inject import (
     synthesize_subspace as _synthesize_subspace,
 )
 from drowse.steering.triggers import Trigger
-from tests._whitener import isotropic_whitener
+from tests.support.whitener import isotropic_whitener
 
 
 _DIM = 8

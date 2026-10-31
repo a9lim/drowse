@@ -14,10 +14,11 @@ from fastapi.testclient import TestClient
 from drowse.lens.instrument import LensInstrument
 from drowse.lens.jlens import resolve_token_atom
 from tests.support.geometry import stub_geometry_instrument
-from tests.support.lens import stub_lens_kwargs
+from tests.support.lens import lens_kwargs
 from drowse.sae.instrument import SaeInstrument
 from drowse.server.instrument_routes import instrument_families
-from tests.support.sae import MockSaeBackend, make_resident, stub_sae_instrument
+from tests.support.sae import MockSaeBackend, make_resident, sae_instrument
+from tests.support.server import mock_session
 
 _SID = "default"
 _BASE = f"/drowse/v1/sessions/{_SID}/instruments"
@@ -29,7 +30,7 @@ class _FakeLens(LensInstrument):
     / ``active_source`` / ``token_readout`` contract."""
 
     def __init__(self, session: Any) -> None:
-        super().__init__(**stub_lens_kwargs(session, replay=session.lens_replay))
+        super().__init__(**lens_kwargs(replay=session.lens_replay))
         # The lifecycle and the resident lens touch artifacts: mocked.  The
         # token replay is the session's (``session.lens_replay``).
         self.fit = MagicMock()  # type: ignore[method-assign]
@@ -88,23 +89,14 @@ class _FakeSae(SaeInstrument):
 
 
 def _mock_session() -> Any:
-    session = MagicMock()
-    session.model_id = "test/model"
-    session.model_info = {
-        "model_type": "gemma2", "num_layers": 26, "hidden_dim": 2304,
-        "device": "cpu", "dtype": "torch.bfloat16",
-    }
-    session.model = MagicMock()
+    """The shared mock session with real instruments over a faked source
+    lifecycle, keyed by the registry the routes validate ``{family}`` against."""
+    # The token-validate tests script the tokenizer per test.
+    session = mock_session(tokenizer=MagicMock())
     session.model.config.model_type = "gemma2"
-    session.layers = [MagicMock() for _ in range(26)]
-    session.config = MagicMock()
-    session.config.system_prompt = None
-    session.config.thinking = None
-    session.tokenizer = MagicMock()
-
-    # The read plane: real instruments over a faked source lifecycle, keyed
-    # by the registry the routes validate ``{family}`` against.
-    session._monitor.probe_names = []
+    # The geometry instrument reads ``session._monitor`` per call, so a test
+    # can script the roster after construction.
+    session._monitor = MagicMock(probe_names=[])
     # Each family's token replay is a mock the tests script
     # (``session.<family>_replay``); the instruments build the envelope.
     session.geometry_replay = MagicMock()
@@ -113,7 +105,7 @@ def _mock_session() -> Any:
     geometry = stub_geometry_instrument(session, replay=session.geometry_replay)
     lens = _FakeLens(session)
     # The SAE lifecycle the routes drive is mocked on the instrument.
-    sae = stub_sae_instrument(session, cls=_FakeSae, replay=session.sae_replay)
+    sae = sae_instrument(session, cls=_FakeSae, replay=session.sae_replay)
     for name in ("load", "unload", "train", "validate_feature", "fetch_meta"):
         setattr(sae, name, MagicMock(name=f"sae.{name}"))
     session.instruments = {

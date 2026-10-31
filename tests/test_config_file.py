@@ -222,9 +222,9 @@ def test_bare_pole_validates_against_installed_packs(monkeypatch: pytest.MonkeyP
     ``referenced_selectors`` so the namespace-less bare name doesn't flag
     as missing when an installed manifold node matches it.
 
-    4.0: a bipolar concept is a 2-node ``pca`` manifold (nodes ``deer``/
-    ``wolf``), so bare ``wolf`` resolves through the manifold-label tier in
-    ``_bare_concept_resolves`` rather than the old ``vectors/`` pole alias.
+    A bipolar concept is a 2-node ``pca`` manifold (nodes ``deer``/
+    ``wolf``), so bare ``wolf`` resolves through the bare-atom tiers
+    (``resolve_bare_atom``).
     """
     monkeypatch.setenv("DROWSE_HOME", str(tmp_path))
     from drowse.store.manifold_authoring import create_discover_manifold_folder

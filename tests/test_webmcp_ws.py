@@ -5,9 +5,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from drowse.session.session import DrowseSession
+from drowse.generation.decode import GenerationConfig
 from drowse.server import create_app
-from tests.test_drowse_api import _mock_session, TestWebSocket as _WebSocketFixture
-from tests.test_server_loom import _StubSession
+from tests.support.server import mock_session, script_generate
+from tests.support.server import StubSession
 
 
 STREAM = "/drowse/v1/sessions/default/stream"
@@ -15,8 +16,8 @@ REQUESTS = "/drowse/v1/sessions/default/requests"
 
 
 def test_completed_request_reconciles_after_reconnect_without_duplicate_compute():
-    session = _mock_session()
-    _WebSocketFixture()._attach_generate(session, ["ahoy"])
+    session = mock_session(config=GenerationConfig())
+    script_generate(session, ["ahoy"])
     payload = {"type": "generate", "request_id": "recover", "input": "hi", "n": 2}
     with TestClient(create_app(session)) as client:
         for _ in range(2):
@@ -35,7 +36,7 @@ def test_completed_request_reconciles_after_reconnect_without_duplicate_compute(
 
 
 def test_disconnected_active_request_preserves_cancelled_result_without_reexecution():
-    session = _StubSession()
+    session = StubSession()
     session._block_until_stop = True
     payload = {"type": "generate", "request_id": "disconnect", "input": "hi", "stateless": False}
     with TestClient(create_app(cast(DrowseSession, session))) as client:
@@ -60,7 +61,7 @@ def test_disconnected_active_request_preserves_cancelled_result_without_reexecut
 
 
 def test_system_prompt_can_be_restored_to_null():
-    session = _mock_session()
+    session = mock_session(config=GenerationConfig())
     with TestClient(create_app(session)) as client:
         assert client.patch("/drowse/v1/sessions/default", json={"system_prompt": "pirate"}).json()["config"]["system_prompt"] == "pirate"
         assert client.patch("/drowse/v1/sessions/default", json={"system_prompt": None}).json()["config"]["system_prompt"] is None
@@ -68,8 +69,8 @@ def test_system_prompt_can_be_restored_to_null():
 
 @pytest.mark.parametrize("prompt", [None, "", "Speak like a pirate"])
 def test_correlated_submit_carries_per_call_prompt_without_mutating_defaults(prompt: str | None):
-    session = _mock_session()
-    _WebSocketFixture()._attach_generate(session, ["ahoy"])
+    session = mock_session(config=GenerationConfig())
+    script_generate(session, ["ahoy"])
     original = session.config.system_prompt
     with TestClient(create_app(session)) as client:
         with client.websocket_connect(STREAM) as ws:
@@ -82,8 +83,8 @@ def test_correlated_submit_carries_per_call_prompt_without_mutating_defaults(pro
 
 @pytest.mark.parametrize("seed", [-(2**53 - 1), 2**53 - 1])
 def test_correlated_single_generation_preserves_large_signed_seed(seed: int):
-    session = _mock_session()
-    _WebSocketFixture()._attach_generate(session, ["ahoy"])
+    session = mock_session(config=GenerationConfig())
+    script_generate(session, ["ahoy"])
     with TestClient(create_app(session)) as client:
         with client.websocket_connect(STREAM) as ws:
             ws.send_json({"type": "generate", "request_id": "seed-test", "input": "hi", "sampling": {"seed": seed}})
@@ -96,8 +97,8 @@ def test_correlated_single_generation_preserves_large_signed_seed(seed: int):
 
 
 def test_correlated_generation_waits_for_all_siblings():
-    session = _mock_session()
-    _WebSocketFixture()._attach_generate(session, ["ahoy"])
+    session = mock_session(config=GenerationConfig())
+    script_generate(session, ["ahoy"])
     with TestClient(create_app(session)) as client:
         with client.websocket_connect(STREAM) as ws:
             ws.send_json({"type": "generate", "request_id": "pirate-test", "input": "hi", "n": 2})
@@ -114,7 +115,7 @@ def test_correlated_generation_waits_for_all_siblings():
 
 
 def test_correlated_validation_error_is_terminal_without_generation():
-    session = _mock_session()
+    session = mock_session(config=GenerationConfig())
     with TestClient(create_app(session)) as client:
         with client.websocket_connect(STREAM) as ws:
             ws.send_json({"type": "generate", "request_id": "invalid", "input": "hi", "n": 0})
@@ -127,7 +128,7 @@ def test_correlated_validation_error_is_terminal_without_generation():
 
 
 def test_correlated_commit_preserves_request_id_after_submit_normalization():
-    session = _StubSession()
+    session = StubSession()
     with TestClient(create_app(cast(DrowseSession, session))) as client:
         with client.websocket_connect(STREAM) as ws:
             ws.send_json({"type": "submit", "request_id": "append", "text": "ahoy", "authored_role": "user"})
@@ -142,7 +143,7 @@ def test_correlated_commit_preserves_request_id_after_submit_normalization():
 
 
 def test_scoped_stop_does_not_cancel_another_request():
-    session = _StubSession()
+    session = StubSession()
     session._block_until_stop = True
     with TestClient(create_app(cast(DrowseSession, session))) as client:
         with client.websocket_connect(STREAM) as ws:

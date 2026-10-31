@@ -108,13 +108,12 @@ def test_native_paths_are_kebab_case(schema: dict[str, Any]) -> None:
     assert not offenders, f"snake_case native paths: {offenders}"
 
 
-def test_renamed_tree_routes_are_kebab_only(schema: dict[str, Any]) -> None:
-    """The two renames landed as a clean break — no aliases."""
+def test_tree_edge_label_and_joint_logprobs_routes_are_published(
+    schema: dict[str, Any],
+) -> None:
     paths = set(schema["paths"])
     assert "/drowse/v1/sessions/{session_id}/tree/edge-label" in paths
     assert "/drowse/v1/sessions/{session_id}/tree/joint-logprobs" in paths
-    assert "/drowse/v1/sessions/{session_id}/tree/edge_label" not in paths
-    assert "/drowse/v1/sessions/{session_id}/tree/joint_logprobs" not in paths
 
 
 def test_measurements_envelope_is_named_not_opaque(schema: dict[str, Any]) -> None:

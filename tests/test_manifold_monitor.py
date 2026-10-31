@@ -42,7 +42,7 @@ def _iso_monitor(m: "Manifold", *, n_layers: int | None = None) -> Monitor:
     the geometric value assertions below (fraction = 1 inside / 0 outside,
     nearest-node distances) still hold to a loose tolerance.
     """
-    from tests._whitener import isotropic_whitener
+    from tests.support.whitener import isotropic_whitener
     dim = next(iter(m.layers.values())).mean.shape[0]
     whitener = isotropic_whitener(list(m.layers.keys()), dim)
     return Monitor(whitener=whitener, n_layers=n_layers)
@@ -373,8 +373,8 @@ def test_neutral_competes_in_nearest_at_origin():
 
 
 def test_neutral_competes_in_aggregate_path():
-    """The end-of-gen aggregate (the per-probe ``_score_probe_full`` path, not
-    the batched one) also lets neutral compete — last content token at origin."""
+    """The end-of-generation aggregate (``Monitor.score_aggregate``) also
+    lets neutral compete — last content token at the origin."""
     rc = torch.tensor([[1.0, 1.0], [2.0, -1.0], [-1.0, 2.0]])
     m = _flat_manifold(reduced_coords=rc, labels=["a", "b", "c"])
     mon = _iso_monitor(m)
@@ -983,7 +983,7 @@ def test_affine_mixed_rank_batched_together():
     m1 = _flat_manifold(reduced_coords=rc1, dim=16, seed=1, name="ax", labels=["p", "n"])
     m2 = _flat_manifold(reduced_coords=rc2, dim=16, seed=2, name="tri", labels=["x", "y", "z"])
     # Share one whitener covering both probes' layers (same layer set).
-    from tests._whitener import isotropic_whitener
+    from tests.support.whitener import isotropic_whitener
     whitener = isotropic_whitener(list(m1.layers.keys()), 16)
     mon = Monitor(whitener=whitener)
     mon.add_probe("ax", m1)
@@ -1391,7 +1391,7 @@ def test_coords_only_mixed_flat_and_curved_roster():
         name="ax", labels=["p", "n"],
     )
     curved = _toy_manifold(dim=8)
-    from tests._whitener import isotropic_whitener
+    from tests.support.whitener import isotropic_whitener
     whitener = isotropic_whitener(sorted(set(flat.layers) | set(curved.layers)), 8)
     mon = Monitor(whitener=whitener)
     mon.add_probe("ax", flat)
@@ -1502,7 +1502,7 @@ def test_remove_probe_keeps_the_single_factor_copy(monkeypatch: pytest.MonkeyPat
     attach on the same layers reuses the one device copy instead of uploading
     a second set beside the copy the remaining probes still read."""
     from drowse.geometry.whitener import LayerWhitener
-    from tests._whitener import synthetic_whitener
+    from tests.support.whitener import synthetic_whitener
 
     rc = torch.tensor([[1.0], [-1.0]])
     m_a = _flat_manifold(reduced_coords=rc, seed=1, name="a")
@@ -1536,7 +1536,7 @@ def test_set_whitener_rebuilds_every_metric_derived_field():
     """A whitener change re-derives the soft-assignment bandwidths, their
     log-volume bias and the label scale — not just the per-layer factors —
     so a probe reads exactly like one attached fresh under the new metric."""
-    from tests._whitener import synthetic_whitener
+    from tests.support.whitener import synthetic_whitener
 
     rc = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, -1.0], [2.0, 2.0]])
     m = _flat_manifold(reduced_coords=rc, labels=["w", "x", "y", "z"])
@@ -1565,7 +1565,7 @@ def test_set_whitener_rebuilds_every_metric_derived_field():
 
 def test_set_whitener_is_atomic_on_a_non_covering_whitener():
     from drowse.geometry.whitener import WhitenerError
-    from tests._whitener import synthetic_whitener
+    from tests.support.whitener import synthetic_whitener
 
     rc = torch.tensor([[1.0], [-1.0]])
     m = _flat_manifold(reduced_coords=rc, n_layers=2)
@@ -1586,7 +1586,7 @@ def test_stream_is_one_batched_read_matching_per_token_reads():
     """The FULL-mode coordinate stream (``score_stack``) equals T separate
     lean reads — flat and curved, including a ragged capture whose short
     layers drop out of the tokens they don't cover."""
-    from tests._whitener import synthetic_whitener
+    from tests.support.whitener import synthetic_whitener
 
     rc = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, -1.0]])
     flat_m = _flat_manifold(reduced_coords=rc, n_layers=2, dim=8, labels=["x", "y", "z"])

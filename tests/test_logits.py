@@ -181,7 +181,7 @@ class TestLoomNodeMeanLogprob:
         assert d["mean_logprob"] == pytest.approx(-2.1)
         assert d["mean_surprise"] == pytest.approx(2.1)
 
-    def test_to_dict_carries_none_for_legacy(self):
+    def test_to_dict_carries_none_without_logit_stats(self):
         """Legacy nodes (created before the logit pass) have ``None`` —
         the wire payload still carries the key so downstream consumers
         get a deterministic shape regardless of capture status."""

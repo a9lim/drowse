@@ -5,8 +5,7 @@ from collections.abc import Iterable, Iterator
 from drowse.generation.results import GenerationResult, TokenEvent
 
 
-class TestGenerationStream(Iterator[TokenEvent]):
-    __test__ = False
+class FakeGenerationStream(Iterator[TokenEvent]):
 
     def __init__(
         self,
@@ -19,7 +18,7 @@ class TestGenerationStream(Iterator[TokenEvent]):
         self.closed = False
         self._error = error
 
-    def __iter__(self) -> "TestGenerationStream":
+    def __iter__(self) -> "FakeGenerationStream":
         return self
 
     def __next__(self) -> TokenEvent:
