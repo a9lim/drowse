@@ -51,7 +51,7 @@
   import {
     clearConversationOpen,
     peekConversationOpen,
-  } from "./lib/entryExperience";
+  } from "./lib/conversationOpen";
   import {
     paletteState,
     closePalette,

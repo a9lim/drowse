@@ -117,8 +117,8 @@ export async function sendShadowGenerate(
     }
     const payload: WSClientMessage = {
       type: "generate",
-      // ``input`` accepts ``Any`` server-side; a list goes straight through
-      // to ``session._prepare_input`` which dispatches on isinstance(list).
+      // ``input`` accepts ``Any`` server-side; a message list goes straight
+      // through to ``PromptRenderer.prepare_input``, which renders it as is.
       input: messages,
       // Every comparison is stateless. The recipe modifier selects the
       // alternate behavior without adding a throwaway sibling to the loom.

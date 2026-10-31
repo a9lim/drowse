@@ -314,10 +314,10 @@ export interface CreateTemplateRequest {
 /** Body for POST /drowse/v1/manifolds/generate.
  *
  *  LLM-author a discover-mode manifold from a flat concept list: the
- *  server runs ``DrowseSession.generate_responses`` (A2 conversational
- *  extraction — each concept answers the shared baseline prompts in
- *  character, one corpus per node) and writes a fresh discover folder
- *  ready for ``POST .../fit``. */
+ *  server plans the folder and runs ``DrowseSession.generate_manifold``
+ *  (each concept answers the shared baseline prompts in character, one
+ *  corpus per node), leaving a fresh discover folder ready for
+ *  ``POST .../fit``. */
 export interface GenerateManifoldRequest {
   namespace?: string;
   name: string;
@@ -659,7 +659,7 @@ export interface WSErrorEvent {
 /** One token-row inside a node's ``tokens`` / ``thinking_tokens`` array.
  *  Server-side token rows have required identity/score fields plus
  *  feature-dependent optional capture channels; the
- *  fields below are the ones :meth:`session._token_tap` stamps and the
+ *  fields below are the ones the engine's ``TokenTap`` stamps and the
  *  ones the webui knows how to consume.  All optional because the engine
  *  legitimately omits some on certain paths (e.g. ``top_alts`` only when
  *  ``return_top_k > 0``; ``probes`` / ``per_layer_scores`` only when the

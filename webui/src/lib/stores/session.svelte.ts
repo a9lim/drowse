@@ -33,9 +33,8 @@ export const sessionState: SessionState = $state({
   error: null,
 });
 
-/** One read family's block from session info — the SAME shape
- *  ``GET .../instruments`` lists, so there is one representation of
- *  instrument state to read from. */
+/** One read family's block from session info's ``instruments`` list — the
+ *  one representation of instrument state to read from. */
 export function instrumentFamily(
   family: InstrumentFamily,
 ): InstrumentFamilyBlock | undefined {
