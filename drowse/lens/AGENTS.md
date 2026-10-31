@@ -68,7 +68,7 @@ field.
   "re-fit with `drowse lens fit`" and returns `None`. The caller chooses
   between `LensNotFittedError` and a re-fit. Shards load one at a time, so a
   selective load reads only the requested layers.
-- **Pre-6.0 homes** (`models/<id>/jlens/`, v6, `local/default`/`local/relp`)
+- **Pre-5.4 homes** (`models/<id>/jlens/`, v6, `local/default`/`local/relp`)
   are neither read nor auto-migrated. Run `scripts/migrate_lens_v7.py --home
   <dir>` (`--dry-run` first). It renames shards without touching their bytes.
 - **Durability.** New generations are fsynced, then the pointer is swapped

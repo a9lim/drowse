@@ -520,7 +520,7 @@ headers, and hashes, but integrity is not publisher identity.
 
 Drowse reads only its current artifact formats and does not migrate older ones.
 Releases through 5.3.0 were published as `saklas`, and drowse does not read a
-`~/.saklas` directory. J-LENS artifacts fitted or fetched before 6.0 must be
+`~/.saklas` directory. J-LENS artifacts fitted or fetched before 5.4 must be
 converted once from a source checkout with
 `python scripts/migrate_lens_v7.py --home ~/.drowse` (try `--dry-run` first).
 

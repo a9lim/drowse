@@ -85,7 +85,7 @@ pytest -m perf -p no:xdist         # the throughput gates, serially
 ruff check . && pyright
 python scripts/generate_webui_types.py [--check]          # PYTHONPATH=. in a worktree
 cd webui && npm ci && npm run check && npm run build      # Node 24.x; commit drowse/web/dist
-python scripts/migrate_lens_v7.py --home DIR [--dry-run]  # pre-6.0 lens homes
+python scripts/migrate_lens_v7.py --home DIR [--dry-run]  # pre-5.4 lens homes
 python scripts/regenerate_bundled.py [TARGETS...]         # bundled corpora + neutral baseline
 ```
 
@@ -204,7 +204,7 @@ transcripts v2, lens format v7, neutral cache v4.
 `MANIFOLD_FIT_POLICY_VERSION` (`geometry/manifold.py`) stamps every fit, and
 bumping it makes every fitted tensor refuse to load. Every `SamplingConfig`
 field is persisted in recipes and required on read, so adding one breaks saved
-trees and the browser seam. Pre-6.0 lens homes need
+trees and the browser seam. Pre-5.4 lens homes need
 `scripts/migrate_lens_v7.py`.
 
 **The browser seam.** [stdlogits/drowse.ai](https://github.com/stdlogits/drowse.ai)

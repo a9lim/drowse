@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Migrate a DROWSE_HOME's Jacobian lenses from format v6 to v7.
 
-drowse 6.0 reads only lens format v7.  This rewrites every
+drowse 5.4 reads only lens format v7.  This rewrites every
 ``models/<id>/jlens/`` tree in place into ``models/<id>/lens/``:
 
 - ``local/default`` → ``local/j`` and ``local/relp`` → ``local/r`` (any other
