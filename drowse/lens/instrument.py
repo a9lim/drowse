@@ -1395,7 +1395,7 @@ class LensInstrument:
         per-layer *probabilities*, which is exactly what
         ``build_measurements`` takes, so there is no exp/log round-trip on
         this hop.  Raises :class:`~drowse.lens.jlens.LensNotFittedError` with
-        no lens, ``ValueError`` on a bad ``top_k`` or an unfitted layer, and
+        no lens, ``RequestError`` on a bad ``top_k`` or an unfitted layer, and
         ``UnknownNodeError`` / ``InvalidNodeOperationError`` on a bad anchor.
         """
         from drowse.readout.measurements import build_measurements

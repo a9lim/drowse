@@ -512,7 +512,7 @@ class GeometryInstrument:
         ``top_k`` and ``layers`` are **rejected**, not ignored: the roster's
         own fitted layers drive the capture and a whitened reading has no
         top-k width, so a caller passing either is asking for something this
-        family cannot do.  Raises ``ValueError`` with no geometry probe
+        family cannot do.  Raises ``RequestError`` with no geometry probe
         attached, ``UnknownNodeError`` / ``InvalidNodeOperationError`` on a
         bad anchor, and ``WhitenerError`` when the whitener doesn't cover the
         probed layers.

@@ -198,8 +198,8 @@ class Instrument(Protocol):
         return the FINISHED ``scope="replay"`` measurement envelope
         (``{"measurements": …}``).  ``top_k=None`` is the family's default
         width (eight for the ranked lens/SAE reads).  A family that cannot
-        honor a knob rejects it with ``ValueError`` rather than ignoring
-        it."""
+        honor a knob rejects it with :class:`~drowse.errors.RequestError`
+        (a 400 on the server) rather than ignoring it."""
         ...
 
 
