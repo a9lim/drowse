@@ -829,7 +829,11 @@ class _Parser:
         if namespace == "sae" and self._peek().kind == "NUM":
             return str(self._non_negative_int("SAE feature id"))
         if namespace in _TOKEN_ID_NAMESPACES and self._peek().kind == "HASH":
-            self._consume()
+            hash_tok = self._consume()
+            if self._peek().col != hash_tok.col + 1:
+                raise SteeringExprError(
+                    "token id must follow '#' with no space", col=self._peek().col,
+                )
             return f"#{self._non_negative_int('token id')}"
         return str(self._expect("IDENT").value)
 

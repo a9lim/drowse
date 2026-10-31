@@ -260,9 +260,9 @@ skipping rows without the probe. A missing probe makes the clause false. No
 OR, negation or grouping; compose with `LoomTree.filter(pred)`. Keys go
 through `readout/types.py::parse_gate_ref`: `name[0]` normalizes to `name`,
 and any other channel is a `FilterParseError` (400), since only axis 0 is
-persisted. Names must be ASCII `[ns/]name[.pole]` or `sae/<id>`, so a
-`jlens/#<id>` probe, a non-ASCII lens word or a variant-suffixed name can't
-be filtered. The browser ports this grammar; change both together.
+persisted. Names must be ASCII `[ns/]name[.pole]`, `jlens/#<id>` /
+`slens/#<id>` or `sae/<id>`, so a non-ASCII lens word or a variant-suffixed
+name can't be filtered. The browser ports this grammar; change both together.
 
 ## Transcripts (`transcript.py`)
 

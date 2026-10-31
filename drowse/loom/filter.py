@@ -208,10 +208,12 @@ class FilterClause:
 _AGG_OPS: tuple[AggOp, ...] = ("agg", "any", "last")
 
 # A persisted reading key's probe name: ``[ns/]name[.pole]`` (geometry and
-# J-lens probes) or ``sae/<feature id>`` (SAE features).
+# J-lens probes), ``jlens/#<id>`` / ``slens/#<id>`` (lens probes by vocab id)
+# or ``sae/<feature id>`` (SAE features).
 _PROBE_NAME_RE = re.compile(
     r"^(?:(?:[A-Za-z][A-Za-z0-9_-]*/)?"
     r"[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)?"
+    r"|(?:jlens|slens)/#[0-9]+"
     r"|sae/[0-9]+)$"
 )
 
@@ -237,7 +239,7 @@ def _probe_key(raw: str, probe: str) -> str:
     if not _PROBE_NAME_RE.match(ref.probe):
         raise FilterParseError(
             f"clause {raw!r}: probe {probe!r} is not a valid identifier "
-            f"([ns/]name[.pole] or sae/<id>)"
+            f"([ns/]name[.pole], jlens/#<id> or sae/<id>)"
         )
     return ref.probe
 

@@ -95,6 +95,8 @@
     "0.3 alice/#12",
     "0.3 jlens/#1.5",
     "0.3 jlens/#",
+    "0.3 jlens/# 12",
+    "x@when:jlens/# 7>0.01",
     "0.3 jlens/fake:sae",
     "0.3 jlens/x:raw",
     "x@when:sae/#3>0"

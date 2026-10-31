@@ -254,6 +254,17 @@ def test_sae_feature_keys_filter():
     assert parse_filter("agg:sae/123[0] > 0.5").clauses[0].probe == "sae/123"
 
 
+def test_lens_token_id_keys_filter():
+    """Lens probes attached by vocab id persist under ``jlens/#<id>``."""
+    node = _SyntheticNode(
+        {"jlens/#12": 0.02},
+        tokens=[{"text": "a", "measurements": {"scores": {"jlens/#12": 0.05}}}],
+    )
+    assert parse_filter("agg:jlens/#12 > 0.01").evaluate(node) is True
+    assert parse_filter("any:jlens/#12 > 0.04").evaluate(node) is True
+    assert parse_filter("last:slens/#3 < 0.5").clauses[0].probe == "slens/#3"
+
+
 @pytest.mark.parametrize("probe", [
     "personas[3]",          # another coordinate axis — never persisted
     "emotions:fraction",
@@ -267,7 +278,7 @@ def test_unpersisted_channels_are_parse_errors(probe: str):
         parse_filter(f"agg:{probe} > 0")
 
 
-@pytest.mark.parametrize("probe", ["jlens/7", "sae/1.2", "ns/a/b", "1bad"])
+@pytest.mark.parametrize("probe", ["jlens/7", "jlens/#x", "sae/#3", "sae/1.2", "ns/a/b", "1bad"])
 def test_malformed_probe_keys_rejected(probe: str):
     with pytest.raises(FilterParseError, match="not a valid identifier"):
         parse_filter(f"agg:{probe} > 0")
