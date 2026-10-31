@@ -201,8 +201,9 @@
   }));
   let drawerTrigger: HTMLElement | null = null;
   let previousDrawer: string | null = null;
-  // A drawer opened before its chunk loaded takes focus from the outlet's
-  // ``onready``, once it is in the DOM, not from the placeholder.
+  // A drawer opened before its chunk loaded focuses its container at once (so
+  // Escape and the focus trap work while it loads), then its first control
+  // from the outlet's ``onready``, unless focus has moved on by then.
   let focusWhenReady: DrawerName | null = null;
 
   function creationActive(): boolean {
@@ -265,8 +266,8 @@
       drawerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
     if (open !== null && !mobileTokenDrawer && (open !== previousDrawer || modal && !drawerEl?.contains(document.activeElement))) {
-      if (loadedDrawer(open)) void tick().then(focusOpenDrawer);
-      else focusWhenReady = open;
+      if (!loadedDrawer(open)) focusWhenReady = open;
+      void tick().then(focusOpenDrawer);
     } else if (open === null && previousDrawer !== null) {
       focusWhenReady = null;
       const trigger = drawerTrigger;
@@ -286,7 +287,7 @@
   function drawerReady(name: DrawerName): void {
     if (focusWhenReady !== name) return;
     focusWhenReady = null;
-    focusOpenDrawer();
+    if (document.activeElement === drawerEl) focusOpenDrawer();
   }
 
   function drawerLabel(name: string): string {
