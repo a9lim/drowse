@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import jinja2
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +141,9 @@ class FakeTokenizer:
 
     def __init__(self, template: str):
         self.chat_template = template
-        self._template = jinja2.Environment().from_string(template)
+        # Rendered the way transformers renders chat templates: sandboxed,
+        # with no HTML escaping (a chat template is not markup).
+        self._template = ImmutableSandboxedEnvironment().from_string(template)
 
     def apply_chat_template(
         self,

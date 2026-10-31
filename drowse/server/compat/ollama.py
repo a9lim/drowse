@@ -257,7 +257,11 @@ def resolve_options(
         if penalty > 1.0:
             presence_penalty = math.log(penalty)
 
-    ignored = sorted(k for k in opts if k not in _PROCESSED_OPTIONS)
+    # Option names come from the client: strip line breaks so one can't forge log lines.
+    ignored = sorted(
+        str(k).replace("\r", "").replace("\n", "")
+        for k in opts if k not in _PROCESSED_OPTIONS
+    )
     if ignored:
         log.debug("ollama: unsupported options dropped: %s", ", ".join(ignored))
 

@@ -347,6 +347,15 @@ def test_sampling_validation_preserves_boundary_and_sentinel_meanings() -> None:
         assert gen.sampling.temperature == -1
         assert gen.sampling.seed == 42
 
+def test_dropped_ollama_option_names_cannot_forge_log_lines(caplog: pytest.LogCaptureFixture) -> None:
+    from drowse.server.compat.ollama import OllamaGenerateRequest, resolve_options
+
+    body = OllamaGenerateRequest(options={"min_p\nINFO forged entry": 0.1})
+    with caplog.at_level("DEBUG", logger="drowse.server.compat.ollama"):
+        resolve_options(body, None, "test", raw=False)
+    dropped = [r.getMessage() for r in caplog.records if "unsupported options" in r.getMessage()]
+    assert dropped == ["ollama: unsupported options dropped: min_pINFO forged entry"]
+
 @pytest.mark.parametrize("frame_type", ["generate", "submit"])
 def test_websocket_fan_size_is_bounded_before_seed_allocation(frame_type: str) -> None:
     session = StubSession()
