@@ -80,7 +80,7 @@ def system_for(concept_h: str, kind: str | None, custom: str | None = None) -> s
             raise RequestError("system_for: kind='custom' requires a custom system template")
         try:
             return custom.format(c=concept_h, art=article(concept_h))
-        except (IndexError, KeyError, ValueError) as exc:
+        except (AttributeError, IndexError, KeyError, ValueError) as exc:
             raise RequestError(
                 f"custom system template {custom!r} is not a valid template "
                 f"({exc!r}): use only the {{c}} and {{art}} placeholders and "

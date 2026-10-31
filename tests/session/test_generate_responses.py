@@ -78,7 +78,7 @@ def test_system_for_custom_formats_the_callers_template() -> None:
     )
 
 
-@pytest.mark.parametrize("template", ["I am {c", "I am {mood}", "I am {0}", None])
+@pytest.mark.parametrize("template", ["I am {c", "I am {mood}", "I am {0}", "I am {c.nope}", None])
 def test_system_for_custom_rejects_an_unusable_template_as_a_request_error(
     template: str | None,
 ) -> None:

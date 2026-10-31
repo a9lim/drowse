@@ -15,6 +15,7 @@ from drowse.cli.context import CliError, effective_config, open_session
 from drowse.cli.main import main, parse_args
 from drowse.readout.types import LensLiveState, SaeLiveState
 from drowse.store.selectors import SelectorError
+from drowse.store.templates import AmbiguousTemplateError, TemplateFormatError
 from tests.support.cli import FakeSession, install_fake_session, poison_session
 
 
@@ -45,6 +46,8 @@ def _stdout_json(capsys: pytest.CaptureFixture[str]) -> Any:
     (CliError("bad input"), 2),
     (CliError("missing", exit_code=1), 1),
     (SelectorError("bad"), 2),
+    (TemplateFormatError("bad context"), 2),
+    (AmbiguousTemplateError("two namespaces"), 2),
     (FileNotFoundError("gone"), 1),
 ])
 def test_main_maps_errors_to_one_line_and_exit_code(
