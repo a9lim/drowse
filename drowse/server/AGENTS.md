@@ -1,655 +1,420 @@
-# server/
+# drowse/server
 
-Dual-protocol HTTP on one port: OpenAI `/v1/*`, Ollama `/api/*`, native
-`/drowse/v1/*`, and the Svelte dashboard at `/`. One model per server;
-generation across all three protocols serializes on one `asyncio.Lock`
-(`session.lock`, server-owned), distinct from the engine's threading
-`gen_lock`.
+One `DrowseSession` served over OpenAI `/v1/*`, Ollama `/api/*`, and the native
+`/drowse/v1/*` tree (REST, SSE, one WebSocket), plus the dashboard at `/` when
+`web=True` (`drowse/web/AGENTS.md`). Handlers validate, lock, call public
+session and collaborator APIs, and serialize; engine semantics are documented
+where they live. This file covers wire contracts, locking, errors, and the
+security boundary.
 
 ## Module map
 
 | Module | Owns |
 |---|---|
-| `app.py` | FastAPI factory, OpenAI routes, auth, the session lock, the three error envelopes |
-| `ollama.py` | The `/api/*` shim (`register_ollama_routes`) |
-| `native_routes.py` | `register_drowse_routes` — mounts the native sub-registrars in order |
-| `native_common.py` | Single-session id resolution, the strict `NativeRequest` base, `refuse_if_busy`, the shared extraction error policy |
-| `response_models.py` | The response `TypedDict`s every non-streaming native route annotates — the schema `scripts/generate_webui_types.py` renders `webui/src/lib/types.gen.ts` from |
-| `session_routes.py` / `session_models.py` | `/sessions` CRUD, clear/rewind, steering validation, `session_info` |
-| `manifold_routes.py` | `/manifolds/*` — authoring, merge, install, generate, fit, search |
-| `template_routes.py` | `/templates/*` — the templated-completion artifact + its scorer |
-| `probe_routes.py` | `/sessions/{id}/probes/*` — one attach/detach/list surface over all three probe families |
-| `profile_routes.py` / `profile_models.py` | `/sessions/{id}/profiles/*`, `/extract`, `/correlation` |
-| `tree_routes.py` / `tree_models.py` | The loom `/sessions/{id}/tree/*` routes and cast roster |
-| `instrument_routes.py` | `/sessions/{id}/instruments/*` — the table-driven read-family tree |
-| `ws_stream.py` / `ws_models.py` / `ws_events.py` | `WS /sessions/{id}/stream`, its schemas, its frame builders |
-| `sse.py`, `streaming.py`, `background_job.py`, `request_helpers.py`, `model_names.py` | Shared plumbing |
+| `app.py` | `create_app(session, default_steering, cors_origins, api_key, *, web, max_request_bytes)`, the only export of `server/__init__.py` |
+| `runtime.py` | `session_lock(app)` (503 on timeout), `refuse_if_busy` (409), `run_in_thread` / `finish_worker` / `stream_events`, `ClosingStreamingResponse`, `NativeRequest`, `session_router()` |
+| `errors.py` | `describe_error` (the one classifier), `protocol_error` (the three envelopes), `validation_message` |
+| `security.py` | `HttpSecurityMiddleware`, `ws_auth_ok` |
+| `operations.py` | `run_operation` (SSE-or-JSON jobs), `OperationLedger` (receipts), `Preparation` / `PreparationGroup` (polled jobs) |
+| `request_helpers.py` | `build_sampling_config` (the one `SamplingConfig` construction site for all protocols), `compose_request_steering`, `flatten_content`, `validate_logit_bias` |
+| `compat/` | `__init__`: `CompatGeneration` + the shared driver; `openai.py`, `ollama.py`: request models and formatters; `model_names.py`: Ollama aliases (`_HF_TO_OLLAMA_ALIASES` wins, else `<family>:<size>`) |
+| `*_routes.py` + `*_models.py` | Native REST: sessions, profiles, probes, tree, manifolds, templates, instruments |
+| `ws_stream.py`, `ws_models.py`, `ws_events.py` | `WS /sessions/{id}/stream`, its frame schemas, `GET /sessions/{id}/requests/{id}` |
+| `response_models.py` | Response `TypedDict`s for every non-streaming native route |
 
-`create_app` registers OpenAI routes, then Ollama, then the native tree, and
-mounts the SPA **last** so its catch-all cannot shadow an API path.
-`server/__init__.py` re-exports `create_app`, `acquire_session_lock`,
-`ws_auth_ok`, `SESSION_LOCK_TIMEOUT_SECONDS`.
+`create_app` registers OpenAI, Ollama, `register_operation_routes` (it
+installs `app.state.operations`, which later registrars read), the native
+routers, the WebSocket, and the dashboard last so its catch-all cannot shadow
+an API path.
 
-## Shared plumbing
+## Rules for editing
 
-- **`request_helpers.py`** — the one construction site for every protocol's
-  request lowering: `build_sampling_config` (normalizes `stop` from string or
-  sequence, collapses the two OpenAI `logprobs` shapes, treats empty role
-  labels as unset), `parse_request_steering` + `merge_steering` (per-request
-  expression composed over the server default at the key level; an explicit
-  empty string clears and must reach the session as an *empty* `Steering`, not
-  `None`, so the cast roster can't refill it), `flatten_content`,
-  `probe_token_readings`, `strict_model_enabled`.
-- **`streaming.py`** — `stream_finalizer(session, result)` derives the
-  end-of-stream triple `(finish_reason, usage, probe_agg)` all three streaming
-  protocols share; each formats it into its own wire shape.
-  `probe_reading_aggregate` unions the Monitor roster with `session.lens.names`
-  / `session.sae.names`, so readout-channel probes keep their aggregates.
-- **`sse.py`** — `progress_sse_response` is the queue-driven SSE worker
-  (progress/done/error frames, `call_soon_threadsafe` bridge, a `: heartbeat`
-  comment every `HEARTBEAT_SECONDS = 15` of idle so a proxy read timeout can't
-  drop a slow job, and cancellation cleanup that awaits the real worker so a
-  disconnected client can't release `session.lock` mid-write). It takes the
-  lock **unbounded** — the jobs it drives are inherently unbounded.
-  `sse_or_json` negotiates SSE on `Accept: text/event-stream` vs one JSON body
-  under the bounded lock, with typed error handling explicit per branch
-  (`error_formatter` for the frame, `json_errors` for the status table).
-- **`background_job.py`** — `BackgroundJob` is the polled counterpart for the
-  four long preparations. State lives on `app.state.<name>` / `<name>_task` /
-  `<name>_cancel` and is read through `app.state` on every access, never
-  cached, so shutdown hooks and callers that reassign it are honored.
-  `share_group` ties mutually-exclusive jobs (lens fetch XOR fit, sae fetch XOR
-  train) into one 409 group; `launch` guarantees `running`/`finished_at`
-  finalization; `make_progress_hook` parses each job's own progress vocabulary.
-- **`model_names.py`** — HF-id → Ollama alias resolution.
-  `_HF_TO_OLLAMA_ALIASES` overrides where Ollama's catalogue rounds
-  differently or `model_type` carries no version suffix; otherwise
-  `_infer_aliases` falls back to `<family>:<size>`. `known_model_names` is the
-  lowercased accept set both protocols check in strict mode.
+- `server/` is in the top layer with `cli`, `web`, `notebook`. It never reads
+  a session-private attribute (`tests/invariants/test_layering.py`), and no
+  server module imports a sibling's `_private` helper
+  (`tests/invariants/test_boundary_guard.py`); shared helpers go in
+  `runtime.py`, `errors.py`, `operations.py`, or `request_helpers.py`.
+- Native request bodies subclass `NativeRequest` (`extra="forbid"`), nested
+  objects included. Ollama bodies are `extra="allow"` (clients send fields
+  drowse ignores; an explicit `null` reads as unset).
+- A non-streaming native route annotates its return type with a
+  `response_models.py` `TypedDict` named like the dashboard's TS interface;
+  `scripts/generate_webui_types.py` renders `webui/src/lib/types.gen.ts` from
+  the OpenAPI schema, and CI plus `tests/invariants/test_webui_types_parity.py`
+  run `--check`. `_Open` (`extra="allow"`) marks payloads produced by
+  engine/io serializers, which a closed model would silently truncate.
+  Request bodies, SSE frames, and WS frames are hand-written in
+  `webui/src/lib/types.ts`.
+- Only `PATCH /sessions/{id}` mutates `session.config`; per-request sampling
+  and steering ride the call.
+- Client-input failures raise the `RequestError` family (or another typed
+  `DrowseError`) or an `HTTPException`; a bare `ValueError` is an engine
+  invariant and reaches the client as a scrubbed 500.
 
-**Error scrubbing (info-disclosure discipline).** A long-running job must not
-surface raw `str(e)` — Python exception strings routinely echo filesystem paths
-and traceback fragments. The catch-all logs the full traceback server-side and
-sends `{"message": "<op> failed", "code": type(e).__name__}`; typed branches
-with an already-safe message (`DrowseError.user_message()`, the manifold
-poisedness `ValueError`, the install conflicts) keep theirs. `scrub_job_error`
-applies the same rule to the polled surface, writing into the status dict
-instead of a frame; a cooperative cancel settles to `cancelled`, no error.
+## Locks and workers
 
-## app.py — factory, OpenAI, auth, errors
-
-`create_app(session, default_steering=None, cors_origins=None, api_key=None, *,
-web=False)`. `web=True` mounts the dashboard (`drowse serve` default-on,
-`--no-web` and library callers off). Routes: `GET /v1/models`,
-`GET /v1/models/{id}`, `POST /v1/chat/completions`, `POST /v1/completions`.
-Thin HTTP — handlers call `session.generate` / `generate_stream` with a
-`SamplingConfig` + `Steering` and never mutate `session.config`.
-
-`_SamplingBase` (pydantic, shared by chat/completions): `stop`, `seed`,
-`logit_bias`, `presence_penalty`, `frequency_penalty`, `logprobs` (bool for
-chat, int for completions), `top_logprobs`, `stream_options.include_usage`,
-`max_completion_tokens` (folded onto `max_tokens`), the native `steering` field
-(an expression **string** — dicts are rejected at the pydantic layer), and the
-native `thinking` field (`None` = auto via `supports_thinking`).
-
-Accept-and-ignore: `user`, `n`, `response_format: {"type": "text"}`, empty
-`tools: []`, `tool_choice` in `{"none", "auto"}`. Non-empty `tools`, other
-`tool_choice` values, and non-`text` `response_format` are rejected by
-`_check_langchain_compat` → 400. `ChatMessage` concatenates the text parts of
-OpenAI multimodal arrays; a non-text part raises `UnsupportedContentError`.
-
-Responses carry real `usage`, `finish_reason` off `result.finish_reason`, and
-per-request `created`. `_stream_generation` emits a first-chunk
-`{role: "assistant"}` delta, takes the finish reason from `stream_finalizer` on
-the final chunk, optionally emits a usage chunk, and always terminates with
-`[DONE]` — including after an in-band error frame, because OpenAI clients wait
-for the sentinel. Thinking tokens stream as `reasoning_content`. A wired-in
-`Request` stops generation once the client disconnects, and
-`stream_iter.close()` in a `finally` tears the engine worker thread down
-deterministically. `_render_logprobs_chat` / `_render_logprobs_completions`
-build the two OpenAI logprobs shapes off `result.logprobs`, reading alt text
-from `TokenAlt` rather than re-tokenizing.
-
-Probe readings ride each **choice** under the vendor-prefixed
-`x-drowse-probe-readings` extension, keyed by probe name, in
-`ProbeReading.to_dict()` shape; the aggregate is that reading pooled at the
-last content token. The field is omitted when nothing is attached, so clients
-that don't read it see no shape change. Both compat protocols request
-`live_scores=False` / `live_readouts=False`, so the final chunk's aggregate is
-what carries data.
-
-**Auth.** Bearer token from `DROWSE_API_KEY` / `--api-key`, applied as an
-app-level dependency over HTTP and WebSocket routes. `_require_auth` +
-`_check_bearer` gate HTTP; `ws_auth_ok(websocket)` runs **before**
-`websocket.accept()` (close 1008 on failure) and accepts either an
-`Authorization: Bearer …` header or a `drowse.auth.<base64url-utf8-key>`
-WebSocket subprotocol. The dashboard offers that credential alongside
-`drowse.v1`; only `drowse.v1` is echoed in the handshake. Legacy `?token=…`
-clients remain accepted, but `ws_auth_ok` removes token query entries before
-Uvicorn access logging, including on rejection. Browser origins must
-match the request origin or an explicit `cors_origins` entry; wildcard CORS
-does not grant API or WebSocket access. Non-browser clients may omit Origin. Without
-a key, the TCP peer must be loopback and HTTP/WS Host must be loopback or the
-ASGI server address. In-process ASGI client labels are not network addresses.
-IPv4-mapped loopback IPv6 peers are accepted. The CLI binds
-loopback by default and requires a key for remote binds. `DROWSE_STRICT_MODEL` (`1`/`true`/`yes`/`on`) 404s a `model` mismatch
-across OpenAI and Ollama against `known_model_names`; unset accepts any name.
-
-`_HttpSecurityMiddleware` authenticates private API requests before body parsing
-while preserving the existing auth-error rendering. It checks browser origins
-for all API methods and other mutations, bounds declared and streamed HTTP
-bodies (64 MiB by default; `DROWSE_MAX_REQUEST_BYTES` or the explicit
-`create_app(max_request_bytes=...)` override), sets API `no-store`, and applies
-the dashboard CSP/framing/referrer/MIME/permission headers. It is pure ASGI so
-streaming cancellation and worker ownership stay intact.
-
-**Locking.** `acquire_session_lock(session)` is a bounded
-(`SESSION_LOCK_TIMEOUT_SECONDS = 300`) async context manager yielding
-`True`/`False`. Non-streaming handlers take it plainly; streaming handlers hold
-it for the full stream and emit a 503 on timeout. Requests queue FIFO.
-
-**Error envelopes.** Three, discriminated by path prefix in `_protocol_error`:
-Ollama `{"error": "<msg>"}` under `/api/`, native `{"detail": "<msg>"}` under
-`/drowse/v1/`, OpenAI `{"error": {message, type, param, code}}` otherwise, with
-`openai_error_type` mapping 409 → `conflict`, other 4xx →
-`invalid_request_error`, else `server_error`. `_on_drowse_error` routes any
-`DrowseError` through `user_message()`; `RequestValidationError` lands as 400
-in the request's own envelope; `_on_http_exception` flattens a native
-`HTTPException.detail` to a **string** so `/drowse/v1/*` clients never have to
-guess between a string, a dict, and a list of pydantic errors.
-Mapped filesystem errors have generic client messages while keeping their
-status and local traceback. Wrapped `DrowseError` messages go through
-`user_message()`; in particular, wrapped HF transport failures must not expose
-signed URLs or upstream credentials in either JSON or SSE.
-
-## Native tree conventions
-
-URL paths carry `{session_id}` for a multi-session shape, but the impl is
-single-session: `SINGLE_SESSION_ID = "default"`; everything else 404s via
-`resolve_session_id`. Every native request model inherits `NativeRequest`
-(`extra="forbid"`), nested native objects included; the OpenAI/Ollama protocol
-models stay protocol-specific.
-
-`refuse_if_busy(session)` is a non-blocking `gen_lock` probe → 409. It guards
-the mutating manifold routes and the profile bake: `session.lock` orders native
-mutations against each other, but an SSE fit or extract whose request was
-cancelled retains its worker thread and locks until the worker exits.
-`finish_worker` shields cleanup from AnyIO and repeated asyncio cancellation.
-`run_in_thread` owns blocking route workers until their real completion, including
-JSON routes and background jobs. Job shutdown joins both fetch/load and fit/train
-workers before marking them idle. OpenAI/Ollama create streaming workers only
-under the session lock; token reads, non-streaming inference, and joins stay off
-the ASGI loop. `ClosingStreamingResponse` closes iterators on send failures too.
-Native progress callbacks are coalesced and keep bounded recent history (256
-messages for JSON/SSE); terminal frames never wait on an abandoned queue.
-
-**Status taxonomy.**
-
-| Status | Means |
+| Guard | On contention |
 |---|---|
-| 400 | Malformed body or an unsupported knob (`RequestValidationError`, a rejected preparation field, `top_k` on a live toggle, a bad `layers` list) |
-| 404 | Unknown session, artifact, probe, node, or instrument family; a capability the family does not have |
-| 409 | A conflict that retrying can clear: busy job group, engine gen-lock held, existing folder, non-covering whitener, SAE source switch |
-| 422 | `SteeringCompositionError` — parsed and resolved, but the loaded geometry can't honor it (`ManifoldArityError`, `OverlappingManifoldError`) |
-| 503 | Bounded session-lock timeout |
+| Session lock: `runtime.session_lock(app)`, one FIFO `asyncio.Lock` on `app.state` for all three protocols | waits `SESSION_LOCK_TIMEOUT_SECONDS = 300`, then `SessionLockTimeout` (503) |
+| Exclusive-GPU section `session.gen_lock`, taken non-blocking by the engine and every model op | `ConcurrentGenerationError` / `ConcurrentExtractionError` (409) |
+| `refuse_if_busy(session)`, a non-blocking probe of `gen_lock` | `EngineBusyError` (409) |
+| Loom reservation (`LoomTree.reserve`) | `MutationDuringGenerationError` (409) |
+| `PreparationGroup`: one lens or SAE preparation at a time | 409 |
 
-`native_common.extraction_error_frame` / `extraction_json_errors` are the
-shared typed policy for the two routes that drive `ManifoldExtractionPipeline`
-(`POST /extract`, `POST .../fit`): the retryable conflicts
-(`ConcurrentExtractionError`, `ManifoldAuthoringChangedError`) → 409 /
-`code: "Conflict"`, an authoring-grade `ValueError` → 400 with
-`code: "PoisednessError"` when it is the RBF poisedness failure, everything
-else to the catch-all scrubber.
+- Anything that runs a forward pass or touches hook state holds the session
+  lock: compat generations, a WS turn (across its whole `n`-way fan),
+  `steering/validate`, `PUT /tree`, `tree/reset`, `tree/transcript/load`,
+  `tree/joint-logprobs`, instrument `live` / `source` / `token-readout` / SAE
+  load and unload, every `run_operation` job, and manifold merge, delete, and
+  forced from-template.
+- Lens fit and SAE train run outside the session lock but hold the
+  exclusive-GPU section, so a generation arriving mid-fit gets an immediate
+  409 instead of queueing behind a long job. That is why a route that replaces
+  or removes a manifold folder calls `refuse_if_busy` even under the session
+  lock, then `session.evict_artifact(ns, name)` after writing. `session.fit`
+  and `session.generate_manifold` move or evict their consumers themselves.
+- Blocking work goes through `run_in_thread` (or `finish_worker` around a
+  task), never a bare `asyncio.to_thread`: a cancelled request stays parked,
+  shielded from AnyIO and repeated asyncio cancellation, until its worker
+  exits, so the lock is never released while a worker still writes.
+  `ClosingStreamingResponse` closes its body iterator even when a send fails,
+  and the compat driver is wrapped in `contextlib.aclosing`, so a dropped
+  stream joins the engine worker before the lock releases.
 
-### session_routes.py
+## Errors
 
-- `GET/POST /drowse/v1/sessions` — list / idempotent create (a model mismatch
-  warns and returns the existing session).
-- `GET/PATCH/DELETE /drowse/v1/sessions/{id}` — info / update defaults / no-op
-  204. PATCH reads pydantic's fields-set for `top_k` so an explicit `null`
-  (disable) is distinguishable from an omitted field (preserve).
-- `POST /drowse/v1/sessions/{id}/steering/validate` — parse, resolve, and
-  **dry-install** an authored expression: `parse_expr`, then entering
-  `session.steering(parsed)` under the session lock and rolling straight back,
-  so a green validation cannot hide a rack-time failure. A `DrowseError` comes
-  back **in band** as `{valid: false, expression, error}` — a form result, not
-  a failed request.
-- `POST /drowse/v1/sessions/{id}/{clear,rewind}` (204; rewind 400s on empty
-  history).
+`errors.describe_error(exc, *, failure=...) -> ErrorInfo(status, message,
+code)` is the only classifier: the FastAPI handlers, `run_operation`, polled
+preparations, and WS error frames all use it. `code` is always the exception
+class name, so clients key on typed failures (`PoisednessError`,
+`RecipeOverrideError`) with no per-route classifier. It logs what it scrubs;
+callers never log the exception again.
 
-`session_info` is serialized from the exact live `DrowseSession` contract —
-production does not coerce incomplete test doubles or inspect artifact sidecars
-as a fallback. It carries `is_base_model`, `supports_thinking` /
-`thinking_is_optional`, `jlens_fitted` (`has_compatible_jlens`: shard
-sidecar/payload validity plus loaded-weight identity, gating the drilldown's
-j-lens tab without the lazy fp32 load), the role capabilities
-(`role_substitution_supported` / `user_role_supported` against `ROLE_HEADERS` /
-`USER_ROLE_HEADERS` for the resolved `model_type`, plus `default_assistant_role`
-/ `default_user_role`), the scene-grammar capabilities `scene_mode` /
-`thinking_input_supported` / `strips_history_thinking`, and — the read plane's
-ONE representation — an **`instruments`** key holding the same per-family
-blocks `GET .../instruments` lists.
+| Exception | Status | Client text |
+|---|---|---|
+| `DrowseError` | `user_message()` status; a class still at the base 500 falls back on its stdlib parent (`KeyError` 404, `ValueError` 400) | `user_message()` text |
+| `HTTPException` raised `from` a `DrowseError` or `OSError` | the `HTTPException`'s | the cause's safe text |
+| other `HTTPException` | its own | `detail` flattened to one string |
+| pydantic `ValidationError` / `RequestValidationError` | 400, not FastAPI's 422 | every error as `field.path: msg`, joined by `; ` |
+| `OSError` | `FileNotFoundError` 404, `FileExistsError` 409, else 500 | fixed text (OS messages carry paths) |
+| `ImportError` naming a third-party module | 503 | `optional dependency not installed: <module>` |
+| anything else, incl. a bare `ValueError` or a failed `drowse.*` import | 500 | `<failure>. Check the server log for details.` |
 
-### manifold_routes.py
+- To change a typed error's status but keep its text, `raise
+  HTTPException(status) from exc`. Never put `str(e)` of an untyped exception
+  in a detail; detail is sent verbatim.
+- Envelopes by path prefix: `/api/` → `{"error": msg}`; `/v1/` →
+  `{"error": {message, type, param, code}}` (`code` is the HTTP status; `type`
+  is `conflict` for 409, `invalid_request_error` for other 4xx, else
+  `server_error`; `param` is the first invalid field); anything else →
+  `{"detail": msg}`. A catch-all handler renders the same scrubbed 500.
+- After headers are sent, errors go in band: OpenAI SSE `data: {"error":
+  {...}}` then `data: [DONE]` (clients wait for the sentinel); Ollama NDJSON
+  `{..., "error"}` then a `done_reason: "error"` frame; native SSE
+  `event: error {message, code, status}`; WS an `error` frame.
 
-A manifold is a top-level artifact, so these routes live outside
-`/sessions/{id}`; `fit` is the exception that needs the loaded model.
-`_manifold_json` is the wire serializer behind every detail-returning route: it
-builds the session-independent fields via
-`store.manifolds.manifold_summary(folder)` — byte-identical to what CLI
-`pack show -j` emits for the shared keys — then layers the session-aware
-extras: `fitted_for_session`, `stale` (sidecar `nodes_sha256` vs the folder,
-plus loaded-model fingerprint), `resolved_fit_mode` (a fitted discover folder's
-actual flat/curved family, `None` for an unfitted `auto`), and — for a discover
-folder fitted on the loaded model — the materialized per-model geometry
-(`domain` / `domain_label` / `intrinsic_dim` / `min_nodes` / `node_coords`)
-lifted from the sidecar and tensor. `full=True` adds per-node statements and
-per-tensor fit detail (`method`, `feature_space`, `node_count`,
-`nodes_sha256`, `fit_mode`, optional `hyperparams` / `diagnostics`).
+## Security posture
 
-The **list route stays cheap**: `_fitted_geometry` opens the safetensors with
-`safe_open` and reads the header key set plus the one small `(K, n)`
-`node_coords` entry — the flat/curved discriminator is the *absence* of any
-`layer_<L>.node_params` key — instead of deserializing every per-layer payload.
-An unreadable artifact reports unresolved geometry rather than failing the
-listing.
+`drowse serve` is a trusted-local/lab server; TLS, rate limits, quotas, and
+multi-tenant isolation are deployment concerns.
 
-- `GET /manifolds` — every installed manifold with per-session fit status.
-  `GET /manifolds/{ns}/{name}` — detail; 404 missing, 400 malformed folder.
-- `GET /manifolds/search?q=&limit=` — HF-hub proxy via
-  `store.hub.search_manifolds`; `{query, results}`. Missing
-  `huggingface_hub` → 503, HF transport error → 502.
-- `POST /manifolds` — author an *authored* artifact (box/sphere domain,
-  per-node `role` optional). Returns detail + `advisories` (soft poisedness /
-  flat-axis warnings, so a deficient layout surfaces before a fit is paid for).
-  409 existing, 400 malformed.
-- `POST /manifolds/discover` — author a *discover* artifact (nodes carry
-  `{label, statements, role?}`, no coords).
-- `POST /manifolds/from-template` — derive a discover folder from a standalone
-  template selected by `template_ref`; template authoring stays on
-  `POST /templates`. 404 unknown template, 409 ambiguous or existing.
-- `POST /manifolds/merge` — `merge_discover_manifolds`, discover-mode sources
-  only (authored geometry isn't mergeable without a shared coordinate system).
-  Pools node corpora + roles into one unfitted discover folder; pair with
-  `/fit`. `<2` sources, label collisions, mixed `fit_mode` without an override,
-  or a destination conflict → 400/404/409.
-- `POST /manifolds/install` — `install_manifold` in a worker thread,
-  **SSE-capable** through `sse_or_json` (a manifold repo carries a per-model
-  safetensors payload, so download + stage/verify/swap is a long operation).
-  `InstallManifoldRequest` carries `as` as a true wire field
-  (`Field(alias="as")` + `populate_by_name`). `refuse_if_busy` runs before the
-  worker starts writing. `ManifoldInstallConflict` → 409, missing → 404, bad
-  input → 400, `huggingface_hub` missing → 503, HF error → 502. Both branches
-  return the detail JSON `GET .../{ns}/{name}` ships.
-- `POST /manifolds/generate` — LLM-authors a discover folder via
-  `session.generate_responses` under the session lock; SSE or JSON.
-  `concepts` (≥2, one node each), `kind` ∈ `abstract|concrete|custom` with
-  `custom_system` **required** for `custom` (400 otherwise, matching
-  `/extract`), `samples_per_prompt`, `role_per_node=true` → persona manifold.
-  The default **resumes** via `plan_discover_generation` — fills missing nodes,
-  appends concepts new to the roster; `force` is the clean slate.
-- `PATCH /manifolds/{ns}/{name}` — `update_manifold_folder` under the lock +
-  `refuse_if_busy`, so a corpus rewrite can't race a fit reading `nodes/`.
-  Existing tensors go stale, not deleted.
-- `DELETE /manifolds/{ns}/{name}` — `remove_manifold_folder`, the single source
-  of truth shared with CLI `pack rm`. Response `{namespace, name, source,
-  removed, rematerializes_on_restart}`.
-- `POST /manifolds/{ns}/{name}/fit` — `session.fit` under the lock; SSE or
-  JSON. Discover folders accept `fit_mode` / `hyperparams` overrides that the
-  pipeline merges into `manifold.json` inside the same manifest transaction
-  that derives the cache key and publishes the fit; authored folders reject
-  them. `layers` optionally names explicit indices or `workspace`/`all`, and
-  the sidecar pins that set. `force` bypasses tensor/capture hits.
+- `HttpSecurityMiddleware` is pure ASGI (streaming cancellation and worker
+  ownership pass through) and authenticates before body parsing, only on the
+  private prefixes `/v1/`, `/api/`, `/drowse/v1/`. With a key (`api_key` or
+  `DROWSE_API_KEY`) it requires `Authorization: Bearer`, compared with
+  `hmac.compare_digest` (401). Without one, the TCP peer must be loopback
+  (IPv4-mapped included) and the single `Host` loopback or the ASGI server
+  address, a DNS-rebinding defense (403).
+- Public by design: the dashboard shell and assets, `HEAD /`, and FastAPI's
+  `/docs`, `/redoc`, `/openapi.json`. None carries session data; the dashboard
+  keeps the key client-side and sends it on each API call.
+- Origin: on private paths (except `OPTIONS`) and on any other
+  non-`GET/HEAD/OPTIONS` request, a present `Origin` must be one bare origin
+  equal to the request's own or listed in `cors_origins` (403). A wildcard
+  CORS entry grants nothing; a request with no `Origin` (non-browser client)
+  passes.
+- `Content-Length` must be one decimal value (400); declared or streamed
+  bodies over `max_request_bytes` (64 MiB, `DROWSE_MAX_REQUEST_BYTES`) are 413.
+- Every response gets `nosniff`, `X-Frame-Options: DENY`, `no-referrer`, a
+  closed `Permissions-Policy`, and the dashboard CSP (`connect-src`: self,
+  Neuronpedia, `https://drowse.ai/api/contact`); private paths add
+  `Cache-Control: no-store`.
+- `ws_auth_ok` runs before `accept()` (failure closes 1008). It first scrubs
+  any `token` query parameter from the scope so the access log never records
+  one, applies the same host and origin rules, and takes the key only as a
+  bearer header or exactly one `drowse.auth.<base64url-unpadded-key>`
+  subprotocol (browsers cannot set headers on a WebSocket). Only `drowse.v1`
+  is echoed.
+- The CLI binds `127.0.0.1` by default and refuses a non-loopback bind without
+  a key; `drowse/cli/verbs/serve.py` also owns the startup live-lens/SAE policy.
 
-Every mutating route calls `_evict_manifold` so a delete or re-fit leaves no
-stale in-memory `Manifold` behind either the bare or the qualified grammar key.
-Steering a fitted manifold needs no route — a `%` term loads it lazily on scope
-entry.
+## OpenAI and Ollama (`compat/`)
 
-### template_routes.py
+Both lower a request to a `CompatGeneration` and run it through one driver:
+`run_generation` or `stream_generation` (`StreamStarted`, `TokenEvent`s, then
+`StreamEnd` or a final `ErrorInfo`). Compat generations are always
+`stateless=True`: the request's messages are the whole context and the loom is
+untouched. Streams pass `live_scores=False, live_readouts=False`; probe data
+comes only as the end-of-generation aggregate. A client disconnect stops the
+engine at the next token.
 
-The standalone templated-completion artifact (`store.templates`). Lifecycle is
-pure-IO; `score` runs the loaded model.
+- Steering (`compose_request_steering`): `None` inherits the server default
+  (`create_app(default_steering=)`, CLI `-S`); an expression overrides it per
+  key; an empty string clears it and reaches the session as an empty
+  `Steering`, not `None`, because the cast roster refills an unset `None`.
+- Attached probes' aggregates (Monitor, lens, and SAE rosters unioned) ride
+  `x-drowse-probe-readings`, on each OpenAI choice and at top level on the
+  Ollama final frame; the key is absent when nothing is attached.
+- `DROWSE_STRICT_MODEL` (`1/true/yes/on`) 404s a `model` outside the HF id and
+  its aliases; unset accepts any name.
+- OpenAI: `/v1/models[/{id}]`, `/v1/chat/completions`, `/v1/completions` (raw
+  prompt). Extensions: `steering` (expression string), `thinking` (`None` =
+  auto). Accepted and ignored: `user`, `n`, `response_format` `text`, empty
+  `tools`, `tool_choice` `none|auto`; other values of those and non-text
+  content parts are `UnsupportedContentError` (400). Streams send a role delta
+  first (chat), thinking as `reasoning_content`, a final chunk with
+  `finish_reason` and readings, an optional usage chunk, and always `[DONE]`.
+- Ollama: version, tags, ps, show, chat, generate, pull (no-op success for a
+  hosted name, else 404), `HEAD /` liveness, and 501 for push, create, copy,
+  delete, embeddings, embed. `/api/show` returns the real HF Jinja template;
+  Go-template parsers fail either way. Streaming NDJSON is the default (`null`
+  does not stream). `repeat_penalty` p maps to `presence_penalty = ln p` when
+  p > 1 and none is set: Ollama divides positive logits by p, which subtracts
+  a per-seen-token constant. Unknown options are logged at debug and dropped.
+  `steer` (in `options` or top level) must be a string, else
+  `OllamaBadRequest` before headers flush. `think` takes a bool or
+  `low|medium|high`; there is no effort knob, so any level means on.
+  `/api/generate` with `system` renders through the chat template and never
+  returns `context`.
 
-- `GET /templates` — list (`summary` + `namespace` per row).
-- `GET /templates/{ns}/{name}` — detail incl. the full `contexts`; 404 on
-  missing.
-- `POST /templates` — `create_template_folder` (slot, values, multi-turn
-  `contexts: [{turns, assistant}]`, description, tags, force). 409 on existing,
-  400 on a validation failure (slot in a history turn, slot count ≠ 1, …).
-- `DELETE /templates/{ns}/{name}` — 200 `{namespace, name, removed}`; 404 on
-  missing.
-- `POST /templates/{ns}/{name}/score` — `session.score_template` in
-  `asyncio.to_thread` under the bounded lock (503 if locked). Body
-  `{steering?}`; returns `{template, namespace, steering, contexts:
-  [ChoiceScores.to_dict()]}` — the per-context restricted-choice distribution,
-  steering-aware. 404 on a missing/ambiguous template, 400 on a
-  scoring/steering failure (scrubbed to `type(e).__name__`).
+## Native REST
 
-### probe_routes.py
+Paths carry `{session_id}`, but only `"default"` resolves (`session_router()`
+404s others); `S` below is `/drowse/v1/sessions/default`. Manifolds and
+templates are top-level artifacts under `/drowse/v1/{manifolds,templates}`.
 
-One unified collection covering every probe shape. Rows are discriminated by an
-explicit **`family`** key and carry only what that family can actually produce —
-a client keys off `family`, never off an out-of-band flag on an otherwise
-geometry-shaped row.
+- **Sessions.** `session_info` (`GET /drowse/v1/sessions`, `GET S`) carries
+  `instruments`, one `{family, live, source, probes, capabilities}` block per
+  family: the read plane's only listing. `jlens_fitted` uses
+  `session.lens.has_compatible()`, which never pages a lens in. `PATCH S`:
+  explicit `null` clears `top_k` or `system_prompt`; `null` elsewhere
+  preserves. `POST S/steering/validate` enters and exits
+  `session.steering(parsed)` under the lock, so a green result composes
+  exactly as a generation would; a rejection is in band (`{valid: false,
+  error}`), not a failed request.
+- **Profiles.** `pairwise` and `correlation` read `session.analytics_profile`,
+  CPU snapshots built inside the exclusive-GPU section, so a polled read never
+  copies off the device during a model op. Both are Mahalanobis-only and 409
+  without a whitener. A snapshot not built yet, or a whitener missing a layer,
+  is 409 on `pairwise` (retryable) and `null` in `correlation`. `pairwise`
+  registers before `profiles/{name}` so the literal path wins.
+- **Probes.** One collection over the Monitor and the lens/SAE readout
+  registries. Each row has a `family` and only fields that family produces;
+  clients key on `family`. `GET S/probes/{name}/geometry` is in the whitened
+  read frame; readout probes have no subspace and 404.
+- **Tree.** Conflicts come from the tree's own reservation; navigate, star,
+  note, branch, and cast edits never conflict. `PUT S/tree` restores
+  atomically and refuses another model's tree. `cast_json` gives each label an
+  `origin` (`configured`; `structural` for `user`/`assistant`; `observed`) and
+  rides the full-tree GET and every `tree_mutated` frame. `joint-logprobs`
+  replays both branches under the lock; the route bounds
+  `session.joint_logprob_cache` to 8 entries (LRU, sorted-pair key,
+  double-checked after the lock), the session clears it on edit, delete, reset,
+  finalize, and restore, and `reorient_for_request` flips a hit to the
+  requested order.
+- **Manifolds.** Detail and list rows are
+  `store.manifold_lifecycle.manifold_summary` (the shape `pack show -j`
+  prints) plus session-aware `fitted_for_session`, `stale` (sidecar weight
+  fingerprint or `nodes_sha256` mismatch), `resolved_fit_mode` (`pca` or
+  `spectral` once a discover folder is fitted, `null` for an unfitted `auto`),
+  and a fitted discover folder's per-model geometry. The list stays cheap:
+  `_fitted_geometry` reads only the safetensors header and the small
+  `node_coords` entry (affine = no `layer_<L>.node_params` key), the weight
+  fingerprint is computed once, and an unreadable artifact reports unresolved
+  geometry instead of failing the list. Authored creation returns soft
+  poisedness/flat-axis `advisories` before a fit is paid for. `install`,
+  `generate` (resumes by default; `force` starts clean), and `{ns}/{name}/fit`
+  are progress operations. Steering a fitted manifold needs no route; a `%`
+  term loads it on scope entry.
+- **Templates.** CRUD is pure IO; `score` is a progress operation over
+  `session.score_template`.
+- **Instruments** (`S/instruments/{family}`). `CAPABILITIES` declares what each
+  family supports and what an unsupported call returns:
 
-- `GET /probes` — Monitor rows (`family: "geometry"`, `manifold`, `top_n`,
-  `layers`, `node_labels`, `node_count`, `domain`, `intrinsic_dim`,
-  `feature_space`, `is_affine` from `geometry.manifold.manifold_is_affine` — the
-  flat/curved discriminator the client classifies subspace-vs-manifold on — and
-  `node_coords`, `null` when no per-model layout is materialized), then pinned
-  lens rows (`family: "lens"`, `layers`, `intrinsic_dim: 1`,
-  `feature_space: "readout"`, `word`, `token_id`) and SAE rows
-  (`family: "sae"`, the resident `layer`, `intrinsic_dim: 1`,
-  `feature_space: "sae-readout"`, `feature_id`, `label`, `max_act` — the
-  strength unit, `null` when the reading is a raw activation).
-- `GET /probes/defaults` — the default roster.
-- `POST /probes` `{selector, name?, top_n?}` → `session.add_probe`, 201 + the
-  row in its family's shape. The selector rides the same `[ns/]name[:variant]`
-  grammar `%` steering consumes, so probe and steering share the lazy-load
-  cache. 400 on an empty selector or `KeyError`/`ValueError`, 404 on
-  `FileNotFoundError`, otherwise `DrowseError.user_message()` (a `jlens/<word>`
-  selector's `LensNotFittedError` → 404).
-- `DELETE /probes/{name}` → `session.remove_probe`, 204; 404 when the name is
-  in none of the three rosters.
-- `GET /probes/{name:path}/geometry` → `session.monitor.probe_geometry(name)`:
-  per-layer centroids, the neutral anchor, a top-3 PCA rotation at rank ≥ 3,
-  and a curved fit's curve/surface overlay — all in the whitened frame the
-  reads use, so the live per-token point overlays directly. 404 when not
-  attached, which includes every readout-channel probe (no subspace behind
-  one). `defaults` registers before this greedy path so it still resolves.
+  | Family | `sources` | `preparations` | `token-readout` | `PUT source` |
+  |---|---|---|---|---|
+  | geometry | 404 | 404 | yes | 404 |
+  | lens | yes | `fetch`, `fit` | yes | yes |
+  | sae | yes | `fetch`, `train` | yes | 409: loading weights is the `fetch` preparation |
 
-### profile_routes.py
+  `POST live` forwards extras to `instrument.set_live`, whose `TypeError` is
+  the one rejection rule (400); `top_k` is refused for every family because
+  readout width is the generation's `return_top_k`. `PUT source` (lens) is
+  refused while a lens preparation runs, then turns live off, selects, and
+  turns it back on (`LensNotFittedError` 409). `token-readout` runs
+  `instrument.token_readout`, which builds the whole `scope="replay"`
+  envelope and rejects knobs it can't honor (400); the route reshapes nothing.
+  `sae/features/metadata` is network and disk cache only and takes no lock.
 
-`session.profiles` is the canonical registry; the routes wrap each entry in a
-`Profile` for the wire. Comparison reads go through
-`session.analytics_profile` / `analytics_names` — cached **CPU snapshots**
-built once under the exclusive-GPU lock, so a polled endpoint never issues an
-MPS→CPU copy on a threadpool thread that could race a model op on PyTorch's
-single non-thread-safe command buffer.
+## Long-running operations (`operations.py`)
 
-- `GET /profiles`, `GET /profiles/{name}`, `DELETE /profiles/{name}` (also
-  drops the name from `default_steering`).
-- `GET /profiles/pairwise?a=&b=` — cross-layer **whitened** cosine matrix
-  between two named profiles or probes. Mahalanobis-only: whitened cosine is a
-  single-layer operation, so each cell is whitened in `a`'s row-layer frame —
-  exact on the layer-aligned diagonal, an A-frame read off it. The whitener
-  must cover every row-layer of `a`, else 409 (regenerate the neutral cache); a
-  registered name whose snapshot isn't built yet is also 409, retryable.
-  Registered **before** `GET /profiles/{name}` so the literal path wins.
-- `GET /sessions/{id}/correlation?names=…` — N×N Mahalanobis-cosine matrix
-  across loaded profiles and active probes (a profile wins a name collision
-  over a same-named probe). A request-scope cache holds `(v, Σ⁻¹v, vᵀΣ⁻¹v)` per
-  name/layer so the symmetric matrix costs one Woodbury apply per entry rather
-  than one per pair. Missing whitener → 409; a pair it doesn't fully cover, or
-  a name whose snapshot isn't ready, lands as `null`.
-- `POST /extract` — `session.extract` through `run_in_thread`, SSE or JSON (the
-  JSON branch also returns the collected `progress` lines). Body
-  `{concept, baseline?, kind, custom_system?, sae?, role?, namespace?, force?}`
-  — `kind` ∈ `abstract|concrete|custom` with `custom_system` required for
-  `custom`, matching `/manifolds/generate`. A concept with a baseline fits a
-  2-node `pca`; a monopolar concept fits the 1-node neutral-anchored ray. The
-  folded profile is always registered on the live session.
-- `POST /profiles/bake` `{name, expression}` — the HTTP face of
-  `DrowseSession.bake`, which owns the whole sequence (model-scoped merge into
-  a corpus-less `fit_mode="baked"` manifold, fold back to a `Profile`,
-  registration). The session method computes the loaded-weight fingerprint, so
-  a bake whose components were fitted against different weights is refused here
-  exactly as in Python. `refuse_if_busy` first; `MergeError` → 400.
+**Progress operations** (`/extract`, manifold `install` / `generate` / `fit`,
+template `score`) call `run_operation`. The job runs in a server-owned task
+that holds the session lock for its real lifetime; the response is a view.
 
-### tree_routes.py
+- `Accept: text/event-stream` waits for the lock unbounded, then streams
+  `event: progress {message}` and one terminal `event: done <payload>` or
+  `event: error {message, code, status}`, with a `: heartbeat` comment after
+  15 s idle so a proxy read timeout cannot drop a slow job. Progress is
+  coalesced off the worker thread into a 256-line queue (oldest dropped); the
+  terminal frame never waits on a consumer that left.
+- Otherwise one JSON body under the bounded lock wait (`/extract` adds its
+  `progress` lines).
+- Without a receipt, an SSE client that leaves while the job is still queued
+  withdraws it; a started job always runs to completion.
 
-`/sessions/{id}/tree`: full-tree `GET` and `PUT` (atomic restore, delegating
-schema validation to `LoomTree.from_dict` and refusing a model mismatch —
-saved token ids and stamped recipes are model-specific), active-path `GET`, and
-navigate / edit / branch / delete / star / note / reset mutations, plus
-`edge-label`, `filter`, branch `diff`, `joint-logprobs`, and `transcript` /
-`transcript/load`. Mutations run the tree's conflict checks (409 when they
-would corrupt an in-flight generation); navigate, star, and note are
-decoration-tier and never conflict. `tree/branch` takes an optional `role`
-override (`user|assistant|system`) — with the engine's scene mode this is the
-seat-swap branch primitive.
+**Receipts.** `X-Drowse-Request-Id` (1–128 of `[A-Za-z0-9._:-]`) admits the
+operation into `OperationLedger` under a fingerprint of `[kind, path,
+model_id, body]`. A reused id is 409 (read the receipt instead); 128 active
+receipts is 503. `GET /drowse/v1/operations/{id}` returns `state`
+(`queued|running|completed|failed|interrupted|cancelled`), the last 64
+progress lines, `result`, and `error`; 404 means unknown or evicted, never
+completed. The ledger keeps 256 records and 16 MiB of payloads (4 MiB each;
+past budget the oldest finished payloads drop and are marked
+`result_truncated`, receipts stay). Shutdown cancels queued jobs (receipts
+read `interrupted`) and joins started ones.
 
-`joint-logprobs` force-replays both branches under their stamped recipes and
-returns per-aligned-position cross-evaluation records; results live in
-`session.joint_logprob_cache` keyed by the sorted `(a_id, b_id)` pair,
-double-checked under the lock, invalidated by edits/deletes/finalize.
+**Preparations** (lens `fetch` / `fit`, SAE `fetch` / `train`) are polled,
+never streamed: `POST S/instruments/{family}/preparations {operation,
+...fields}` (202; fields re-parsed into the operation's model), `GET` for the
+running-or-latest status, `DELETE` to cancel. Status: `{state:
+idle|running|done|error, operation, progress: {current, total, unit} | null,
+message, error, started_at, finished_at, cancellable, ...extras}`; fit counts
+`prompts` and train `tokens`, parsed from the job's own progress lines. A
+failure reports `message: "<label> failed"` with the scrubbed error; a
+cooperative cancel settles to `state: "done", message: "cancelled"`. `DELETE`
+cancels a running lens fit (else 409; a fetch is not cancellable) or SAE train
+(else unloads the resident SAE). Shutdown sets cancel events and joins.
 
-Cast roster: `GET .../tree/cast`, `PUT .../tree/cast/{label}`
-`{steering?, thinking?, seed?, notes?}` (label slug and expression syntax
-validated up front, 400 on either), `DELETE .../tree/cast/{label}` (204, absent
-= no-op) — all decoration-tier. `cast_json` serializes the **effective** roster
-with an `origin` per label (`configured`, `structural` for `user`/`assistant`,
-or `observed`) and rides the full-tree GET plus every `tree_mutated` frame, so
-clients reconcile identity without a refetch or provenance inference.
+- Lens `fetch` takes a provider from `LENS_PROVIDERS` (400 at POST),
+  downloads into the HF cache without the lock, then selects it and goes live.
+- Lens `fit {kind: r|j = r, ...}`: `kind` picks the estimator and destination
+  `local:<kind>`; `layers=sample` is 400. The corpus is pinned in the isolated
+  spawned corpus worker (cancellable, never resolved in the server process).
+  Unless `force`, a proven no-op (`session.lens.fit_is_noop`) only selects
+  `local:<kind>`; otherwise documents stream in the worker and
+  `session.lens.fit` runs.
+- SAE `fetch` takes `local:<name>` or `saelens:<release>` (a bare release is
+  400) and loads under the lock. SAE `train` streams `ceil(tokens / seq_len)`
+  default-corpus documents, then trains.
+- Live readout after a fit or train is best-effort: a failure is logged, not a
+  failed preparation.
 
-### instrument_routes.py — the unified `/instruments` family
+## WebSocket: `WS S/stream`
 
-One route tree over `session.instruments` (`geometry` / `lens` / `sae`).
-Dispatch is **table-driven**, not a chain of `if family == …` branches: the
-`CAPABILITIES` dict declares what each family supports, and an unsupported
-operation answers from the declaration (including its status and message).
-`require_family` validates `{family}` against the registry itself, so the table
-and the registry cannot disagree about which families exist. Response shapes
-live in `response_models.py` with the rest of the native tree's, and
-`tests/readout/test_measurements_envelope.py` pins the envelope's key sets.
+Inbound frames (`ws_models.py`):
 
-| Family | `sources` | `preparations` | `token_readout` | `source_switch` |
-|---|---|---|---|---|
-| `geometry` | no (404) | none (404) | yes | no (404) |
-| `lens` | yes | `fetch`, `fit` | yes | yes |
-| `sae` | yes | `fetch`, `train` | yes | no (409 → run `fetch` as a preparation) |
+- `submit` is the only authored-turn contract. `text` + `authored_role`
+  appends a span; `generated_role` then generates from it in that seat, and
+  alone continues from the selected leaf. Append-only uses
+  `session.append_turn` (no decode); append+generate commits the turn once
+  inside the generation worker, under the fan's lock. The authored turn's cast
+  label rides `sampling.user_role` / `assistant_role` by seat. Cross-field
+  mistakes are error frames with code `RequestError`.
+- `generate` is the specialist frame: continue (`input: null`), explicit
+  message lists, seats (`generate_seat`), `recipe_override` (composed by
+  `loom/recipe.py::compose_call`), and the token fork. `stateless` defaults to
+  `true`. `system_prompt` omitted inherits the default; `null` sends none. A
+  fork needs `fork_node_id`, `fork_raw_index`, and exactly one of
+  `fork_alt_token_id` / non-empty `fork_replacement_text`, and takes steering
+  and sampling from the source node's recipe. A message's `label` is the
+  per-turn cast label the scene stitcher renders, so a replayed
+  custom-labelled turn keeps its prompt. Field-group rules live in the model
+  validators (`PydanticCustomError` keeps messages verbatim).
+- `stop {request_id?}` stops the running turn (only a matching one when
+  `request_id` is set); a no-op when idle.
 
-Preparation operation names match the CLI verbs exactly on both surfaces.
+Outbound frames:
 
-- `GET /sessions/{id}/instruments` — the three families, each as
-  `{family, live, source, probes, capabilities}` built by the ONE
-  `family_block`; `session_info` embeds the same list. `live` is the family's
-  own `LiveState.to_dict()` (geometry `{enabled}`, lens `{enabled, layers}`,
-  sae `{enabled, layer, source}`). `source` is `instrument.active_source` — the
-  same resolver that stamps the source onto every measurement binding, so the
-  listing agrees with persisted rows rather than answering from a
-  prepared-sources scan.
-- `POST .../instruments/{family}/live` `{enabled, layers?}` →
-  `instrument.set_live(enabled, **extras)`; the *instrument* rejects an extra it
-  can't honor (`TypeError` → 400), so there is one rejection rule rather than
-  three. `top_k` is refused for every family up front — readout width is
-  generation state shared with `return_top_k`/alts, never an instrument-local
-  dial. Returns the resolved live block.
-- `GET .../instruments/{family}/sources` — lens: `list_lens_sources` with
-  `path` stripped. sae: `{sources, releases}`, merging prepared sources with
-  provider release candidates so the dashboard sees both prepared and
-  still-needs-fetching rows.
-- `PUT .../instruments/{family}/source` `{source}` — lens only, synchronous:
-  lock, live off, `select_jlens_source`, live back on, returning
-  `{source, live_layers}`. 404 missing, 400 malformed, 409 not fitted or a
-  running lens job, 503 lock timeout.
-- `POST/GET/DELETE .../instruments/{family}/preparations` — the unified
-  background-job resource, polled, never SSE. POST body `{operation, …fields}`
-  (202); fields are re-parsed into the per-operation model, with a flattened
-  `"field: message"` string on rejection (400). Lens `fit` takes the CLI's
-  fields (`prompts`, `seq_len`, `prompt_batch`, `layers`, `force`, `relp`)
-  plus `hf_corpus`, a list of `--hf-corpus` sources
-  (`REPO[:CONFIG][@REV][,KEY=VALUE…]`, several making a weighted mix), parsed
-  before the job starts (400 when malformed); unset, the default web-text
-  corpus. Hub
-  pinning and streaming run in the cancellable spawned corpus worker. GET
-  returns the running-or-last job in one shape: `{state:
-  idle|running|done|error, operation, progress: {current, total, unit} |
-  null, message, error, started_at, finished_at, cancellable, …extras}` — fit `unit="prompts"`, train `unit="tokens"`,
-  fetch/load `progress: null` plus a message; extras are lens `live_layers` /
-  `source`, sae `release` / `name` / `info`. Group exclusions 409. DELETE:
-  lens cancels a running fit (a fetch is not cancellable, so a fetch-only or
-  idle state 409s); sae cancels a running train, else unloads the resident SAE
-  under the lock.
-- `GET .../instruments/{family}/token-readout?node_id=&raw_index=[&top_k=]
-  [&steered=][&raw=][&layers=]` — resolve → validate → dispatch to
-  `instrument.token_readout`, which owns the whole replay **including** its
-  `scope="replay"` measurements envelope, so this route reshapes nothing. A
-  knob a family cannot honor comes back as `ValueError` → 400 rather than being
-  silently dropped (`top_k`/`layers` on geometry, `layers` on sae).
-  `LensNotFittedError`/`UnknownNodeError` → 404,
-  `InvalidNodeOperationError` → 400, 503 on lock timeout.
-- Family extras: `POST .../instruments/lens/token/validate` (`{word}` →
-  `{word, token_id}`, read-only; multi-token → 400),
-  `POST .../instruments/sae/features/validate` (`{id}`), and
-  `POST .../instruments/sae/features/metadata` (`{ids}`, 1..64 → the
-  Neuronpedia label + `maxActApprox` backfill; network and disk cache only, so
-  it deliberately takes no session lock).
+- `started {generation_id, node_id: null, sibling_index, sibling_count}` per
+  sibling.
+- `token {text, thinking, token_id, node_id, raw_index?, logprob?,
+  perplexity?, top_alts?, measurements?}`. `measurements` is the token-scope
+  envelope the tap built and stored on the loom row, forwarded verbatim
+  (`ws_events.build_token_event`), so live and rehydrated tokens share one
+  authority. The consumer opts into every live channel; each family's live
+  toggle decides what appears.
+- `done {result: {text, tokens, finish_reason, applied_steering, usage,
+  measurements?, mean_logprob, mean_surprise}, node_id, sibling_index,
+  sibling_count}`, with the engine's aggregate-scope envelope. After a client
+  `stop`, `finish_reason: "stop"` reads `"cancelled"` on the wire only; the
+  loom recipe keeps the engine's reason. A commit-only `submit` sends one
+  `started` and one `done` (`{role, text, node_id, ...}`), no tokens.
+- `tree_mutated {op, rev, added, removed, updated, active_node_id, cast}`
+  forwards every `LoomMutated`, from any source. `done` waits until its node's
+  `finalize_assistant` delta is sent, so a client never sees a finished but
+  empty node.
+- `error {message, code, status, node_id, sibling_index}` on a connection that
+  stays open: FastAPI's handlers don't reach WebSockets, so the handler
+  classifies with `describe_error`. Schema failures, bad JSON, and unknown
+  types carry code `ValidationError` and list every error (a union field's
+  real failure is often the second branch).
+- `request_complete {request_id, state, completed_siblings}` ends every
+  correlated turn.
 
-Jobs keep the `app.state.lens_fit` / `lens_fetch` / `sae_load` / `sae_train`
-attributes and register `_stop_lens_fit` / `_stop_sae_train` shutdown hooks.
+A `request_id` admits a turn into the same `OperationLedger` (kind
+`generate`), and every frame of that turn carries it. Resubmitting a finished
+id replays its recorded frames without generating. A live id or different
+parameters gets an `error` coded `REQUEST_RECONCILE_REQUIRED` /
+`REQUEST_ID_CONFLICT` (this frame has only `type`, `request_id`, `code`,
+`message`); a full ledger, `REQUEST_QUEUE_FULL` (503).
+`GET S/requests/{id}` reports `state: "unknown"` when absent, never 404.
 
-Lens `fit` defaults `relp=true`; callers can explicitly send `false` for the
-standard Jacobian estimator. Serve startup attaches the first compatible cached
-source in the deterministic order `workspace-r → neuronpedia → workspace-j →
-local` before enabling live readout.
+Concurrency and limits:
 
-### WS /drowse/v1/sessions/{id}/stream (ws_stream.py)
-
-Bidirectional; only the exact `session_id == "default"` is accepted, and
-`ws_auth_ok` runs before `accept()`.
-
-**Inbound.** Exactly three frame types, all validated by pydantic in the reader
-before dispatch.
-
-- `{type: "submit", …}` — **the one authored-turn contract on this wire**:
-  `text` + `authored_role` appends a span; `generated_role` then optionally
-  asks the model to continue from it; with no text, `generated_role` alone is a
-  bare continue from the selected leaf. Also carries `steering`, `sampling`,
-  `thinking`, `authored_thinking`, `raw`, `parent_node_id`, `n`,
-  `recipe_override`. `_normalize_submit` lowers it onto the `generate` schema:
-  append-only takes the no-decode `session.append_turn` path; append+generate
-  keeps the authored turn for one atomic commit inside the generation worker
-  and then generates from `input=None`.
-- `{type: "generate", …}` — the specialist / compatibility frame: `input`
-  (string, message list, or `null` for a continue), `steering`, `sampling`,
-  `thinking`, `stateless`, `raw`, `parent_node_id`, `n`, `recipe_override`, the
-  token fork (`fork_node_id`/`fork_raw_index` plus exactly one of
-  `fork_alt_token_id` or authored `fork_replacement_text`), the
-  prefill pair (`prefill_node_id`/`prefill_text`), and `generate_seat`
-  (`"user"|"assistant"`, default assistant — `"user"` renders the prompt under
-  a user-seat header and lands the node `role="user"` with a stamped recipe;
-  generated is provenance, not a seat, and it needs the validated scene
-  grammar). It carries **no `commit_*` vocabulary** — authored turns are
-  `submit`'s job. Field-consistency rules (whole fork group together, prefill
-  needs its text, fork and prefill mutually exclusive) live in the model
-  validators, so the schema is the single description of a well-formed frame;
-  `PydanticCustomError` keeps those messages verbatim.
-- `{type: "stop"}` — signals only its own worker mid-generation; a no-op when idle.
-
-`WSInputMessage` is `{role, content, label?}` — `label` is the per-turn cast
-label the scene stitcher renders into the constructed header, so a dashboard
-auto-regen shadow of a custom-labelled turn replays under the prompt it is
-shadowing. `WSSamplingParams` adds `user_role`/`assistant_role` (per-message
-role substitution, stamped on the produced nodes), `return_top_k`,
-`persist_per_layer_scores`, and `persist_subspace_coords`.
-
-**Outbound.** `started` (`generation_id`, `node_id` filled lazily by the first
-token, `sibling_index`, `sibling_count`); `tree_mutated` (`op`, `rev`, `added`,
-`removed`, `updated`, `active_node_id`, plus the inlined `cast` roster);
-`token`; `done`; `error`.
-
-The `token` frame carries `text`, `thinking`, `token_id`, `node_id`,
-`raw_index`, and `logprob`/`perplexity`/`top_alts` when captured, plus the
-**`measurements`** envelope — the single JSON-safe read-side record, the same
-object appended to the loom row: `version`, `scope: "token"`, `provenance`, the
-flat `scores`/`per_layer_scores` views, and per-family `instruments`
-(`geometry`/`lens`/`sae`, each with its attached-probe `readings` and — for
-lens/sae — the native `readout` discovery surface plus a `binding` recording
-source + recipe steering). The tap owns that payload; `build_token_event`
-forwards it verbatim rather than reconstructing it from persisted loom rows,
-which would create a second wire authority and mask tap bugs.
-
-The `done` frame's `result` carries `text`, `tokens`, `finish_reason`, `usage`,
-`mean_logprob`, `mean_surprise`, and an **aggregate-scope `measurements`
-envelope only** — the engine builds it at finalize
-(`GenerationResult.measurements`), so the server neither re-splits readings by
-family nor reprojects the lens/SAE `ScalarReading`s. A `stop` landing mid-turn
-rewrites the wire `finish_reason` to `cancelled` (UI-only; the engine's
-canonical `stop` stays on the loom recipe). A commit-only `submit` emits one
-`started` (`node_id: null`) and one `done` whose result is `{role, text,
-node_id, finish_reason: "stop", mean_logprob: null, mean_surprise: null}` — no
-token frames.
-
-**One error convention.** Every rejection is an `error` frame with the same
-five keys (`message`, `code`, `status`, `node_id`, `sibling_index`) on a
-connection that stays **open** — a 400-grade mistake must not close the socket,
-and FastAPI's `DrowseError` handler does not apply to WebSocket routes, so the
-handler catches them explicitly. Pydantic rejections render as
-`"field: message"` joined by `"; "` — the same convention
-`app._on_validation_error` gives native REST bodies — with **every** error
-reported, not just the first, because `input` is a union whose real failure is
-the second branch error. Only an unexpected exception closes (1011).
-
-**Concurrency.** One perpetual reader task owns `receive_text()` and feeds a
-shared bounded `incoming` buffer (1 MiB/frame, 16 pending messages / 4 MiB) — the underlying `websockets` `recv_in_progress` flag
-makes overlapping receives a `RuntimeError`, so no other task reads the socket.
-All sends go through one `asyncio.Lock` with a 30-second timeout. `tree_mutated` events ride a
-connection-level `LoomMutated` subscription forwarded by its own task, and
-`done` waits for its node's `finalize_assistant` delta to be forwarded first,
-so a client never sees a completed-but-empty assistant node. Per generate turn,
-`generate` / fork / prefill runs in a worker thread under a request-owned
-`GenerationState.cancellation_scope`. `on_token` bridges to asyncio through a
-bounded queue. Token and tree queues each allow 256 outstanding events,
-including callbacks pending on the event loop; overflow disconnects the client.
-The handler races token events against coalesced stop/disconnect controls;
-non-stop frames remain in the same bounded FIFO until the turn ends. Disconnect
-cancels queued requests and stops/joins only that connection's active worker;
-closing an idle connection never stops another caller.
-`session.lock` is held for the full N-way batch so concurrent clients serialize
-FIFO; `n>1` fans siblings out serially under deterministic derived seeds, and
-an error inside one sibling aborts the rest of the fan.
-
-## ollama.py
-
-Ollama-compatible shim reusing `session` / `default_steering` / `session.lock`
-/ app-level auth. Routes: `/api/version`, `/api/tags`, `/api/ps`, `/api/show`,
-`/api/chat`, `/api/generate`, `/api/pull` (no-op success for the loaded model,
-404 otherwise), `HEAD /` (bodyless 200 liveness probe), and 501 stubs for
-`/api/push`, `/api/create`, `/api/copy`, `/api/delete`, `/api/embeddings`,
-`/api/embed`.
-
-Streaming responses are NDJSON (`application/x-ndjson`). `/api/show.template`
-reflects the real HF Jinja `tokenizer.chat_template` — clients that parse it
-fail either way, so the honest template beats a meaningless Go placeholder.
-`/api/generate` omits `context` (drowse can't round-trip it). `_resolve_options`
-recognizes `temperature`, `top_p`, `top_k`, `seed`, `num_predict`→`max_tokens`,
-`stop`, `presence_penalty`, `frequency_penalty`, `repeat_penalty` (→
-`presence_penalty` via `ln(repeat_penalty)`: Ollama divides positive logits by
-the penalty, which is subtracting a per-seen-token constant), and `steer`;
-everything else (`min_p`, `mirostat*`, `num_ctx`, …) is logged at debug and
-dropped. Steering rides a non-standard `steer` field inside `options` or at the
-top level — an expression string composed over `default_steering` at the key
-level; a non-string raises a clean 400 before headers flush. A top-level
-`think` bool wins over the expression's flag and streams as `message.thinking`
-(chat) / top-level `thinking` (generate). `_duration_stats` splits measured
-wall time between `prompt_eval_duration` and `eval_duration`;
-`_finish_to_done_reason` maps `stop_sequence` → `stop`. Probe readings ride the
-top-level `x-drowse-probe-readings` key, absent when nothing is attached.
+- One reader task owns `receive_text()` (the `websockets` receive flag makes
+  overlapping receives a `RuntimeError`) and feeds a bounded FIFO: 1 MiB per
+  frame (close 1009; the CLI passes the same `ws_max_size`) and 16 pending
+  frames / 4 MiB (close 1013). `stop` is a coalesced control outside that
+  budget. Turns run one at a time per connection.
+- Sends share one lock with a 30 s timeout. Token and tree queues each bound
+  256 outstanding events, counting callbacks still pending on the loop;
+  overflow closes 1013.
+- A turn runs in a worker thread under
+  `session.generation_state.cancellation_scope`. `n > 1` fans siblings
+  serially under seeds from `loom.recipe.derive_seed_schedule`, holding the
+  session lock for the whole fan; a stop cancels the current sibling and skips
+  the rest, and an error aborts the rest.
+- Disconnect cancels the turn and joins only this connection's worker. An
+  unexpected exception sends an error frame and closes 1011.
 
 ## Deliberately absent
 
-Each of these is a refused design, not a gap. Do not re-propose them.
+Refused designs; do not re-add them.
 
-- **No `/drowse/v1/packs*` surface** and no `POST .../push`. Concepts are
-  manifolds, so distribution rides the manifold routes; HF upload is CLI-only
-  (`pack push`).
-- **No traits SSE stream.** Live per-token reads ride the WS `measurements`
-  envelope and the OpenAI/Ollama reading extensions.
-- **No per-family `/lens/*` or `/sae/*` groups and no `POST /probes/live`.**
-  Everything lives under `/instruments/{family}/…`, with no aliases.
-- **No one-shot text-scoring endpoints** (`POST .../probe`,
-  `POST .../manifold-probe`): they re-render arbitrary text out of conversation
-  context. Scoring is a live-hook read or a `token-readout` replay.
-- **No `/extract/preview` and no `/profiles/clone`.**
-- **No per-token aliases on the WS `token` frame** — no top-level `scores` /
-  `per_layer_scores` / `probe_readings` / `lens_readout` / `lens_aggregate` /
-  `sae_readout` / `captured`. Everything is inside `measurements`.
-- **No flat instrument keys on `session_info`** — no `live_lens_layers`,
-  `live_sae`, `live_probe_scores`, `sae_loaded`, `sae_info`. The `instruments`
-  block is the one representation.
-- **Neither compat protocol supports** tool calling, JSON-schema /
-  structured-output mode, or embeddings.
-- **No multi-session server.** The `{session_id}` segment exists for the shape;
-  only `"default"` resolves.
+- A multi-session server: `{session_id}` exists for the URL shape only.
+- `/packs` routes or an HTTP push; HF upload is CLI `pack push`.
+- Per-family `/lens/*` or `/sae/*` groups; all of it is
+  `/instruments/{family}`.
+- One-shot text-scoring endpoints, which score text out of conversation
+  context. Reads are live hooks or a `token-readout` replay.
+- A traits SSE stream, or per-token aliases on the `token` frame; everything
+  is inside `measurements`. Likewise no flat instrument keys on
+  `session_info`.
+- Tools, structured output, or embeddings on either compat protocol.
+
+## Testing
+
+All CPU-only, under `tests/server/`. `test_request_errors.py` pins the error
+policy on every surface; `test_http_security.py` the trust boundary;
+`test_server_operations.py` the ledger, runner, preparations, and shutdown;
+`test_server_streaming.py` worker lifetimes; `test_webmcp_ws.py` WS receipts
+and scoped stop; `test_server_manifold_eviction.py` runs a real tiny session
+to prove folder changes over HTTP leave no stale steering. `test_server.py`
+covers OpenAI/Ollama and `test_drowse_api.py` the native routes and WS frames.
+
+`tests.support.server.mock_session(**overrides)` is the one route mock, a
+`create_autospec(DrowseSession, instance=True)`, so a route calling a removed
+or renamed session method fails. When a route test needs real behavior, use
+`tiny_session` + `app_client` (`tests/conftest.py`); `StubSession` and
+`script_generate` script WS generations.

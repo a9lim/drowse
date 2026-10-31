@@ -1,851 +1,867 @@
 # Drowse architecture
 
-This document explains the current system as a whole: how artifacts are fitted,
-how a steering expression reaches a model forward, how hidden states become
-measurements, and how the library, server, and WebUI share those mechanisms.
+How the system fits together: how artifacts are fitted, how a steering
+expression reaches a model forward, how hidden states become measurements, and
+how the library, server, dashboard and browser edition share those paths.
 
-The subtree `AGENTS.md` files are detailed ownership maps. This file stays at the
-cross-cutting level and calls out the invariants that must survive changes across
-modules.
+This file stays at the cross-cutting level: the data flow, the reasons behind
+the strict boundaries, and the invariants a change in one package can break in
+another. Contracts, constants and module maps live in each package's
+`AGENTS.md`; this file points to them instead of restating them. The layer
+order and the repo-wide rules are in the root `AGENTS.md`.
 
 ## 1. System in one page
 
-Drowse is one model-owning session with three front doors:
+One `DrowseSession` owns one loaded model. Three front doors reach it:
 
-- `DrowseSession`, the Python API;
-- `drowse serve`, which exposes OpenAI, Ollama, and native Drowse protocols;
-- the Svelte WebUI mounted by that server.
+- the Python API (`DrowseSession`);
+- `drowse serve`, which exposes OpenAI `/v1/*`, Ollama `/api/*` and the native
+  `/drowse/v1/*` protocol on one port;
+- the Svelte dashboard mounted by that server, which drowse.ai also runs in
+  the browser against a WebGPU runtime.
 
-All three converge on the same generation, steering, capture, and measurement
+All of them converge on the same generation, steering, capture and measurement
 paths.
 
 ```mermaid
 flowchart LR
-    Clients["Python / OpenAI / Ollama / WebUI"] --> Session["DrowseSession"]
-    Session --> Loom["Loom tree + recipes"]
-    Session --> Composer["SteeringComposer"]
+    Clients["Python / OpenAI / Ollama / dashboard"] --> Session["DrowseSession"]
+    Session --> Engine["GenerationEngine"]
+    Engine --> Loom["LoomTree + Recipe"]
+    Engine --> Composer["SteeringComposer"]
     Composer --> Hooks["SteeringManager + layer hooks"]
-    Session --> Planner["Capture planner"]
-    Planner --> Runs["geometry / lens / SAE runs"]
+    Engine --> ReadPlane["ReadPlane"]
+    ReadPlane --> Runs["geometry / lens / SAE runs"]
     Hooks --> Model["Hugging Face causal LM"]
     Model --> Capture["HiddenCapture + token logits"]
     Capture --> Runs
-    Runs --> Measurements["versioned measurements envelope"]
-    Measurements --> Results["TokenEvent / GenerationResult / loom token rows"]
-    Store["manifolds / templates / model artifacts"] --> Session
+    Runs --> Envelope["measurement envelope"]
+    Envelope --> Results["TokenEvent / GenerationResult / loom token rows"]
+    Store["$DROWSE_HOME artifacts"] --> Session
     Session --> Store
 ```
 
-The architecture has two intentionally different planes:
+The engine has two deliberately separate planes:
 
-- The **steering plane** resolves an expression, composes all compatible terms,
-  and injects one update per affected layer.
-- The **read plane** plans hidden-state retention, binds immutable
-  per-generation instrument state, and produces geometry, J-lens, and SAE
-  readings without changing the steering representation.
+- The **steering plane** resolves an expression, composes every compatible
+  term into one update per affected layer, and injects it.
+- The **read plane** plans hidden-state retention, binds frozen per-generation
+  instrument state, and produces geometry, J-lens and SAE readings without
+  touching the steering representation.
 
-They meet at gates: a steering trigger may depend on a read-side scalar, so the
-capture plan must retain and score exactly the channels needed before the next
-steered forward.
+They meet at **gates**: a steering trigger may depend on a read-side scalar, so
+the capture plan must retain and score exactly the channels needed before the
+next steered forward.
 
-## 2. Ownership boundaries
+## 2. Ownership
 
-| Concern | Owner | Notes |
-|---|---|---|
-| Model/tokenizer loading and layer access | `model/loading.py` | Normalizes supported Hugging Face architectures to one transformer-block interface. |
-| Session orchestration | `session/session.py` | Owns the model, loom, registries, locks, capture transaction, and public API. |
-| Token generation | `generation/decode.py` | Sampling, cache advancement, thinking channels, stop handling, and token-step identity. |
-| Steering syntax | `steering/grammar.py`, `steering/terms.py` | Parses and round-trips the one expression language used everywhere. |
-| Steering resolution/composition | `steering/composer.py` | Resolves selectors, materializes projections, validates gates, and installs composed steering. |
-| Injection | `steering/hooks.py`, `geometry/manifold.py` | Lowers composed terms to per-layer hooks and executes the flat or curved kernel. |
-| Hidden capture | `steering/hooks.py::HiddenCapture` | Retains the minimum layer/time slices selected by the session planner. |
-| Read protocol | `readout/` | Three instrument families under one prepare/plan/bind/observe contract. |
-| Geometry reads | `readout/monitor.py` | Mahalanobis coordinates, distances, assignments, membership, and per-layer traces. |
-| J-lens | `lens/jlens.py`, `lens/fit.py` | Readout, transport, token directions, and J-space decomposition; the fit estimator lives in its own module so importing the readout never loads it. |
-| SAE runtime/training | `sae/backend.py`, `sae/training.py` | External or local sources, feature readout, and decoder-row steering. |
-| Result shapes | `generation/results.py`, `readout/measurements.py`, `generation/token_payloads.py` | Python results and the canonical read-side wire envelope. |
-| Conversation state | `loom/tree.py` | Branching authored/generated nodes, recipes, raw tokens, measurements, cast, and persistence. |
-| Artifact I/O | `io/` | Exact schemas, selectors, integrity, atomic publication, Hugging Face distribution, and lifecycle. |
-| HTTP/WebSocket protocols | `server/` | Thin validation/serialization layers over one session. |
-| Dashboard | `webui/`, `drowse/web/` | Svelte source plus the committed production bundle served last as an SPA. |
-| Notebook figures | `drowse/notebook/` | Plotly/pandas helpers over the public result types; optional `[notebook]` extra. |
+| Concern | Owner |
+|---|---|
+| Model loading, fingerprints, layer discovery, chat/role/scene rendering | `model/` (`load.py`, `fingerprint.py`, `arch.py`, `scene.py`) |
+| Session facade, exclusive-GPU lock, artifact registry, neutral baseline | `session/session.py`, `registry.py`, `neutral.py` |
+| The generation transaction and decode routing | `session/engine.py` (`GenerationEngine`), `session/batch.py` |
+| Decode loop, sampler, rendering, prefix cache, compile routing | `generation/` |
+| Expression grammar and IR | `steering/grammar.py`, `terms.py`, `triggers.py` |
+| Resolution, composition, gains, hooks | `steering/composer.py`, `steering/hooks.py` |
+| Steering math (synthesis, the kernel, fold, projection) | `geometry/inject.py`, `geometry/fold.py` |
+| Read contract, Monitor, capture planning, envelope | `readout/` |
+| Applying the read plan to one generation | `generation/read_plane.py::ReadPlane` |
+| J-lens and SAE families | `lens/`, `sae/` |
+| Extraction and fitting | `fit/` (`pipeline.py`, `corpus.py`, `capture.py`, `node_stats.py`, `publish.py`, `preflight.py`) |
+| Artifact formats, selectors, distribution | `store/` |
+| Conversation tree, recipes, replay, transcripts | `loom/` |
+| Protocols, dashboard mount, CLI | `server/`, `web/`, `cli/` |
 
-The main dependency direction is `server/cli/web -> session -> core + io`. Pure
-geometry in `geometry/manifold.py` does not import the session or persistence layer;
-tensor codecs and filesystem transactions stay in `io/`.
+Dependencies point downward only (`tests/invariants/test_layering.py`). A
+collaborator gets its dependencies through its constructor; nothing outside
+`drowse/session/` reads a session private. That rule is what lets each
+collaborator be tested without a session and lets the browser runtime replace
+whole subsystems behind the same contracts.
 
-## 3. Runtime objects and durable artifacts
+## 3. Artifacts and runtime objects
 
-### 3.1 The manifold is the steering artifact family
+### 3.1 The manifold is the steering artifact
 
 A manifold is a set of labeled nodes, a domain or discovered layout, and a
-per-model fit at selected residual-stream layers.
+per-model fit at selected residual-stream layers. A fitted layer is a
+`LayerSubspace` (`geometry/subspace.py`) in one of two geometries:
 
-There are two runtime geometries:
+- **Flat**: a neutral-anchored affine frame (`mean`, orthonormal `basis`, real
+  per-layer node coordinates). A rank-1, 2-node flat fit is the ordinary
+  bipolar steering vector; a 1-node flat fit is a monopolar ray from the
+  neutral mean.
+- **Curved**: the same enclosing frame plus an `r³` polyharmonic RBF surface
+  through the node centroids, a neutral-origin foot, and optionally a learned
+  tube thickness σ(z).
 
-- A **flat subspace** stores a neutral-anchored affine frame: `mean`, an
-  orthonormal `basis`, and real per-layer node coordinates. A rank-1, two-node
-  flat fit is the ordinary bipolar steering-vector case. A one-node flat fit is
-  a monopolar ray from the neutral mean.
-- A **curved manifold** stores the same enclosing frame plus an RBF surface,
-  its Jacobian, a neutral-origin foot, and optionally a learned local tube
-  thickness.
+`Manifold` (`geometry/manifold.py`) groups the layers with the authoring
+metadata. `SynthesizedSubspace` is not durable: it is the per-dispatch result
+of composing an expression's affine terms.
 
-`LayerSubspace` is one layer's fitted frame. `Manifold` groups those layers with
-the shared authoring metadata. `SynthesizedSubspace` is not durable: it is the
-per-dispatch affine result of composing the active expression.
-
-`Profile` remains the in-memory `dict[layer, direction]` view used by vector-like
-APIs, comparison, projection, J-lens/SAE directions, and GGUF export. Extracted
-concepts are not stored in a second profile tree; a fitted two-node manifold is
-folded to a `Profile` when a vector-shaped consumer needs it.
+`Profile` (`geometry/profile.py`) is the in-memory `{layer: direction}` view
+that vector-shaped consumers need: comparison, projection operands, J-lens and
+SAE atoms, GGUF export. Extracted concepts are not stored twice. A fitted
+2-node manifold is folded to a `Profile` on demand
+(`geometry/fold.py::folded_directions`), and the folder stays the only stored
+artifact.
 
 ### 3.2 Fit modes
 
-The folder manifest selects one of five modes:
+`manifold.json::fit_mode` is one of five:
 
-- `authored`: node coordinates and a domain are supplied; the fit builds a
-  curved surface.
-- `pca`: coordinates are discovered from node corpora and the result is flat.
-- `spectral`: coordinates are discovered from neighborhood geometry and the
-  result is curved.
-- `auto`: topology selection chooses a flat, curved, or periodic result from
-  the fitted evidence.
-- `baked`: the folder contains a precomputed, corpus-less direction rather than
-  material that can be refitted.
+| Mode | Coordinates | Result |
+|---|---|---|
+| `authored` | supplied with a domain | curved, exact at nodes |
+| `pca` | discovered from the corpora | flat |
+| `spectral` | discovered from neighborhood geometry | curved, GCV-smoothed |
+| `auto` | `select_topology` picks per model | flat, curved, or periodic |
+| `baked` | none (a precomputed direction from `bake`) | flat, not refittable |
 
-The two-node extraction path is discover-`pca` with rank capped at one. There is
-no separate vector extraction method or `pca` selector variant.
+Extraction is discover-`pca` capped at rank 1. There is no separate vector
+method and no `pca` selector variant. Because `auto` resolves per model, the
+same folder can be flat on one model and curved on another; the resolved
+geometry and the ranked candidates are recorded in the fitted sidecar.
 
 ### 3.3 Templates
 
-A template is a slot token, candidate values, and one or more multi-turn
-contexts. It has two consumers:
+Some categories are referenced rather than embodied: days of the week, months,
+directions. "Someone who is Tuesday" is nonsense, so persona-framed elicitation
+does not apply. A template (`store/templates.py`) is a slot token, candidate
+values, and one or more multi-turn contexts whose final assistant turn carries
+the slot exactly once (never in the shared history). It has two consumers:
 
-- `score_choices`/`score_template` evaluate the restricted-choice probability
-  distribution;
-- `manifold from-template` materializes one node corpus per candidate and keeps
-  a `template_ref`, so later context/value edits invalidate the fit identity.
-
-The slot appears exactly once in the final assistant continuation and never in
-the shared history. Templates live independently of manifolds because scoring
-does not require a manifold fit.
+- `ChoiceScorer` (`generation/scoring.py`, via `session.score_choices` /
+  `score_template`) reads the restricted-choice distribution over the values
+  from the raw model distribution, optionally under steering. This answers the
+  project's core question directly: did steering shift the distribution, not
+  just the argmax?
+- `manifold from-template` materializes one node corpus per value and keeps a
+  `template_ref`, whose content hash folds into the fit identity so a context
+  or value edit refits.
 
 ### 3.4 Per-model read sources
 
-The Jacobian lens and SAE are model-scoped sources, not concept manifolds.
+The Jacobian lens and SAEs are model-scoped sources, not concept manifolds.
+Both use `base/source_registry.py::SourceFamily`: an `active.json` selection,
+Drowse-owned `local/<name>/` artifacts, and commit-pinned provider bindings
+whose payloads stay in the Hugging Face cache.
 
-- A J-lens contains one fp32 transport matrix `J_l` per fitted source layer.
-  Drowse-owned fits use immutable shards behind a manifest, one named local
-  lens per estimator (`local/default` for the standard Jacobian fit,
-  `local/relp` for the R-lens — the same estimator run through the
-  LRP-modified backward graph in `lens/relp.py`, forward passes
-  bit-identical); external payloads (Neuronpedia, workspace-lenses J/R
-  pairs) remain in the Hugging Face cache behind pinned local bindings.
-- A Drowse-trained SAE stores local encoder/decoder weights. A SAELens source
-  remains provider-owned; Drowse stores only its selected release/layer binding
-  and optional feature metadata.
+- A lens is one fp32 `J_l = E[∂h_final/∂h_l]` per fitted source layer, keyed
+  by `LensKey` (kind J standard or R RelP; stored as format v7, `local:j` and
+  `local:r`). Providers: `neuronpedia`, `workspace-r`, `workspace-j`.
+- An SAE is a local ReLU dictionary trained here or a SAELens release (the
+  `[sae]` extra), held resident at one hook layer per session.
 
-Both source families have an `active.json` selector. A source switch is visible
-to the next generation, never halfway through a bound instrument run.
+A source switch becomes visible at the next generation's bind, never halfway
+through a bound run. Details: `drowse/lens/AGENTS.md`, `drowse/sae/AGENTS.md`.
 
-### 3.5 Loom and result objects
+### 3.5 Loom and results
 
-`LoomTree` is the session's authoritative conversation graph. A `LoomNode`
-records authorship/provenance, role, recipe, raw token IDs, token measurements,
-aggregate readings, finish metadata, notes, stars, and child relationships.
-Generatedness comes from a stamped `Recipe`, not from the node's `user` or
-`assistant` role.
+`LoomTree` (`loom/tree.py`) is the session's authoritative conversation graph.
+A node records role and cast label, recipe, raw token ids, token rows with
+their measurement envelopes, aggregate readings, committed thinking, notes and
+stars. **Provenance is recipe presence**: a node with a `Recipe` was generated
+(in either seat, since the model can speak the user seat), and `recipe=None`
+means authored. Rendering, transcripts, authored capture and joint logprobs all
+key on this; never infer provenance from `role`.
 
-Library generation returns a list-like `RunSet` of `GenerationResult` objects.
-Streaming yields `TokenEvent` objects and exposes the final result when the
-stream closes. The loom and the result types share data but are not aliases:
-stateless calls produce results without mutating the tree.
+Generation returns a list-like `RunSet` of `GenerationResult`; streaming yields
+`TokenEvent`s and exposes the result at close. The loom and the results share
+data but are not aliases: `stateless=True` calls, and every OpenAI and Ollama
+request, produce results without touching the tree.
 
-## 4. Local state and artifact identity
+## 4. State and artifact identity
 
-All Drowse-owned state resolves through `base.paths.drowse_home()` and honors
-`$DROWSE_HOME`.
+All state resolves through `base.paths.drowse_home()` (`$DROWSE_HOME`, default
+`~/.drowse`). The tree is documented in `drowse/store/AGENTS.md`; lens and SAE
+subtrees in their packages. Conversations are never autosaved.
 
-```text
-~/.drowse/
-  config.yaml                              optional default CLI/server config
-  baseline_prompts.json                    optional override for bundled prompts
-  neutral_statements.json                  optional override for bundled neutral responses
-  templates/<namespace>/<name>/
-    template.json
-  manifolds/<namespace>/<name>/
-    manifold.json
-    nodes/NN_<label>.json
-    <encoded-model>.safetensors
-    <encoded-model>.json
-    <encoded-model>_sae-<release>.{safetensors,json}
-    <encoded-model>_from-<source>.{safetensors,json}
-  models/<encoded-model>/
-    neutral_activations.{safetensors,json}
-    alignments/<encoded-source>.{safetensors,json}
-    jlens/
-      active.json
-      bindings/<provider>.json
-      local/<name>/                        default (standard) / relp (R-lens)
-        manifest.json
-        checkpoint.json                    only while a resumable fit exists
-        jlens*.gen-*.safetensors
-    sae/
-      active.json
-      bindings/<release>.json
-      bindings/<release>-features.json
-      local/<name>/
-        manifest.json
-        *.safetensors
-```
+Every model-bound artifact keys on one of two identities from
+`model/fingerprint.py`:
 
-Conversation exports are browser-downloaded JSON files or explicit
-`LoomTree.save()` targets; Drowse does not invent a conversation directory or
-autosave a session under `$DROWSE_HOME`.
+- `model_source_fingerprint`: metadata only, computable before load. The
+  weight-free preflights (`fit/preflight.py`, `lens/lifecycle.py`) use it to
+  prove a repeat is a no-op without loading weights.
+- `loaded_model_fingerprint`: the live weights. Fitted tensors bind it.
 
-Identity is stricter than a friendly model name. Fitted sidecars carry the
-loaded-model/source fingerprint, selected layers, artifact hashes, and the
-inputs that make reuse safe. Provider bindings pin revisions. Manifest-declared
-files and fitted payloads are SHA-256 verified before adoption.
+A fitted manifold sidecar carries the loaded fingerprint, a `nodes_sha256`
+over everything authored (labels, corpora, roles, kinds, coords or
+hyperparameters, the resolved template), a `capture_sha256` over the exact
+rendered token ids and pool positions, the selected layers and
+`MANIFOLD_FIT_POLICY_VERSION`. A cached fit is reused only when all of them
+match; the registry recomputes `capture_sha256` on load, so rendering must stay
+deterministic. Provider bindings pin commits. Declared files and fitted
+payloads are sha256-verified before adoption.
 
-Writers use stable artifact locks, temporary files, fsync, and atomic pointer or
-manifest replacement. Long fits publish immutable generations and leave the
-previous complete generation authoritative until the new pointer is durable.
-Readers do not treat an incomplete or mismatched artifact as a partial success.
+Writers use stable artifact locks outside removable folders, temporary files,
+fsync, and atomic pointer or manifest swaps. A fit publishes by
+compare-and-swap against an authoring snapshot (`fit/publish.py`), so a paused
+fit can never overwrite a folder that was cleared or replaced meanwhile. Long
+fits (the J-lens) publish immutable shard generations and leave the previous
+complete generation authoritative until the new pointer is durable. Readers
+never treat an incomplete or mismatched artifact as a partial success.
 
 ## 5. Extraction and fitting
 
-### 5.1 Authoring the corpora
+There is one pipeline, `fit/pipeline.py::ManifoldExtractionPipeline`. A
+steering vector is the 2-node flat case, so `session.extract` and `manifold
+fit` run the same stages: inputs (snapshot, identity, cache check), capture,
+geometry (pure tensors), publish. Details: `drowse/fit/AGENTS.md`.
 
-`session.extract`, `manifold generate`, and their HTTP/CLI wrappers author node
-corpora from a shared prompt set. The model answers those prompts in character;
-the response list is aligned to the prompt list by index. A role-augmented fit
-substitutes the assistant label during elicitation and records the role so the
-same baseline can be selected at steering time.
+### 5.1 Conversational corpora
 
-`extract_from_corpora` skips generation and starts with caller-supplied nodes.
-`from-template` deterministically expands values across template contexts.
+`fit/corpus.py::CorpusGenerator` has the model answer a shared set of baseline
+prompts (`drowse/data/baseline_prompts.json`, 48 prompts) in character. The
+concept rides a system prompt chosen by `kind` (abstract "someone {c}",
+concrete "{art} {c}", or a custom template) and a swapped assistant-role label.
+The corpus is a response list aligned `response[i] ↔ prompt[i % k]`.
 
-Bundled neutral responses—or an explicit user/model-generated override—use the
-same baseline prompts without a concept persona. They become the per-model
-reference distribution for centering and whitening.
+Capture pools the swapped-back `[user: prompt, assistant: response]` pairs in
+standard-assistant space: the persona is generation-only and its signal rides
+the text. Only an explicit role (`--role`, the `:role-<name>` variant) is also
+substituted at capture, and the same substitution is applied at steering time,
+so the extract baseline equals the steer baseline.
 
-### 5.2 Capturing node statistics
+The neutral corpus (`drowse/data/neutral_statements.json`) answers the same
+prompts with no persona. One length directive leads the system prompt at all
+four sites (node and neutral generation, node and neutral capture). As
+common-mode it cancels in `node − neutral`, it matches capture framing to
+generation framing, and it keeps answers short. The shared prompts hold topic
+common-mode across nodes, so centroids stay comparable without a per-manifold
+scenario set.
 
-`fit/capture.py` and the fit helpers in `geometry/manifold.py` capture selected
-residual-stream layers in right-padded batches. For each row, pooling uses the
-last non-special content token; chat-template trailers and added special tokens
-are walked back before pooling.
+### 5.2 Capture and the baseline-match contract
 
-The fitting path batches across node boundaries, adapts after OOM, and retains
-centroids rather than full token stacks whenever possible. Curved fits that need
-within-node covariance spool activation rows in bounded, layer-major storage
-instead of keeping the full corpus on the accelerator.
+Rows are rendered and tokenized once and pooled at
+`model/tokens.py::last_content_index`: the last non-special token before the
+chat-template trailer. The monitor, the read plane, the naturalness eval and
+the drowse.ai capture pool at the same position. Capture batches across node
+boundaries in right-padded batches that halve on OOM, aborts after the last
+requested block (the final norm and LM head never run), and reduces to
+centroids on device unless a curved fit needs rows, which spool to a
+layer-major store. A content-addressed capture cache
+(`models/<safe>/manifold_capture/`) lets geometry-only refits skip the
+forwards.
 
-Capture may stop after the highest requested transformer block. Cache identity
-includes prompt/corpus content, tokenizer render identity, model fingerprint,
-and layer coverage, so a scoped top-up can reuse proven layers without claiming
-coverage it never captured.
+Fit capture renders through `apply_chat_template` (or
+`model/role_templates.py::apply_with_role`), while generation renders through
+the scene stitcher (`model/scene.py`). The stitcher's byte-exact round-trip
+validation against the template is what keeps the two renders identical; a
+family that fails it falls back to the template path.
 
 ### 5.3 Neutral anchoring and the Mahalanobis metric
 
-Neutral activations are stored in fp32. This is a range invariant: late-layer
-residual channels can overflow fp16 and would poison covariance-derived reads.
+Neutral activations are cached fp32 per model (`store/neutral.py`). This is a
+range invariant: late-layer residual channels overflow fp16 and would poison
+every covariance-derived read.
 
-For layer `L`, the whitener keeps centered neutral rows `X_L` and a Woodbury
-representation of the regularized inverse covariance. It can apply
-`Sigma_L^-1`, compute Mahalanobis norms/cosines, form reduced-space Gram
-matrices, and construct the LEACE projection without materializing a dense
-hidden-size-square covariance.
+`geometry/whitener.py::LayerWhitener` keeps the centered neutral rows and a
+Woodbury form of the regularized inverse covariance. It applies `Σ⁻¹`, computes
+Mahalanobis norms and cosines, forms reduced-space Grams and the LEACE
+projection, all without a dense hidden-size-squared matrix.
 
-Activation-space fitting, monitoring, projection, comparison, transfer
-rebaking, and share calibration require complete finite whitener coverage for
-their selected layers. There is no silent Euclidean fallback on those surfaces.
+Every activation-space surface requires complete finite whitener coverage of
+its layers (the root `AGENTS.md` "Mahalanobis only" rule), because a few
+massive-activation ("rogue") channels dominate the Euclidean metric on real
+LMs.
 
-Every fitted frame is neutral-anchored:
-
-- the stored affine mean is the projection of the neutral mean into the fitted
-  span;
-- real node coordinates are measured relative to that anchor;
-- zero in the flat frame therefore means neutral behavior.
-
-The basis itself is derived from the node-centroid scatter around the nodes'
-own mean, not around neutral. For two nodes this preserves the difference-of-
-means axis; the whitened form is the Fisher/LDA direction.
+Every fitted frame is neutral-anchored: the stored mean is the projection of
+the neutral mean into the span, node coordinates are measured from it, and
+coordinate 0 means neutral. The basis comes from the node-centroid scatter
+around the nodes' own mean, never around neutral: anchor-centering would inject
+the neutral offset as a spurious axis and break PCA@2 ≡ difference-of-means.
+With a whitener the basis maximizes `vᵀS_b v / vᵀΣv` (the Fisher/LDA
+objective), which divides each direction by its background variance so the
+rogue channels cancel the way they cancel in a difference of means.
 
 ### 5.4 Discovering and fitting geometry
 
-For discover modes, each layer contributes a whitened node Gram matrix. Their
-mean is a layer-agnostic consensus geometry in common background-variance
-units.
+For discover modes each layer contributes its whitened, node-mean-centered Gram
+matrix, and coordinates come from their mean, the consensus Gram. Whitening
+puts every layer in common units, so the average is signal-weighted and needs
+no reference layer: a layer where the nodes do not separate drops out on its
+own. PCA coordinates are its leading eigenvectors (up to `var_threshold`,
+capped at `max_dim`); spectral coordinates come from Laplacian eigenmaps on a
+k-NN graph; `auto` chooses flat versus curved by GCV and detects periodic axes
+by Vietoris–Rips H1 persistence (`geometry/topology.py`).
 
-- PCA coordinates come from its eigendecomposition.
-- Spectral coordinates come from pairwise distances, a symmetric k-nearest
-  neighbor graph, and the normalized graph Laplacian.
-- Auto mode compares candidate geometry/topology evidence and can recognize a
-  periodic axis.
+Flat fits store the frame and real per-layer node coordinates; their display
+layout is translated onto neutral so `% 0,…,0` reads as neutral. Curved fits
+add the RBF surface, smoothed by a GCV-selected λ against centroid noise
+(authored fits stay exact so a node is an exact steering target), and raw
+curved fits learn the σ tube from the retained rows.
 
-Flat fits use an orthonormal basis and real per-layer node coordinates. Curved
-fits add an RBF interpolation through node centroids. Raw curved fits can also
-fit a log-thickness field from the activation rows; runtime membership and soft
-`onto` semantics consume that field.
+Each fit bakes a per-layer Mahalanobis `share`, the cross-layer budget the
+hooks normalize at apply time. Discriminative layer selection (Selective
+Steering, Dang & Ngo 2026) keeps a flat axis at a layer only when the node
+projections relative to neutral straddle zero: same-side layers encode
+intensity, not polarity. `--no-dls` opts out. Curved fits have no polarity and
+skip DLS.
 
-The fit publishes two kinds of calibration:
-
-- per-layer Mahalanobis share, used to distribute the steering/read budget;
-- diagnostics such as full between-node spread and topology/fit evidence,
-  surfaced for inspection but not used as hidden runtime switches.
-
-Discriminative layer selection applies to flat axes. It keeps an axis where
-node projections straddle the neutral baseline; `--no-dls` keeps the unpruned
-flat fit. Curved fits do not invent a polarity and therefore do not apply DLS.
+A monopolar concept (`extract(concept)` with no baseline) is a genuine 1-node
+fold of `concept − ν` into a neutral-anchored ray: neutral is the implicit
+negative pole, and the difference already cancels common-mode like DiM does.
 
 ## 6. Steering language and lowering
 
 ### 6.1 One grammar
 
-Every live steering surface parses through `steering/grammar.py` and can
-round-trip with `format_expr`.
-
-```text
-expr        := term (("+" | "-") term)*
-term        := [coefficient ["*"]] ["!"] selector ["@" trigger]
-selector    := atom (("~" | "|") atom | "%" position)?
-position    := signed_number ("," signed_number)* | label
-trigger     := phase | "when:" probe comparison number
-```
-
-The important operators are:
+Python, YAML `vectors:`, HTTP, CLI and loom recipes all parse through
+`steering/grammar.py::parse_expr`, and `format_expr` round-trips the result.
+Results, recipes and scoring stamp `str(steering)`, so every stored steering is
+replayable. The authoritative grammar, resolution ladder and trigger table are
+in `drowse/steering/AGENTS.md`. In brief:
 
 | Form | Meaning |
 |---|---|
-| `0.3 warm` | Push along a vector-like direction. |
-| `a~b` | Keep the Mahalanobis component of `a` shared with `b`. |
-| `a\|b` | Remove the Mahalanobis component of `a` shared with `b`. |
-| `!a` | Mean-ablate `a`; a coefficient gives partial or signed collapse. |
-| `M%label` | Move toward a named manifold node. |
-| `M%x,y` | Move toward authoring coordinates on a manifold. |
-| `@prompt`, `@response`, ... | Restrict the token phase. |
-| `@when:key>value` | Activate from a live instrument scalar. |
-
-A manifold coefficient may be `along` or `along,onto`. `along` moves within
-the fitted geometry; `onto` reduces off-surface residual inside a curved
-manifold's enclosing span.
-
-Selectors support namespaces and fitted variants. Bare names first resolve
-two-node poles/manifold names, then multi-node labels. Cross-tier or
-cross-namespace collisions raise instead of choosing silently. `jlens` and
-`sae` are reserved namespaces for their runtime atoms.
+| `0.3 warm` | push toward a pole or label |
+| `a~b`, `a\|b` | keep / remove the Mahalanobis component of `a` shared with `b` |
+| `!a` | mean-ablate `a` (`h' = h − α(h·d̂ − μ·d̂)d̂`) |
+| `along[,onto] M%label`, `M%x,y` | move toward a node or coordinates of a manifold |
+| `@response`, `@after`, `@first:N`, … | restrict the token phase or window |
+| `@when:probe>t` | fire only while a read-side scalar holds |
+| `jlens/<word>`, `sae/<id>` | instrument atoms in reserved namespaces |
 
 ### 6.2 Resolution and composition
 
-`SteeringComposer` turns the parsed values into concrete runtime terms:
+`SteeringComposer` turns a parsed `Steering` into a `SteeringPlan`.
+`open_scope` resolves and loads every artifact before the scope is entered, so
+an unknown name fails before any state changes. A bare slug resolves through
+the ladder in `store/selectors.py::resolve_bare_atom` (node label, then 2-node
+name, then plain key); collisions raise `AmbiguousSelectorError` instead of
+choosing silently. The scope's assistant-role label is resolved from the terms
+(explicit `:role-<id>` keys must agree; implied roles from `%` terms resolve to
+the strongest with a warning).
 
-1. Resolve fitted manifolds, registered profiles, J-lens token directions, and
-   SAE decoder rows lazily.
-2. Materialize `~`/`|` projection terms with the model-matched whitener.
-3. Validate every gate key against the channels its instrument family can
-   produce.
-4. Resolve role implications and choose one active render baseline.
-5. Group terms by trigger and synthesize compatible affine terms.
-6. Register curved terms separately, then ask `SteeringManager` to lower the
-   result into layer hooks.
+Composition groups terms by trigger. Vectors are folded into neutral-anchored
+rank-1 frames, `~`/`|` results are folded the same way, ablations contribute
+collapse axes, and affine `%` terms contribute their fitted basis and target.
+All affine terms of one trigger become one `SynthesizedSubspace` per layer
+(`geometry/inject.py::synthesize_subspace`), so terms sharing a layer
+superpose instead of colliding; partial, repeated, negative and non-orthogonal
+ablations get exact per-axis coefficients. Each curved `%` term stays its own
+term. Two curved spans may share a layer only when they are orthogonal
+(`OverlappingManifoldError` otherwise), and the merged affine span is
+orthogonalized against them, the curved term owning the overlap.
 
-Vector-like terms are folded into neutral-anchored rank-1 frames. Flat manifold
-positions contribute their fitted basis and per-layer target. Ablations add
-collapse axes. All affine terms under one trigger become one
-`SynthesizedSubspace` per layer; the synthesis preserves partial, repeated,
-negative, and non-orthogonal ablations.
+One resolution subtlety is easy to miss: once the registry holds a profile
+under a 2-node name (after `session.extract`, or after the name was used as a
+`!`/`~`/`|` operand), a bare `formal.casual` parses as a folded-vector push
+instead of a `%` push toward its positive node. The two weight layers
+differently (folded share versus the pole's neutral-anchored coordinate).
 
-Two curved manifolds may share a layer only when their spans are effectively
-orthogonal. The merged affine span is orthogonalized against curved spans, with
-the curved geometry owning the overlap. This prevents one term from overwriting
-another's in-subspace component.
+### 6.3 The kernel
 
-### 6.3 Injection
+`geometry/inject.py::subspace_inject` is the semantic definition of every
+injection. It splits `h = mean + H_m + H_n + H_o` (surface foot, off-surface
+in-subspace residual, off-subspace residual) and applies two operations:
 
-`geometry/manifold.py::subspace_inject` is the only injection kernel.
+- **along** translates the foot by a fixed `along·(target − origin)` offset.
+  A fixed offset preserves each token's in-subspace spread; lerping each foot
+  onto the absolute target erases it and loop-collapses at strong push. On a
+  curved surface the off-surface residual is transported to the new tangent
+  frame by a norm-preserving rotation that is exactly the identity when the
+  foot does not move.
+- **onto** shrinks the off-surface residual toward the surface: by `(1 − onto)`
+  with no σ-field, or toward the local tube thickness σ(z) with one, so
+  `onto = 1` lands on the surface's typical set rather than its zero-thickness
+  wire. It is vacuous for flat terms.
 
-For a flat subspace, an activation is decomposed into reduced coordinates `q`
-and an off-subspace residual. The hot path updates only `q`:
+`H_o`, the off-subspace residual, is always kept verbatim. It contains every
+composing neighbor's span, which is why a vector and several orthogonal
+manifolds compose with zero cross-talk.
 
-```text
-q_new = q + effective_along * (target - collapse * q)
-h_new = neutral_mean + q_new @ basis + off_subspace_residual
-```
+On a flat subspace the foot is the projected coordinate and the kernel reduces
+to an analytic slide, with no foot solve, RBF or norm cap (a flat fit cannot
+extrapolate off-domain). At runtime affine terms run
+`steering/hooks.py::AffineOp`, a compose-time split of that branch, pinned
+equal to the kernel by `tests/steering/test_hooks_triggers.py`; only curved
+terms call `subspace_inject` per token, with a warm-started foot solve and a
+`3·‖h‖` norm cap against off-domain RBF extrapolation.
 
-Push axes translate every token by the same offset and preserve its existing
-in-subspace variation. Ablation axes collapse toward neutral by the requested
-amount. The off-subspace residual is unchanged.
+### 6.4 Gains and calibration
 
-For a curved manifold, the kernel finds or warm-starts the activation's nearest
-surface foot, translates that foot through the domain, transports the local
-off-manifold residual between tangent frames, and optionally shrinks it toward
-the fitted tube. The off-*subspace* residual is still unchanged.
+The kernel applies no gain; `steering/hooks.py` owns the constants and their
+calibration notes (`drowse/steering/AGENTS.md`). Two design decisions make one
+coefficient scale meaningful across very different fits:
 
-Per-layer shares are normalized at application time. Global operation gains
-live beside the hook implementation; they are not artifact-specific knobs.
-Always-active affine steering has a precomposed constant/low-rank fast path.
-Curved, phase-triggered, and gated terms use the general context-aware path.
+- **Whitened-unit targets.** `synthesize_subspace` makes each affine push
+  target a whitened unit direction and sets the share to the whitened
+  displacement. Raw node distance cannot be the knob: a tight pole sits about
+  0.3 from neutral and a far persona centroid about 17, a ~100× span no single
+  gain calibrates. Every target gets the same whitened budget, linear in α.
+- **Mean-1 share normalization.** The per-layer share is normalized so its
+  layer sum equals the layer count, so a 1-layer or 30-layer fit, 2-node or
+  107-node, lands in the same α band. There is no lever, no N correction, and
+  no clamp on affine `along`: a high-share layer is meant to overshoot, bounded
+  by the whitened-unit target.
 
-### 6.4 Triggers and gates
+The recommended affine α is about 0.5, toward 1.0 for stronger expression.
+Curved `along` and `onto` are fractions in `[0, 1]`; the hooks scale them into
+a per-layer `eff_along`, where `eff_along = 1` lands on the node and larger
+values overshoot it, bounded by the curved norm cap. Periodic fits drop share
+weighting and clamp `eff_along` to 1 so no layer wraps past the target node to
+a different one.
 
-`TriggerContext` is updated before each forward with prefill/decode phase,
-thinking state, raw generation step, and the most recent gate scalars. Hooks
-consult it only when their term is dynamic; the common static-affine path does
-not pay for that branch.
+### 6.5 Triggers and gates
 
-Gate keys are parsed into typed channels:
+`TriggerContext` carries the prefill/decode phase, the thinking state, the raw
+generation step and the latest gate scalars. Hooks consult it only for dynamic
+terms; the static always-active path never reads it.
 
-- coordinate axis: `probe` or `probe[axis]`;
-- subspace fraction: `probe:fraction`;
-- curved-tube membership: `probe:membership`;
-- normalized label distance: `probe@label`;
-- soft label assignment: `probe~label`.
+Phases are easy to misread: `@response` (`@generated`) includes thinking
+tokens, and only bare `@after` is response-only. `@after:N` is a token window,
+not a phase.
 
-Geometry supports all applicable channels. J-lens and SAE probes expose one
-real strength axis only. An impossible key, such as SAE membership, fails during
-composition rather than becoming a permanently false trigger.
+Gate keys name an attached probe plus a channel: an axis (`p`, `p[i]`), a
+subspace fraction (`p:fraction`), tube membership (`p:membership`), a
+normalized label distance (`p@label`) or a soft assignment (`p~label`).
+Geometry produces every channel; lens and SAE probes produce one strength
+channel. At generation preflight `ReadPlane.resolve_gates`
+(`generation/read_plane.py`) rejects a gate on a lens or SAE probe for a
+channel that family cannot produce (`UnsupportedProbeChannelError`); a gate
+naming no attached probe is silently inactive. Gates lag one forward: scalars
+scored after forward `t` steer forward `t + 1`, and the prefill sees none.
+Channel units and semantics: `drowse/readout/AGENTS.md`.
 
 ## 7. The read plane
 
 ### 7.1 Three instrument families
 
-The registry `session.instruments` contains:
+`session.instruments` registers three families behind one contract
+(`readout/protocol.py::Instrument`):
 
-| Family | Persistent owner | Native unit |
-|---|---|---|
-| `geometry` | `GeometryInstrument` over `Monitor` | Domain coordinate, Mahalanobis fraction/distance, or curved membership/assignment. |
-| `lens` | `LensInstrument` | Mean fitted-layer probability for one vocabulary token. |
-| `sae` | `SaeInstrument` | Feature activation normalized by provider max when available, otherwise raw activation. |
+| Family | Facade | Reading | Unit |
+|---|---|---|---|
+| `geometry` | `session.geometry` (`GeometryInstrument` over `Monitor`) | `ProbeReading` | domain coordinate; Mahalanobis fraction and label distance; curved membership and assignment |
+| `lens` | `session.lens` (`LensInstrument`) | `ScalarReading` | mean fitted-layer probability of one vocabulary token |
+| `sae` | `session.sae` (`SaeInstrument`) | `ScalarReading` | feature activation over Neuronpedia's `maxActApprox` when known, else raw activation |
 
-Geometry readings use `ProbeReading`: coordinates, fraction, nearest labels,
-residual, membership/assignment, per-layer coordinates, and depth summaries.
-Lens and SAE readings are `ScalarReading`s — one value with an explicit unit,
-a per-layer trace, and a depth summary that names its mass basis — and the
-measurement envelope carries that native shape. The `ProbeReading` bridge
-exists only at the vendor-extension boundary (`TokenEvent.probe_readings` and
-the OpenAI/Ollama `x-drowse-probe-readings` header), never on the native
-per-token wire.
+Geometry readings carry coordinates, fraction, nearest labels, residual,
+membership/assignment, per-layer traces and depth summaries. Every geometry
+probe is a fitted `Manifold`, flat or curved, read in the whitened metric and
+reported in its domain frame (a rank-1 probe reads `1.0` at its positive node).
+Live token reads, aggregates and replays come from the same scorer, so they are
+directly comparable. Lens and SAE readings
+carry one value with an explicit unit, a per-layer trace and a depth summary.
+The `ProbeReading` projection of a scalar reading exists only at the vendor
+extension boundary (`TokenEvent.probe_readings` and the OpenAI/Ollama
+`x-drowse-probe-readings` body key).
 
-All three families implement one instrument contract
-(`readout/protocol.py`): probe registry access, `set_live`/`live_state`
-returning a per-family frozen `LiveState`, `active_source`, gate validation,
-probe hashing, and `token_readout` returning the finished replay envelope. The
-`session.instruments` registry is the family enumeration the server dispatch,
-the composer's gate preflight, and the token-payload slots all derive from.
-Browser token replay rebuilds the authoritative prefix but requests expensive
-discovery readouts only at the selected token. Page-session keyed replay entries
-deduplicate hover and drilldown requests, keep queued results across token
-navigation, and stream progress without allowing concurrent GPU access.
+The J-lens readout is `softmax(W_U · norm(J_l h))` at each fitted layer. One
+unit, the per-layer probability `p_l`, backs every lens surface: strength is
+`mean_l p_l`, depth center and spread are weighted by `p_l`, and probes, gates,
+the live wire and `lens top` all report it. A `jlens/<word>` steering atom is a
+different object: the activation direction `W_U[v] @ J_l`. An `sae/<id>` atom is
+the decoder row as a one-layer profile; nothing clamps and decodes a feature
+inside the forward.
 
-The J-lens readout computes `softmax(W_U * norm(J_l h_l))` at each fitted layer.
-Its aggregate strength is the mean per-layer probability for a token; depth
-center and spread use the same probability mass. A `jlens/word` steering atom is
-different: it uses the activation direction `W_U[word] @ J_l`.
+### 7.2 The per-generation transaction
 
-The SAE runtime encodes one resident residual-stream layer. Its live discovery
-surface ranks active features; `sae/id` steering uses the corresponding decoder
-row as an ordinary one-layer profile. It does not clamp and decode the feature
-inside the model forward.
+Each family runs `close_run → prepare → plan → bind` per generation and closes
+in a `finally`. `prepare` snapshots probe specs, live intent and source
+identity (the lens may adopt a new disk artifact here); `plan` declares
+demanded layers, tail depth and gate keys; `bind` opens a frozen
+`InstrumentRun`. A run measures a frozen binding, which is why source switches
+and lens/SAE detaches are safe mid-generation.
 
-### 7.2 Per-generation instrument transaction
-
-Every capture-owning transaction follows the same order:
-
-```text
-close previous run -> prepare -> plan -> bind -> observe steps -> close
-```
-
-- `prepare(ReadRequest)` is the source boundary. It snapshots probe specs, live
-  intent, and source identity; the lens may refresh/adopt its disk artifact
-  here.
-- `plan(prep)` declares demanded layers, tail depth, gate keys, and whether
-  per-step or final reads are needed. It does not choose physical retention.
-- `bind(plan, prep)` verifies their preparation token and opens an immutable
-  `InstrumentRun` with frozen specs and source fingerprint.
-- `observe(step_id, hidden)` measures one forward. Bound runs memoize complete
-  observations by step ID so gate, display, and payload consumers share work.
-- `close_run()` releases pins/stashes and restores an idle passthrough run for
-  out-of-generation reads.
-
-`prime_observation` may seed the memo only with a complete family reading.
-Gating subsets and lean coordinate-only rows never prime it, because doing so
-would misrepresent a partial result as the full observation.
-
-The lens and SAE keep step-keyed lower-level stashes for matrices/encodings.
-That cache is distinct from the reading memo: a partial gate row may still make
-the expensive intermediate reusable by a later full display read.
+`generation/read_plane.py::ReadPlane` executes the transaction for one
+generation: it binds the runs, applies the capture plan, arms the step sinks,
+builds the gate callback, and runs the finalize reads. The decode loop computes
+one `step_id = len(generated_ids)` per forward and hands the same value to the
+capture sink, the gate callback and the token tap. Within a forward, gate and
+display reads share work through the geometry sink row or the lens/SAE
+step-keyed stash, so one forward is never scored twice.
 
 ### 7.3 Capture planning
 
-The session unions the three `InstrumentPlan`s and selects one physical
-`HiddenCapture` mode:
+`readout/planner.py` is pure: `resolve_read_demand` folds the generation's
+consumers into one demand, and `plan_capture` picks one physical
+`HiddenCapture` mode: gating subset, lean incremental, incremental,
+aggregate-only, or full. The planner, not an instrument, decides upgrades when
+two families need different retention from the same forward. The mode table,
+with each mode's finalize read, is in `drowse/readout/AGENTS.md`.
 
-- **incremental**: retain the latest slice and score full per-token geometry;
-- **lean incremental**: retain/score axis zero for token consumers and keep a
-  small tail for one full final aggregate;
-- **gating subset**: score only requested gate scalars per step, optionally with
-  a tail for the full final roster;
-- **aggregate tail**: keep a bounded ring and score once at finalization;
-- **full**: retain all requested token rows when hidden states or post-hoc
-  per-token scoring were explicitly requested.
-
-J-lens/SAE live reads and gates share captured layers with geometry. The planner,
-not an instrument, decides upgrades such as "incremental plus a deeper tail"
-when two families need different retention from the same forward.
-
-Capture hooks copy or accumulate tensors only. Host-side scoring runs after the
-model forward, so a maximum-layer hook does not synchronize the accelerator in
-the middle of the network.
+The rule behind the table: scoring is conditional on need. A generation with
+probes attached but no per-token consumer keeps a bounded tail ring and scores
+once at finalize. Capture hooks copy or accumulate tensors only; host-side
+scoring runs after the forward, so a deep capture hook never drains the device
+queue before the remaining layers and the LM head are enqueued.
 
 ### 7.4 One measurement envelope
 
-`readout/measurements.py` builds the versioned record used by native WebSocket
-tokens, final aggregates, persisted loom rows, and replay endpoints:
+`readout/measurements.py` builds the one versioned record (`version: 1`) used
+by native WebSocket token frames, final aggregates, persisted loom rows and
+replay endpoints:
 
 ```text
 {
   version,
   scope: token | aggregate | replay,
   provenance: captured | replayed,
-  scores,
-  per_layer_scores,
+  scores, per_layer_scores,
   instruments: {
     geometry: {binding?, readings},
-    lens: {binding, readings?, readout?},
-    sae: {binding, readings?, readout?}
+    lens:     {binding, readings?, readout?},
+    sae:      {binding, readings?, readout?}
   }
 }
 ```
 
-`readings` are attached probes. `readout` is the family's native discovery
-surface: the J-lens layer-by-vocabulary matrix/aggregate chips or SAE feature
-list. The flat `scores` views are derived joins for cross-family consumers such
-as token tinting; they are not separately computed measurements.
-
-Bindings record source and steering context so a historical row remains
-interpretable after the active J-lens or SAE changes.
+`readings` are attached probes in each family's native shape; `readout` is the
+family's discovery surface (the J-lens layer-by-vocabulary matrix and aggregate
+chips, the SAE's active features). The flat `scores` are derived joins for
+cross-family consumers such as token tinting, not separate measurements.
+Bindings record source and steering context, so a historical row stays
+interpretable after the active lens or SAE changes. The shape is pinned by
+`tests/readout/test_measurements_envelope.py` and the browser golden
+`measurement-envelope-v1.json`.
 
 ### 7.5 Replay and token drilldown
 
-Each generated token stores a `raw_index` into its loom node's unfiltered token
-IDs. Replay endpoints rebuild the prompt and raw decode prefix to the producing
-position, then run one capture forward under the recorded recipe or its
-unsteered counterfactual.
+Each generated token row stores a `raw_index` into its node's raw token ids.
+`loom/replay.py::TokenReplayer` backs every family's `token_readout`: it
+rebuilds the node's render and raw decode prefix to the producing position,
+runs one capture forward under the recorded recipe steering (or the unsteered
+counterfactual), and hands the pooled hidden states to the family. Always-
+active affine steering reproduces exactly; phase and gated terms fire as the
+trigger context's rest state decides, which cannot recreate a gated history.
 
-Geometry replay scores the current attached Monitor roster. J-lens replay
-returns the fitted-layer matrix plus aggregate tokens. SAE replay returns active
-features at its resident layer. Always-active affine steering is exactly
-reproducible; phase/gated steering cannot be reconstructed from a context-free
-single replay forward and is reported with that limitation.
+A token fork (`loom/ops.py::plan_fork`) replays the raw prefix, forces the
+replacement token or text, then samples under the node's recipe. The recorded
+seed re-applies by default and the sampler still draws on every forced step, so
+the RNG stays aligned through the fork; a new seed asks for a different ending.
 
-The WebUI token-detail drawer is a shell over four views:
-
-- geometry probe readings;
-- sampling logits and captured alternatives, including token forking;
-- SAE features;
-- J-lens aggregate and layer-by-vocabulary readout.
-
-Token forks seed the new node with the unchanged prefix and its captured
-token rows before replay starts. Replay rebuilds model context in the background;
-only the replacement and new tail produce visible token events. Throttled
-`generation_progress` events distinguish context preparation from new output.
-Unchanged-prefix discovery readouts are skipped, while steering gates still read
-their required measurements and phase controls advance at every raw token.
-The current backend still performs sequential forced replay; it does not claim
-to restore a KV checkpoint. Continuing after a token requests a fresh seed;
-replacing it keeps the recorded seed for a reproducible counterfactual.
-
-One cursor walks token, thinking/response segment, and turn boundaries across
-the current conversation. The selected tab is sticky. Captured data is used when
-present; replay fills in historical or newly attached instrumentation.
-
-## 8. Generation transaction
+## 8. The generation transaction
 
 ### 8.1 Preamble
 
-`generate`, `generate_stream`, batch, sweep, and server requests all reach the
-same session machinery. A generation first:
+`generate`, `generate_stream`, fan, batch, sweep and every server request reach
+`session/engine.py::GenerationEngine.generate_one`, inside `transaction()`, the
+single-flight guard:
 
-1. acquires the non-reentrant generation boundary;
-2. resolves cast defaults and any loom recipe override;
-3. constructs an immutable per-call sampling configuration;
-4. renders raw input or the active loom path through the model's chat/scene
-   grammar;
-5. parses/resolves the steering expression and installs its scope;
-6. closes, prepares, plans, and binds instrument runs;
-7. selects transient or compile-clean hooks/capture and the KV-cache path;
-8. creates the pending loom node unless the call is stateless.
+1. resolve the call into a frozen `CallSpec`: `loom/recipe.py::compose_call`
+   merges the cast member, the call kwargs, the regen anchor and its modifier
+   (rules in `drowse/loom/AGENTS.md`), and the steering expression is parsed and
+   resolved;
+2. plan the token consumers;
+3. create the loom nodes (unless stateless), then enter the steering scope, so
+   a bad expression leaves the tree untouched;
+4. render through `PromptRenderer` (scene grammar, cast labels, committed
+   thinking);
+5. plan the reads and `ReadPlane.begin`;
+6. decode with a `TokenTap` when something consumes tokens;
+7. pop the steering scope, so finalize reads run unsteered, then finalize.
 
-No sampling or steering call mutates the session defaults as a side effect.
+No sampling or steering argument mutates the session defaults. Same-thread
+re-entry from a token callback is refused by the engine's `GenState` phase,
+not by the lock.
 
 ### 8.2 Decode loop
 
-`generate_steered` runs under `torch.inference_mode()`. Sampling applies logit
-bias, penalties, temperature, top-k, and top-p, then records the chosen token's
-log probability and optional top alternatives.
+`generation/decode.py::generate_steered` runs under `torch.inference_mode()`:
+stop check, `step_id`, trigger context, forward, capture step, gate scoring,
+sample, thinking/stop bookkeeping, token callback. The sampler applies
+penalties, logit bias, temperature, a top-k cap (1024 by default) and top-p
+over a fixed-width `torch.topk` pool. Per-token logprobs, alternatives and
+perplexity describe that sampler distribution; completion scoring reads the
+raw distribution. Each decoded token costs exactly one device-to-host transfer:
+the token id, entropy, chosen logprob and top-K ride one packed copy.
 
-The loop assigns `step_id = len(generated_ids)` immediately before each real
-forward. That exact ID is passed to:
+The thinking state machine keeps thinking and response tokens distinct across
+delimiter- and channel-based templates, and unfinished thinking never leaks
+into the response text.
 
-- the hidden-capture step sink;
-- the gate-score callback;
-- the token callback/payload builder.
+### 8.3 Routing
 
-This is the join that lets three consumers ask a bound instrument run about one
-forward without double-scoring or reading the previous step's stash.
+- **Prefix cache.** One opt-in slot (`generation/prefix_cache.py`), prefilled
+  unsteered with capture suspended. A generation reuses it only when no active
+  term fires in prefill (`SteeringComposer.steering_active_in_prefill`) and it
+  needs no hidden states or thinking. A mismatch misses; it never mis-hits.
+- **StaticCache** when the runtime has it, graph capture is thread-safe, and
+  steering is absent or entirely the static single-affine fast path; the
+  compiled-module rule below can still drop it.
+- **The compiled module** only when the live hook topology matches the traced
+  one: no transient capture hooks and steering absent, or lowered to the
+  persistent offset buffers (a static pure-push plan). Anything else runs the
+  eager module on a DynamicCache instead of retracing per topology.
 
-The thinking-state machine handles delimiter- and channel-based templates,
-keeps thinking and response tokens distinct, and prevents unfinished thinking
-from leaking into finalized response text. Stop sequences keep only a bounded
-text tail for matching.
+### 8.4 Finalize
 
-### 8.3 Token payload and finalization
+Finalize decodes the response slice, pools the last content position (the same
+`last_content_index` the fit used), produces the full aggregate readings from
+the retained slice with a cold curved foot solve, returns optional hidden
+states, builds the `GenerationResult` and its aggregate envelope, emits events,
+and stamps raw token ids and aggregates onto the loom node. Teardown is
+exception-hard: runs close, capture and transient hooks detach, the scope pops,
+and the lock releases even if the model, a stream consumer or finalize raises.
 
-After a forward, capture ingestion and gate scoring happen before the emitted
-token payload is assembled. The payload merges attached readings and native
-readouts into one measurement envelope, stamps `raw_index`, and appends the
-token to the pending loom node.
+### 8.5 Multi-row runs
 
-Finalization:
+`generate(n > 1)` fans out siblings with derived seeds, and `generate_sweep`
+runs the Cartesian product of `{concept: [alphas]}`; both are always serial.
+`generate_batch` takes one batched Hugging Face `generate` when the call passes
+one eligibility predicate (stateless, always-active triggers, no per-token
+observation, no seeded sampling, penalties or stop strings); otherwise rows run
+serially, sharing a prefilled common prefix when steering leaves the prefill
+alone. Details: `drowse/session/AGENTS.md`.
 
-- decodes the response slice;
-- pools the last non-special content position;
-- produces full aggregate readings from the correct retained slice;
-- trims/returns optional hidden states;
-- builds `GenerationResult` and emits events;
-- stamps raw token IDs and aggregate metadata onto the loom node.
+## 9. Server
 
-Cleanup is exception-hard: instrument runs close, capture and transient hooks
-detach, steering scope pops, cache state is restored, and the generation lock is
-released even if model execution, streaming delivery, or finalization raises.
-
-### 8.4 Batch, fan, and sweep paths
-
-The optimized batch path is used only when its semantic preconditions hold
-(stateless, compatible deterministic sampling, always-on steering, and no
-per-token callback requirements). It still binds the instrument protocol and
-returns the same result shapes.
-
-Fan and sweep operations derive deterministic sibling seed schedules and keep
-grid metadata in `RunSet`. When the fast batch path is unsafe they fall back to
-ordinary generation rather than weakening loom, trigger, or measurement
-semantics.
-
-## 9. Server architecture
-
-`server/app.py::create_app` owns one `DrowseSession` and registers protocol
-routes before the SPA catch-all.
+`server/app.py::create_app` serves one session:
 
 | Surface | Purpose |
 |---|---|
-| `/v1/models`, `/v1/chat/completions`, `/v1/completions` | OpenAI-compatible discovery and generation. |
-| `/api/*` | Ollama-compatible model metadata, chat, and generation. Unsupported model-management operations return explicit errors. |
-| `/drowse/v1/*` | Sessions, tree/recipes, profiles/probes, manifolds, templates, instruments, SSE, and the native generation WebSocket. |
-| `/` and static assets | The bundled WebUI when `web=True` / CLI `serve` without `--no-web`. |
+| `/v1/*` | OpenAI-compatible models, chat completions and completions; `steering` rides the request body |
+| `/api/*` | Ollama-compatible metadata, chat and generate; `steer` rides `options` |
+| `/drowse/v1/*` | sessions, tree, profiles, probes, manifolds, templates, instruments, SSE operations, polled preparations, one WebSocket per session |
+| `/` | the committed dashboard bundle, mounted last (`web=True`) |
 
-Pydantic models validate request bodies. `DrowseError.user_message()` provides a
-single error boundary adapted to OpenAI and Ollama response shapes.
+Handlers validate (`NativeRequest`, `extra="forbid"`), lock, call public
+session APIs, and serialize. OpenAI and Ollama generations are always
+stateless; only the native WebSocket grows the loom. One FIFO asyncio lock
+serializes protocol callers before they reach the synchronous engine (300 s,
+then 503); lens fits and SAE training hold the exclusive-GPU section outside
+that lock, so a generation arriving mid-fit gets an immediate 409 instead of
+queueing behind a long job.
 
-The server adds an async session lock around generation-facing routes so
-OpenAI, Ollama, and native callers do not drive the same model concurrently.
-The synchronous engine also owns its generation lock and rejects re-entry.
-Background fit/train preparations are explicit, cancellable jobs rather than
-hidden work inside a read route.
+`server/errors.py::describe_error` is the one error classifier for every HTTP,
+SSE, polled and WebSocket surface. Typed `DrowseError`s keep their status and
+text, a bare `ValueError` is a logged and scrubbed 500, and the wire `code` is
+the exception class name.
 
-Bearer authentication is optional. If configured, it applies to HTTP routes;
-the bundled browser passes the same credential in the WebSocket query because
-the browser WebSocket API cannot set an Authorization header. TLS, quotas, rate
-limits, multi-user isolation, and sandboxing are deployment responsibilities,
-not server features.
+Authentication is middleware on the private prefixes only, before body
+parsing. With a key, every request needs `Authorization: Bearer`; without one,
+the peer and `Host` must be loopback (a DNS-rebinding defense). Browsers
+cannot set WebSocket headers, so the dashboard sends the key as a
+`drowse.auth.<base64url>` subprotocol; a `?token=` query is scrubbed and never
+accepted. TLS, quotas, rate limits and multi-tenant isolation are deployment
+concerns. Details: `drowse/server/AGENTS.md`.
 
-## 10. WebUI architecture
+## 10. Dashboard and the browser edition
 
-The Svelte application has three permanent work areas:
+The Svelte 5 dashboard lives in `webui/` and builds into the committed
+`drowse/web/dist/`, which is exactly what wheel users run; source and bundle
+change together and CI fails on drift. Its work areas are the loom thread view,
+chat (dynamic author/model seats, raw mode, token highlights, the token-detail
+drawer) and the instruments (sampling plus subspace, manifold, SAE and lens
+tabs). REST response types are generated from the server's TypedDicts
+(`scripts/generate_webui_types.py` → `webui/src/lib/types.gen.ts`); request
+bodies and WS/SSE frames are hand-written in `webui/src/lib/types.ts`.
 
-- **Threads**: the loom tree, navigation, branches, filters, rerolls, and node
-  actions;
-- **Chat**: rendered turns, dynamic authored/generated role plan, raw mode,
-  token highlights, and token-detail entry;
-- **Instruments**: sampling plus four tabs — subspace, manifold, SAE, and lens.
+[drowse.ai](https://github.com/stdlogits/drowse.ai) builds the same `webui/src`
+with a WebGPU runtime in place of `HttpRuntimeClient`. Shared code reaches the
+runtime only through the `RuntimeClient` contract
+(`webui/src/lib/runtime/contracts.ts`) and the five `@runtime-*` aliases;
+hosted-only code (the WebGPU runtime, workers, catalog, its own TypeScript
+steering parser and archive mirror) lives in drowse.ai.
 
-The subspace/manifold tabs are two presentations over the geometry family. SAE
-and J-lens each add source selection, steering atoms, pinned probes, and a live
-discovery readout. The command palette launches dense authoring, comparison,
-template, cast, health, authentication, and help tools in drawers; conversation
-save/load has its own explicit file drawers.
+Python is the reference implementation the browser replays. The parity
+references are:
 
-`webui/src/lib/stores.svelte.ts` owns state that genuinely crosses stream, loom,
-chat, and instruments; focused UI state lives in `lib/stores/`. The canonical
-server `measurements` envelope is consumed directly rather than reintroducing
-per-family top-level token aliases.
+| Semantics | Python reference | Golden |
+|---|---|---|
+| expression grammar | `steering/grammar.py` | `tests/fixtures/browser_steering_expression.json` |
+| sampler | `generation/decode.py` | `sampling-parity-v1.json` |
+| affine lowering and the kernel | `steering/hooks.py`, `geometry/inject.py` | `affine-*-lowering-v1.json`, `post-block-rank-one-v2.json` |
+| curved kernel, SAE and J-lens directions, gates | `geometry/inject.py`, `sae/backend.py`, `lens/jlens.py`, `steering/triggers.py` | `structured-program-parity-v1.json` |
+| Fisher fit, DLS, topology and RBF | `geometry/subspace.py`, `fit/capture.py::compute_dls_axes`, `geometry/topology.py`, `geometry/rbf.py` | `affine-fisher-fit-v1.json`, `dls-axes-v1.json`, `topology-rbf-parity-v1.json`, `topology-adversarial-v1.csv` |
+| measurement envelope | `readout/measurements.py` | `measurement-envelope-v1.json` |
+| loom ops and events | `loom/tree.py`, `loom/ops.py` | `loom-operation-transcript-v1.json` |
+| generation-settings composition | `loom/recipe.py::compose_call` | (ported, no golden) |
+| tree filter | `loom/filter.py` | (ported, no golden) |
+| `.drowse` archive and install | `store/archive.py`, `store/install.py` | `tests/browser_drowse_archive_bridge.py` |
 
-The app is built by Vite into `drowse/web/dist/`. That directory is committed
-package data and is the bundle shipped in the wheel. Source and bundle must
-change together. `drowse/web/routes.py` mounts APIs first, static assets second,
-and an allowlisted SPA fallback last; retired top-level product routes return
-404 rather than being accidentally revived by the fallback.
-
-### 10.1 Hosted browser build
-
-drowse.ai builds this dashboard with a WebGPU runtime in place of
-`HttpRuntimeClient`; its shell, browser runtime, worker protocol, artifact
-catalog, and release locks live in
-[stdlogits/drowse.ai](https://github.com/stdlogits/drowse.ai), which pins this
-repository as a submodule. The contract it relies on is the `RuntimeClient`
-interface in `webui/src/lib/runtime/` plus the `@runtime-*` aliases in
-`webui/vite.config.ts`; shared code must not reach past either. The parity
-fixtures in `tests/fixtures/browser/` are this implementation's reference
-outputs, which the browser runtime replays.
+The browser also mirrors `RESERVED_NAMESPACES`, `METHOD_FIT_MODES`, the
+manifold sidecar format and lens format v7, and its hosted J-lens fit calls
+`lens.fit.fit_jacobian_lens` and `lens.store.save_lens_at`. Goldens are
+byte-frozen and recomputed by `tests/browser/test_browser_parity.py`; a
+semantic change regenerates the golden in the same change, and drowse.ai must
+match before its submodule pin moves past it.
 
 ## 11. J-lens and SAE lifecycle
 
-### 11.1 J-lens fit
+`lens/fit.py::fit_jacobian_lens` is the only backward-pass code in drowse. It
+estimates `J_l` over a pretraining-like corpus (FineWeb-Edu by default, or any
+pinned Hub dataset or file): prompts share a forward graph, batched
+vector-Jacobian products recover row blocks, and rows stream into a CPU fp32
+accumulator under a byte budget. The R-lens runs the same estimator through
+RelP backward rules (`lens/relp.py`); forward passes are bit-identical, so a
+J/R pair shares one forward distribution and only the gradients differ. The
+measured benefit is more faithful early-layer reads. The fit is resumable and
+checkpointed, adapts to OOM, and on MPS drains the queue and guards against
+zero rows. `lens/lifecycle.py::plan_lens_fit` chooses noop, top-up, resume or
+fresh from metadata alone, and a no-op is proved without loading the model.
+Corpus resolution and streaming run in an isolated, cancellable worker process.
 
-`fit_jacobian_lens` is the only backward-pass path in Drowse. It estimates the
-mean residual-to-final transport `J_l` over a pretraining-like corpus. Prompt
-microbatches share a forward graph; batched vector-Jacobian products recover
-output row blocks where supported, with an exact fallback where they are not.
+`sae train` fits a local residual-post ReLU SAE; `sae fetch` binds a SAELens
+release at a pinned commit. Both adapt to one resident runtime
+(`sae/runtime.py::SaeRuntime`). The last selected SAE restores at session
+construction. Live discovery, pinned probes and gates share one encode per
+step.
 
-The fit is resumable. Checkpoint identity includes corpus token IDs, source
-layers, model/source fingerprint, and estimator settings. Row stripes transfer
-to the CPU fp32 accumulator under a byte budget, and complete immutable layer
-shards are promoted through an atomic manifest.
-
-`lens top` and live/token replay share the same calibration and aggregation.
-`lens decompose` performs sparse nonnegative pursuit against `W_U J_l` without
-materializing the full token-direction dictionary.
-
-### 11.2 SAE sources
-
-`sae train` fits a local residual-post ReLU SAE. `sae fetch` binds an external
-SAELens source. Both adapt to the same resident runtime interface, but provider
-weights remain in provider caches.
-
-The server/WebUI may restore an explicitly selected source. Dashboard policy
-can select a compatible official source, while `--no-web` keeps acquisition
-explicit. Live discovery, pinned probes, and gates share one encode per step.
+`drowse serve` adopts a compatible prepared lens source in a fixed preference
+order and turns the live lens on; the live SAE is discovered only when the
+dashboard is mounted (`drowse/cli/AGENTS.md`).
 
 ## 12. Distribution and transfer
 
-`pack` owns manifold lifecycle: list/show, install/search/push, remove, clear,
-refresh, and GGUF or `.drowse` export. A pack is a current-format manifold
-folder in a Hugging Face model repository; install stages and validates before
-replacing the destination.
+`pack` owns manifold lifecycle: list, show, install, search, push, remove,
+clear, refresh and export. A Hub pack is a `drowse-manifold`-tagged model repo
+holding exactly one root `.drowse`, a summary `manifold.json`, and a card
+whose `drowse:` block carries the search fields; drowse.ai shares the
+convention. `.drowse` v1 (`store/archive.py`) is a narrow ZIP transport for
+one manifold closure and its one referenced template. It never carries model
+weights, lenses, SAEs or caches. Every entry's path, size, hash and tensor
+header is validated before a staged install; checksums prove integrity, not
+publisher identity.
 
-`.drowse` v1 is a narrow ZIP transport envelope, not the runtime `Pack`
-abstraction. It carries exactly one unchanged manifold folder closure and its
-one referenced template when present. It excludes model weights, J-lenses,
-SAEs, caches, and active selections. Entry paths, sizes, hashes, ZIP structure,
-and safetensor headers are validated before a staged install. Those checks prove
-integrity, not publisher identity; third-party archives remain unverified
-sources.
+Cross-model transfer (`geometry/procrustes.py`, `geometry/transfer.py`) fits a
+per-layer affine alignment from shared neutral activations, maps means as
+points and bases as directions, re-bakes the share in the target model's
+Mahalanobis metric, and writes the `from-<source>` variant. Curved transfer
+rejects maps that would make a scalar tube anisotropic. Discover layouts are
+model-specific, so transfer maps fitted activation geometry, not a universal
+coordinate system.
 
-The drowse.ai client discovers only `drowse-manifold` Hugging Face repositories
-with one root `.drowse` and one root `manifold.json` summary. Search results
-are bound to the repository's immutable commit; installation re-resolves that
-commit and rejects an archive whose internal source provenance differs. This
-strict browser envelope does not remove Python support for legacy folder-based
-repositories.
+A fitted 2-node flat manifold exports as a llama.cpp control-vector GGUF
+(`folded_directions = δ̂_L · share_L`). llama.cpp's uniform scale reproduces
+that share profile, which approximates but does not equal drowse's live affine
+injection. Multi-rank and curved fits are rejected.
 
-Cross-model transfer fits a compact per-layer affine alignment from shared
-neutral activations. Basis directions use the linear map, points use the affine
-map, and the transferred fit is rebaked in the target model's Mahalanobis
-metric. Curved transfer rejects a map that would make its scalar tube thickness
-anisotropic. The resulting tensor uses the `from-<source>` variant; it does not
-pretend two discover layouts have a shared authoring coordinate system.
+## 13. Concurrency and consistency
 
-A fitted two-node flat manifold can be folded and exported as a llama.cpp
-control-vector GGUF. Multi-rank or curved fits cannot be represented by that
-format and are rejected.
+The synchronization boundaries are deliberately separate:
 
-## 13. Concurrency and consistency invariants
+- **The exclusive-GPU section.** One reentrant `_gen_lock` serializes all
+  model work: MPS's single global command buffer is not thread-safe, and two
+  threads committing it abort the process. Collaborators receive
+  `base/exclusive.py::ExclusiveGuard`; a busy section fails fast (409).
+  Steering push and pop wait out an in-flight generation instead. A steering
+  scope opens outside the exclusive section, never inside it, or the push
+  would deadlock.
+- **Unsteered artifact work.** Extraction, fits, corpus generation, lens fits,
+  SAE training and neutral compute refuse inside a steering scope
+  (`SteeringComposer.assert_unsteered`); the hooks would bake into the
+  artifact.
+- **The server's request lock** serializes protocol callers before they enter
+  the engine.
+- **Frozen instrument bindings.** Registry and source changes become visible
+  at the next bind.
+- **Leaf state locks** (the lens `state_lock`, the SAE runtime's) cover source
+  adoption, probe specs and live configuration. Take the exclusive guard first,
+  never while holding one.
+- **The loom reservation** (`LoomTree.reserve`) refuses conflicting edits to an
+  in-flight generation's branch (409).
+- **Artifact locks** are keyed to stable logical identities outside removable
+  folders; global order is manifest lock, then template lock, then fitted-pair
+  locks. Publication is compare-and-swap.
 
-Drowse has several deliberately scoped synchronization boundaries:
+Collaborators read the tree through a getter (`tree=lambda: self.tree`),
+because `restore_tree` replaces it. Do not collapse these boundaries into one
+global lock: the separation lets unrelated readers and targets proceed while
+each owner keeps exactly the state it claims.
 
-- The session generation lock protects model execution and loom mutations that
-  would conflict with an in-flight run.
-- The server's async lock serializes protocol callers before they enter the
-  synchronous engine.
-- Each instrument freezes a generation binding; registry/source changes become
-  visible at the next bind.
-- Lens state uses one reentrant state boundary for source adoption, probe specs,
-  live configuration, and preparation snapshots. Geometry and SAE have sibling
-  coherent-registry protections appropriate to their ownership.
-- Artifact locks are keyed to stable logical identities outside removable
-  payload folders where necessary. Publication uses compare-and-swap revision
-  checks so a paused fit cannot overwrite a cleared/replaced artifact.
+## 14. Performance
 
-Do not replace these with one global lock. The separation allows unrelated
-readers and model/artifact targets to proceed while preserving the exact state
-that a generation or writer claims to own.
+The rules are architectural, not micro-optimizations; the root `AGENTS.md`
+lists them and the throughput gates in `tests/gpu/test_smoke.py` protect the
+ordinary steered path (≥ 85% of vanilla tok/s, ablation ≥ 80%).
 
-## 14. Performance invariants
+Beyond those rules:
 
-The important rules are architectural, not micro-optimizations:
+- Capture is layer- and retention-planned; ordinary generation never retains a
+  `[tokens, layers, hidden]` history.
+- Curved foot following is paid only by genuinely curved terms: per token a
+  Gauss-Newton step and frame transport, and an `n ≥ 2` SVD that hops to CPU
+  on MPS.
+- The whole flat geometry roster shares one Woodbury `Σ⁻¹h` apply and batched
+  reduced-space products per layer.
+- Live J-lens and SAE reads reuse the generation's capture and stashes; no
+  second forward.
+- The alternative-token width is resolved once per generation and shared by
+  logits, J-lens, SAE, hover and replay.
 
-- Generation is inference-only. J-lens fitting is the sole gradient path.
-- Hidden capture is layer- and retention-plan driven; ordinary generation does
-  not retain `[tokens, layers, hidden]` history.
-- Capture hooks do device work only. Reads and host transfers occur after the
-  forward.
-- The flat static-affine path is the common case and stays analytic. Curved
-  nearest-foot following is paid only for genuinely curved terms.
-- Unsteered and static-affine runs can use persistent compile-clean offset and
-  capture hooks plus StaticCache. Dynamic/curved/gated topology routes to eager
-  execution instead of pretending to be graph-safe.
-- Full flat geometry rosters share the Woodbury inverse apply and batched
-  reduced-space operations per layer.
-- Live J-lens/SAE readouts reuse the generation capture and their gate/display
-  intermediates; they do not add a second model forward.
-- Alternative-token width is resolved once per generation and shared by
-  logits, J-lens, SAE, hover, and replay surfaces.
-- fp32 is mandatory for norm/covariance/manifold/J-lens persistence where fp16
-  range or accumulation would change the result.
-
-The throughput regression test protects the ordinary steered path. Changes to
-hooks, capture, monitoring, or generation must be checked on a real model as
-well as through unit tests.
+Changes to hooks, capture, monitoring or generation must be checked on a real
+model as well as by unit tests.
 
 ## 15. Change map
 
-When extending Drowse, change the narrow owner first:
+Change the narrow owner first:
 
-- New steering syntax: parser/formatter tests in `steering_expr.py`, then
-  composer lowering, then docs and wire inputs.
-- New manifold math: pure implementation/tests in `manifold.py`, codec/schema
-  work in `io/`, then session adoption.
-- New read family or channel: instrument types/protocol, family implementation,
-  capture-plan union, measurement envelope, server schema, and WebUI types.
-- New model architecture: one layer accessor and focused model tests; avoid
-  scattering model-type branches through capture and hooks.
-- New native endpoint: reuse a session/IO owner, register before the SPA, and
-  annotate the return type with a `server/response_models.py` TypedDict — the
-  dashboard's REST types are generated from the emitted OpenAPI schema
-  (`scripts/generate_webui_types.py` → `webui/src/lib/types.gen.ts`), and CI
-  fails on an unregenerated diff. Request bodies and WS frames stay
-  hand-written in `webui/src/lib/types.ts`.
-- WebUI changes: edit `webui/src`, run the Svelte/theme checks, rebuild the
-  committed `drowse/web/dist` bundle, and verify the production artifact.
+- **Steering syntax**: parser, formatter and round-trip tests in
+  `steering/grammar.py`, then composer lowering, then the grammar golden (a
+  drowse.ai interface change), then docs.
+- **Manifold math**: pure implementation and tests in `geometry/`, the codec
+  and schema in `store/`, orchestration in `fit/`. A change that alters fitted
+  results bumps `MANIFOLD_FIT_POLICY_VERSION` and may regenerate goldens.
+- **A read channel or family**: `readout/types.py` and the protocol, the
+  family, the planner union, the envelope (and its browser golden), the server
+  schema and the webui types. A fourth family also needs a
+  `session.instruments` entry, `generation/token_payloads.py::_FAMILY_SLOTS`
+  and `server/instrument_routes.py::CAPABILITIES` (both pinned to the registry
+  by test), and edits where `ProbeRoster`, `ReadPlane` and the engine's
+  `TokenTap` still name the three families.
+- **A model architecture**: `model/arch.py` discovers blocks structurally, so
+  a new block location is one `_LAYER_PATHS` entry; "tested" means a
+  `TESTED_ARCHS` entry plus dispatch and numerics cases; role and scene
+  support need a `SEAT_HEADERS` entry and a drift-test tokenizer; logits quirks
+  go in `model/readout.py::LogitReadout`. Keep `model_type` branches out of
+  capture and hooks (`drowse/model/AGENTS.md`).
+- **A native endpoint**: reuse a session or store owner, annotate the return
+  type with a `server/response_models.py` TypedDict, regenerate
+  `types.gen.ts` (CI checks it), use kebab-case paths. Request bodies and
+  WS/SSE frames are hand-written in `webui/src/lib/types.ts`.
+- **A `SamplingConfig` field**: it is persisted in every recipe and required on
+  read, so it breaks saved trees and transcripts and changes the browser seam.
+- **The dashboard**: edit `webui/src`, run `npm run check`, rebuild and commit
+  `drowse/web/dist` in the same change.
 
 The test suite is part of the architecture. Exact-schema, round-trip,
-concurrency, failure-injection, and cache-identity tests are often the only
+concurrency, failure-injection and cache-identity tests are often the only
 executable statement of why a boundary is strict.
 
 ## 16. Known boundaries
 
-- J-lens steering/probes name one tokenizer token. Multi-token word synthesis is
-  not implemented.
-- Provider J-lenses and SAEs exist only for covered models/revisions; local fits
-  remain explicit, expensive workflows.
-- Curved manifolds are slower than flat steering and overlapping curved spans
+- J-lens atoms and probes name one tokenizer token; multi-token words raise
+  `MultiTokenWordError`. `slens`, `neuron` and `head` are reserved but not yet
+  steerable.
+- Provider lenses and SAEs exist only for covered models and revisions; local
+  fits are explicit, expensive workflows.
+- Curved manifolds are slower than flat steering, and overlapping curved spans
   are rejected.
-- Replay exactly reproduces always-active affine steering, but cannot recreate
-  the full history of a phase- or probe-gated run from one isolated forward.
-- Discover coordinates are model-specific. Cross-model transfer maps fitted
-  activation geometry, not a supposedly universal discover layout.
+- Replay reproduces always-active affine steering exactly but cannot recreate
+  a phase- or probe-gated history from one isolated forward.
+- Discover coordinates are model-specific, and `fit_mode=auto` can resolve flat
+  on one model and curved on another, so a negative `%` coefficient pushes away
+  on one and raises on the other.
+- The fit identity omits `dls` and the neutral cache, so `--no-dls` and a
+  regenerated neutral corpus leave existing fits in place unless forced
+  (`drowse/fit/AGENTS.md`).
+- Recipe receipts stamp geometry probes only; transcript headers hash all
+  three families.
 - CPU works but is not the intended interactive path for large models.
-- `drowse serve` is a trusted-local/lab server, not a hardened multi-tenant
+- `drowse serve` is a trusted-local or lab server, not a hardened multi-tenant
   inference platform.
+
+## 17. Open frontiers
+
+- **Persona access.** The fitted `personas` subspace is a near-1-D
+  "persona-ness" fan, so distinct personas can express the same generic intense
+  register. That is a steering-access problem, not the rogue-channel problem:
+  whitening verifiably fixed the latter.
+- **Per-target coherence.** Whitened-unit targets unify push *strength* across
+  targets, but not *coherence*: a hard persona such as `hacker` shatters at
+  roughly half the effective gain a robust concept tolerates (about 2×).
+  `_SUBSPACE_GAIN = 16.0` is the coherence-first compromise and is tagged a
+  prototype; tune α down per target.
+- **Low-α drift.** A steering trajectory can pass through neighboring attractor
+  basins at low displacement (`personas%hacker` surfacing a cyber-security
+  cluster before locking into the persona). That is signal about the model's
+  internal structure, not a drowse bug, and it is unexplored.
+- **Blending.** Off-node midpoints between distinct persona nodes produce
+  coherent blended content at the sweet-spot α. Whether interpolation between
+  basins holds generally, and on curved fits, is open.
+- **Input-side lenses.** `LensKey` reserves the input-side kinds K and S and the
+  `mid` site, and `slens` is a reserved namespace; only the output-side J/R
+  estimators exist.
