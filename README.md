@@ -505,8 +505,8 @@ GPU integration tests download the public SmolLM2-360M-Instruct weights by
 default. Set `DROWSE_TEST_MODEL` to exercise another compatible model:
 
 ```bash
-pytest -q tests/test_smoke.py
-DROWSE_TEST_MODEL=google/gemma-3-4b-it pytest -q tests/test_smoke.py
+pytest -q tests/gpu/test_smoke.py
+DROWSE_TEST_MODEL=google/gemma-3-4b-it pytest -q tests/gpu/test_smoke.py
 ```
 
 The WebUI is a Svelte 5 + Vite application in `webui/`. Its compiled bundle under

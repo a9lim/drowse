@@ -658,7 +658,7 @@ def test_transcript_run_prints_the_engine_replay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The verb is a thin print of ``Transcript.replay`` (whose regeneration
-    semantics ``tests/test_transcript.py`` owns): the transcript's model, the
+    semantics ``tests/loom/test_transcript.py`` owns): the transcript's model, the
     ``--strict`` flag, and each step's recorded → replayed drift."""
     from drowse.loom.transcript import Transcript, Turn
 
@@ -704,7 +704,7 @@ def test_experiment_naturalness_prints_the_engine_report(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The verb is a thin print of ``fit.naturalness.evaluate`` (whose
-    behavior-manifold semantics ``tests/test_naturalness.py`` owns): the
+    behavior-manifold semantics ``tests/fit/test_naturalness.py`` owns): the
     resolved folder, the steering, the floors, and a pure ``-j`` payload."""
     import drowse.fit.naturalness as nat
 
@@ -862,7 +862,7 @@ def test_malformed_references_are_one_line_usage_errors(
 ) -> None:
     """Regression: an unsafe or empty ``ns/name`` escaped ``main`` as a raw
     ``ValueError`` traceback from the path-traversal barrier."""
-    monkeypatch.chdir(Path(__file__).parent.parent / "drowse" / "data")
+    monkeypatch.chdir(Path(__file__).parents[2] / "drowse" / "data")
     attempts = poison_session(monkeypatch)
     with pytest.raises(SystemExit) as exc:
         main(argv)

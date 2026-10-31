@@ -22,9 +22,9 @@ of the base install. `[cuda]` adds bitsandbytes and Hugging Face
 ## Running tests
 
 ```bash
-pytest -q -m "not gpu"             # CI-equivalent CPU suite
+pytest -q -m "not gpu"              # CI-equivalent CPU suite
 pytest -q tests/                    # everything available on this machine
-pytest -q tests/test_smoke.py       # real-model smoke tests
+pytest -q tests/gpu/test_smoke.py   # real-model smoke tests
 ```
 
 Tests marked `gpu` need CUDA or Apple Silicon MPS and may download model weights.

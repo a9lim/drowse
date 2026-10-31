@@ -1,7 +1,7 @@
 """Hugging Face Hub distribution: coords, push, and search.
 
 Install-from-Hub (pull) runs through the shared pipeline and is covered,
-alongside the local and ``.drowse`` sources, in ``tests/test_install.py``.
+alongside the local and ``.drowse`` sources, in ``tests/store/test_install.py``.
 """
 from __future__ import annotations
 

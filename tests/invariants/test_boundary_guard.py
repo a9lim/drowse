@@ -2,7 +2,7 @@
 
 A source-grep check over ``drowse/server``: no server module imports a
 sibling's private helper.  (Session-private attribute reaches are an AST
-invariant over the whole package in ``tests/test_layering.py``.)
+invariant over the whole package in ``tests/invariants/test_layering.py``.)
 
 Comments and string literals are stripped via :mod:`tokenize` before the
 match, so a historical note or a docstring example doesn't trip the guard —
@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 def _drowse_root() -> Path:
-    return Path(__file__).resolve().parent.parent / "drowse"
+    return Path(__file__).resolve().parents[2] / "drowse"
 
 
 def _strip_comments_and_strings(source: str) -> str:

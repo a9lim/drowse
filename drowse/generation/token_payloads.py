@@ -18,7 +18,7 @@ from drowse.readout.types import ProbeReading
 
 #: Per-family reading slot names, keyed by the ``family`` argument to
 #: :meth:`TokenProbePayload.merge_readings`.  One slot per member of
-#: ``InstrumentFamily`` — ``tests/test_instruments_types.py`` pins the two
+#: ``InstrumentFamily`` — ``tests/readout/test_instruments_types.py`` pins the two
 #: sets equal against ``session.instruments``, so a fourth read family
 #: cannot land a slot-less payload.
 _FAMILY_SLOTS: dict[InstrumentFamily, str] = {

@@ -2,7 +2,7 @@
 
 Requires a GPU (CUDA or Apple Silicon MPS) and downloads the public
 SmolLM2-360M-Instruct test model on first run. Override with
-``DROWSE_TEST_MODEL``. Run with: pytest tests/test_smoke.py -v
+``DROWSE_TEST_MODEL``. Run with: pytest tests/gpu/test_smoke.py -v
 """
 
 from __future__ import annotations

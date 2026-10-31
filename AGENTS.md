@@ -888,7 +888,7 @@ callers need not.
 
 ## Performance invariants
 
-These gate `test_smoke.py::test_throughput_regression` (steered ≥ 85% of
+These gate `tests/gpu/test_smoke.py::test_throughput_regression` (steered ≥ 85% of
 vanilla tok/s):
 
 - **Hot-path hooks**: no Python allocation, no `.item()`, no CPU sync, in-place
@@ -1023,8 +1023,18 @@ replays; regenerate them here when the semantics they cover change.
 
 ## Testing
 
-**GPU-required** (CUDA or MPS): `test_smoke.py`, `test_session.py`,
-`test_jlens_gpu.py` — download the public
+`tests/` mirrors the package: one folder per `drowse/<package>` (`base`,
+`geometry`, `model`, `steering`, `readout`, `lens`, `sae`, `store`,
+`generation`, `fit`, `loom`, `session`, `cli`, `server`, `web`, `notebook`),
+holding the modules whose primary target lives there, plus three cross-cutting
+folders: `browser/` (golden parity), `invariants/` (layering, error family,
+server import surface, generated dashboard types) and `gpu/` (the real-model
+tier). `conftest.py`, `support/` and `fixtures/` stay at the root, and
+`fixtures/` plus `browser_drowse_archive_bridge.py` keep their exact paths
+because drowse.ai hard-codes them.
+
+**GPU-required** (CUDA or MPS): `tests/gpu/` — `test_smoke.py`,
+`test_session.py` and `test_jlens_gpu.py` download the public
 `HuggingFaceTB/SmolLM2-360M-Instruct` model by default. Set
 `DROWSE_TEST_MODEL` for another compatible model. Gemma/SAE-specific coverage
 is marked `gpu_gemma` and requires explicit gated model and artifact access.

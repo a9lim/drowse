@@ -7,7 +7,7 @@ side, and that the session correctly routes around the support flag.
 
 CUDA-side equivalence (``cuda_graphs=True`` produces the same token IDs
 as ``cuda_graphs=False`` at fixed seed) is owned by the GPU smoke tests
-in ``tests/test_smoke.py`` — gated on ``torch.cuda.is_available()`` and
+in ``tests/gpu/test_smoke.py`` — gated on ``torch.cuda.is_available()`` and
 not run in the CPU-only matrix.
 """
 from __future__ import annotations

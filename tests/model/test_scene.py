@@ -202,7 +202,7 @@ def test_label_collision_with_standard_label_is_safe():
     Construction places every label positionally, so the stitcher never has
     to recover a label→turn binding from the rendered bytes.  (The fallback
     splice path handles the same collision by scanning both seats in one
-    pass; see ``tests/test_role_templates.py``.)
+    pass; see ``tests/model/test_role_templates.py``.)
     """
     _, grammar = _grammar(GEMMA_STRICT_TEMPLATE, "gemma3")
     got = render_scene(

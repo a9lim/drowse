@@ -57,7 +57,7 @@ MeasurementProvenance = Literal["captured", "replayed"]
 # The envelope, declared
 # --------------------------------------------------------------------------
 # The Python-side declaration of the wire contract (the dashboard types are
-# generated from it); ``tests/test_measurements_envelope.py`` pins the exact
+# generated from it); ``tests/readout/test_measurements_envelope.py`` pins the exact
 # key sets of a token frame, a done aggregate, and all three replay envelopes,
 # so wire drift is a test failure rather than a dashboard bug.
 

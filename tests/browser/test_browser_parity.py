@@ -53,7 +53,7 @@ from drowse.steering.triggers import TriggerContext
 from tests.support.whitener import isotropic_whitener
 from tests.support.sae import make_resident, sae_instrument
 
-GOLDENS = Path(__file__).parent / "fixtures" / "browser"
+GOLDENS = Path(__file__).parent.parent / "fixtures" / "browser"
 
 
 # ---------------------------------------------------------------------------

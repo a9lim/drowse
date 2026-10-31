@@ -432,7 +432,7 @@ operation answers from the declaration (including its status and message).
 `require_family` validates `{family}` against the registry itself, so the table
 and the registry cannot disagree about which families exist. Response shapes
 live in `response_models.py` with the rest of the native tree's, and
-`tests/test_measurements_envelope.py` pins the envelope's key sets.
+`tests/readout/test_measurements_envelope.py` pins the envelope's key sets.
 
 | Family | `sources` | `preparations` | `token_readout` | `source_switch` |
 |---|---|---|---|---|

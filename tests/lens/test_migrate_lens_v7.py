@@ -20,7 +20,7 @@ _SHA = "a" * 64
 
 
 def _script() -> Any:
-    path = Path(__file__).resolve().parents[1] / "scripts" / "migrate_lens_v7.py"
+    path = Path(__file__).resolve().parents[2] / "scripts" / "migrate_lens_v7.py"
     spec = importlib.util.spec_from_file_location("migrate_lens_v7", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
