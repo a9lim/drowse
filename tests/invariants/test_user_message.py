@@ -277,7 +277,9 @@ def test_every_request_error_is_a_400_carrying_its_text() -> None:
     drift = []
     for cls in classes:
         status, message = cls("specific test payload").user_message()
-        if not issubclass(cls, ValueError) or status != 400 or "specific test payload" not in message:
+        # A runtime check: a subclass can rebase off ValueError.
+        is_value_error = issubclass(cls, ValueError)  # pyright: ignore[reportUnnecessaryIsInstance]
+        if not is_value_error or status != 400 or "specific test payload" not in message:
             drift.append(f"{cls.__module__}.{cls.__qualname__} -> {status}")
     assert not drift, "request errors off the 400 contract:\n  " + "\n  ".join(drift)
 

@@ -11,6 +11,8 @@ forward-pass + cache + reorient path without HF weights.
 
 from __future__ import annotations
 
+import itertools
+import math
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -20,6 +22,7 @@ import torch
 from drowse.model.chat import ChatTraits
 
 from drowse.generation.decode import GenerationConfig, build_chat_input
+from drowse.generation.sampling import SamplingConfig
 from drowse.loom.joint_logprobs import (
     JointLogprobRow,
     JointLogprobs,
@@ -444,7 +447,7 @@ class _MockSession:
         self._sae_instrument = rig.sae
 
         request = ReadRequest(final_aggregate=False)
-        plane = rig.plane
+        plane = cast(Any, rig.plane)
         plane.resolve_demand = lambda **_kwargs: None
         plane.begin = lambda *_args, **_kwargs: (
             plane.bind_runs(request, request, request) and False
@@ -492,7 +495,7 @@ class _MockSession:
     def _render(self, _input: Any, **kwargs: Any) -> torch.Tensor:
         node_id = kwargs["parent_node_id"]
         return build_chat_input(
-            self.tokenizer, self.tree.messages_for(node_id),
+            cast(Any, self.tokenizer), self.tree.messages_for(node_id),
             system_prompt=kwargs.get("system_prompt"),
             add_generation_prompt=True,
         )
@@ -726,3 +729,27 @@ def test_replay_keeps_only_the_sampler_pool_per_row():
     assert sorted(rows.index) == list(
         range(first, first + len(branch.response_ids)),
     )
+
+
+def test_session_joint_logprobs_cross_evaluates_real_siblings(make_tiny_session: Any) -> None:
+    """Pins the session's JointLogprobReplayer wiring on a real CPU session."""
+    replies = itertools.cycle(["Calm seas ahead.", "Storm clouds gather."])
+    session, _script = make_tiny_session.scripted(lambda _label, _prompt: next(replies))
+    first = session.generate("Describe the sea.", sampling=SamplingConfig(max_tokens=8, seed=1))
+    a_id = first.node_ids[0]
+    user_id = session.tree.get(a_id).parent_id
+    second = session.generate(None, parent_node_id=user_id, sampling=SamplingConfig(max_tokens=8, seed=2))
+    b_id = second.node_ids[0]
+    assert session.tree.get(b_id).parent_id == user_id
+
+    joint = session.joint_logprobs(a_id, b_id)
+    assert joint.a_id == a_id and joint.b_id == b_id and joint.parent_id == user_id
+    assert joint.rows
+    # The replay walked each node's own stored tokens, in order (the raw
+    # stream also carries the closing end-of-turn token).
+    a_tokens = {row.a_index: row.a_text for row in joint.rows}
+    b_tokens = {row.b_index: row.b_text for row in joint.rows}
+    assert "".join(a_tokens[i] for i in sorted(a_tokens)).startswith(session.tree.get(a_id).text)
+    assert "".join(b_tokens[i] for i in sorted(b_tokens)).startswith(session.tree.get(b_id).text)
+    self_lps = [lp for row in joint.rows for lp in (row.lp_a_in_a, row.lp_b_in_b) if lp is not None]
+    assert self_lps and all(math.isfinite(lp) and lp <= 0.0 for lp in self_lps)
