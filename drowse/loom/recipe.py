@@ -132,9 +132,6 @@ class Recipe:
             seed_only=seed_only, **rest,
         )
 
-    def resolved_system_prompt(self, default: str | None) -> str | None:
-        return default if isinstance(self.system_prompt, InheritSystemPrompt) else self.system_prompt
-
     def to_dict(self) -> dict[str, Any]:
         """The persisted shape (tree_format 2, transcript v2, the wire).
 

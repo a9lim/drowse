@@ -21,10 +21,11 @@ from tests.support.engine import engine_over
 def test_recipe_prompt_capture_distinguishes_legacy_null_empty_and_text():
     legacy = Recipe.from_dict(Recipe().to_dict())
     assert "system_prompt" not in legacy.to_dict()
-    assert legacy.resolved_system_prompt("current") == "current"
+    assert _renderer(LoomTree(), "current").resolve_system_prompt(legacy.system_prompt) == "current"
+    renderer = _renderer(LoomTree(), "different current instruction")
     for prompt in (None, "", "Speak like a pirate"):
         captured = Recipe.from_dict(Recipe(system_prompt=prompt).to_dict())
-        assert captured.resolved_system_prompt("different current instruction") == prompt
+        assert renderer.resolve_system_prompt(captured.system_prompt) == prompt
         # A modifier that sets no prompt keeps the anchor's captured one.
         composed = compose_call(anchor=captured, modifier=Recipe(sampling=SamplingConfig(seed=7)))
         assert composed.system_prompt == prompt
@@ -79,7 +80,8 @@ def test_finalized_generation_recipe_keeps_prompt_through_probe_hashing(
     assert saved_recipe["sampling"]["seed"] == 7
     restored = LoomTree.from_dict(tree.to_dict()).get(node_id)
     assert restored.recipe is not None
-    assert restored.recipe.resolved_system_prompt("Changed after generation") == expected
+    changed = _renderer(LoomTree(), "Changed after generation")
+    assert changed.resolve_system_prompt(restored.recipe.system_prompt) == expected
     assert restored.recipe.sampling == SamplingConfig(seed=7)
 
 
