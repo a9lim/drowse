@@ -251,6 +251,11 @@ vanilla tok/s (`test_throughput_regression`) and ablation ≥ 80%.
   no compile); prefer affine terms where coherence allows.
 - Top-p runs over `torch.topk` (default pool 1024, top-k applied first), never
   a full-vocab sort.
+- Resident artifacts upload packed: `Manifold.to` onto a device and a probe
+  attach build on the host and move as one buffer per dtype
+  (`geometry/packing.py`). Thousands of small per-layer device tensors fragment
+  the MPS heap, and every decode step's KV-cache allocation then pays to
+  coalesce around them (about 15% of unsteered tok/s with the default probes).
 
 **MPS discipline.** Fit-time geometry runs on CPU in fp32;
 `torch.mps.empty_cache()` between extraction batches; `torch.mps.synchronize()` at the end of every decode, or a

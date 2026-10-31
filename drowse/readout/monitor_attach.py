@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import torch
 
 from drowse.errors import WhitenerError
+from drowse.geometry.packing import pack_to_device
 
 if TYPE_CHECKING:
     from drowse.geometry.manifold import Manifold
@@ -103,13 +104,31 @@ class _FactorStack:
     def build(
         whitener: Any, layers: "list[int]", device: torch.device,
     ) -> "_FactorStack":
-        """Upload ``layers``' factors (all must be covered by ``whitener``)."""
-        return _FactorStack._from_parts(
+        """Upload ``layers``' factors (all must be covered by ``whitener``).
+
+        The stack is assembled on the CPU and uploaded once.  Assembling it
+        on an MPS device (per-layer uploads, pads, a stack, repeated on every
+        grow) leaves a trail of freed small blocks in the heap allocator,
+        and every later allocation, each decode step's KV-cache ``cat``
+        included, pays to coalesce them: about 15% of unsteered tok/s.
+        """
+        cpu = torch.device("cpu")
+        stack = _FactorStack._from_parts(
             [
-                whitener.woodbury_factors(L, device=device, dtype=torch.float32)
+                whitener.woodbury_factors(L, device=cpu, dtype=torch.float32)
                 for L in layers
             ],
             layers,
+        )
+        if device == cpu:
+            return stack
+        return _FactorStack(
+            layers=stack.layers,
+            index=stack.index,
+            X=stack.X.to(device),
+            K=stack.K.to(device),
+            lam=stack.lam.to(device),
+            lam_list=stack.lam_list,
         )
 
     @staticmethod
@@ -153,11 +172,7 @@ class _FactorStack:
         missing = sorted({int(L) for L in layers} - set(self.index))
         if not missing:
             return self
-        parts = [self.factors(L) for L in self.layers] + [
-            whitener.woodbury_factors(L, device=self.device, dtype=torch.float32)
-            for L in missing
-        ]
-        return _FactorStack._from_parts(parts, [*self.layers, *missing])
+        return _FactorStack.build(whitener, [*self.layers, *missing], self.device)
 
     def factors(self, layer: int) -> "tuple[torch.Tensor, torch.Tensor, float]":
         i = self.index[layer]
@@ -469,6 +484,36 @@ def _attach_manifold_probe(
     manifold: "Manifold",
     *,
     top_n: int = DEFAULT_NEAREST_TOP_N,
+    whitener: Any,
+    stack_for: StackFor,
+) -> "AttachedManifoldProbe":
+    """Attach ``manifold`` as a probe on the device its tensors live on.
+
+    The attach math runs on the host and the finished probe uploads packed
+    (:func:`~drowse.geometry.packing.pack_to_device`).  Attaching on the
+    device itself would interleave the probe's long-lived per-layer tensors
+    with transient ones and fragment the MPS heap for every later decode.
+    """
+    layers = list(manifold.layers.values())
+    device = layers[0].mean.device if layers else manifold.node_coords.device
+    if device.type == "cpu":
+        return _attach_on_host(
+            name, manifold, top_n=top_n, whitener=whitener, stack_for=stack_for,
+        )
+    probe = _attach_on_host(
+        name, manifold.to(device=torch.device("cpu"), dtype=torch.float32),
+        top_n=top_n, whitener=whitener, stack_for=stack_for,
+    )
+    probe.manifold = manifold
+    pack_to_device(probe, device, skip=("manifold",))
+    return probe
+
+
+def _attach_on_host(
+    name: str,
+    manifold: "Manifold",
+    *,
+    top_n: int,
     whitener: Any,
     stack_for: StackFor,
 ) -> "AttachedManifoldProbe":

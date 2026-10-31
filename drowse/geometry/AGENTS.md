@@ -17,8 +17,8 @@ codec.
 ## Module map
 
 Internal order: `domains`, `rbf` → `subspace` → `invert`, `manifold`, `tube` →
-`inject`, `topology`, `fold`, `transfer`. `whitener`, `procrustes`, `gguf` and
-`profile` stand alone.
+`inject`, `topology`, `fold`, `transfer`. `packing` sits under `manifold`;
+`whitener`, `procrustes`, `gguf` and `profile` stand alone.
 
 | Module | Owns |
 |---|---|
@@ -26,6 +26,7 @@ Internal order: `domains`, `rbf` → `subspace` → `invert`, `manifold`, `tube`
 | `rbf.py` | `RbfFitPlan` (the one layout factorization: exact, fixed-λ, GCV), `RbfFit`, `eval_rbf`/`eval_rbf_jacobian`/`eval_rbf_jet`, `rbf_cardinal_weights`. |
 | `subspace.py` | `LayerSubspace`, `pca_basis`, `fit_affine_subspace`, `fit_curved_subspace`, `LayerFit`, `subspace_share`, `DEFAULT_N_COMPONENTS = 64`. |
 | `manifold.py` | `Manifold`, `MANIFOLD_FIT_POLICY_VERSION`. |
+| `packing.py` | `pack_to_device`: moves an object tree's tensors to a device as one buffer per dtype (what `Manifold.to` and probe attach use off the CPU). |
 | `invert.py` | `_gn_step` (the one damped Gauss-Newton step), `invert_parameterization`, `neutral_origin`. |
 | `tube.py` | The σ-field: `off_surface_vars`, `fit_sigma_field`. |
 | `inject.py` | `synthesize_subspace`/`SynthesizedSubspace` (composition) and `subspace_inject` (the kernel). |

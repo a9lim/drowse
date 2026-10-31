@@ -235,7 +235,10 @@ fit's `mahalanobis_share`, normalized):
   `set_subspace_coords(True)`; the engine sets it per generation.
 
 **Execution.** `_FactorStack` is the single device copy of the whitener's
-Woodbury factors per device, grown rather than duplicated (detach keeps it). A
+Woodbury factors per device, grown rather than duplicated (detach keeps it),
+and assembled on the host before one upload. A probe on a device manifold
+attaches on the host too and uploads packed (`geometry/packing.py`), so the
+roster stays a few device buffers instead of thousands of small tensors. A
 read is one stacked `Σ⁻¹h` apply over every layer; the flat roster is then one
 `_FlatEngine` pass (segments bucketed by rank, dim and candidate count; rank-1
 is elementwise) and one host transfer; each curved probe adds its foot solve

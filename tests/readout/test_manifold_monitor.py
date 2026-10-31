@@ -1606,3 +1606,34 @@ def test_stream_is_one_batched_read_matching_per_token_reads():
         lean = mon.score_single_token(tok, coords_only=True)
         for name in ("flat", "curve"):
             assert stream[name][t] == pytest.approx(lean[name].coords[0], abs=1e-5)
+
+
+def _probe_tensors(probe) -> list[torch.Tensor]:
+    out = list(probe.node_values_reduced.values())
+    for whiten in probe.whitened.values():
+        out += [t for t in vars(whiten).values() if isinstance(t, torch.Tensor)]
+    out += [t for t in (probe.assign_bandwidth, probe.assign_logvol_bias) if t is not None]
+    return out
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+def test_a_device_probe_attaches_on_the_host_and_uploads_packed():
+    """A probe on a device manifold is one device buffer, and reads like the
+    host attach (thousands of per-layer allocations fragment the MPS heap)."""
+    device = torch.device("mps")
+    m = _flat_manifold(reduced_coords=torch.tensor([[1.0, 0.0], [-1.0, 0.5], [0.0, -1.0]]))
+    host = _iso_monitor(m)
+    host.add_probe("p", m)
+    on_device = m.to(device=device, dtype=torch.float32)
+    dev = _iso_monitor(m)
+    dev.add_probe("p", on_device)
+    probe = dev.attached_probes()["p"]
+    assert probe.manifold is on_device
+    tensors = _probe_tensors(probe)
+    assert {t.device.type for t in tensors} == {"mps"}
+    assert len({t.untyped_storage().data_ptr() for t in tensors}) == 1
+    hidden = _flat_node_hidden(m, 1)
+    want = host.score_single_token(hidden)["p"]
+    got = dev.score_single_token({L: h.to(device) for L, h in hidden.items()})["p"]
+    assert got.coords == pytest.approx(want.coords, abs=1e-4)
+    assert got.nearest[0][0] == want.nearest[0][0] == "n1"

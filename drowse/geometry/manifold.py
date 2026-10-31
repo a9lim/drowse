@@ -23,6 +23,7 @@ import torch
 
 from drowse.errors import UnknownManifoldLabelError
 from drowse.geometry.domains import ManifoldDomain
+from drowse.geometry.packing import pack_to_device
 from drowse.geometry.subspace import LayerSubspace
 
 # Numerical fitting semantics are independent of the folder/tensor wire
@@ -194,7 +195,17 @@ class Manifold:
                 ) from exc
 
     def to(self, *, device: torch.device, dtype: torch.dtype) -> "Manifold":
-        """Return a copy with every layer tensor on ``device`` in ``dtype``."""
+        """Return a copy with every layer tensor on ``device`` in ``dtype``.
+
+        Off the CPU the copy is built on the host and uploaded packed
+        (:func:`~drowse.geometry.packing.pack_to_device`), so a resident
+        manifold costs a few device allocations rather than one per tensor.
+        """
+        device = torch.device(device)
+        if device.type != "cpu":
+            copy = self.to(device=torch.device("cpu"), dtype=dtype)
+            pack_to_device(copy, device, skip=("domain", "metadata"))
+            return copy
         return Manifold(
             name=self.name,
             domain=self.domain,
