@@ -635,6 +635,9 @@ def test_invert_parameterization_recovers_known_position():
     sub = fit_curved_subspace(torch.randn(9, 16), domain.embed(coords)).subspace
     target_pos = torch.tensor([0.4, 0.65])
     embedded = domain.embed(target_pos)
+    assert sub.node_params is not None
+    assert sub.rbf_weights is not None
+    assert sub.poly_coeffs is not None
     query = eval_rbf(
         sub.node_params, sub.rbf_weights, sub.poly_coeffs,
         sub._normalize(embedded),
@@ -730,6 +733,7 @@ def test_layer_subspace_to_device_dtype():
     moved = sub.to(device=torch.device("cpu"), dtype=torch.float64)
     assert moved.basis.dtype == torch.float64
     assert moved.mean.dtype == torch.float64
+    assert moved.rbf_weights is not None
     assert moved.rbf_weights.dtype == torch.float64
 
 

@@ -76,7 +76,9 @@ def test_resolving_a_projection_leaves_the_neutral_baseline_alone() -> None:
 
     rig.neutral.ensure = _no_build  # type: ignore[method-assign]
     composer = rig.composer
-    entries = composer.resolve(Steering.from_value("0.3 a|b + 0.2 a"))
+    steering = Steering.from_value("0.3 a|b + 0.2 a")
+    assert steering is not None
+    entries = composer.resolve(steering)
     assert set(entries) == {"a|b", "a"}
     assert composer.projection("a|b") is None
 

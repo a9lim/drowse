@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import pytest
 
@@ -472,7 +472,7 @@ def test_import_merges_cast_and_flags_conflicts():
     ({"role": "assistant", "text": "x", "readings": {"a": True}}, "finite numbers"),
     ({"role": "assistant", "text": "x", "recipe": {"steering": None}}, "recipe"),
 ])
-def test_turn_reader_is_strict(turn: dict, match: str):
+def test_turn_reader_is_strict(turn: dict[str, Any], match: str):
     """Regression: missing roles defaulted to "user" and bad readings were
     silently dropped."""
     with pytest.raises(TranscriptFormatError, match=match):
@@ -487,7 +487,7 @@ def test_turn_reader_is_strict(turn: dict, match: str):
     ({"probes": [{"name": "calm"}]}, "missing: sha256"),
     ({"model_id": 3}, "model_id must be a string"),
 ])
-def test_root_reader_is_strict(extra: dict, match: str):
+def test_root_reader_is_strict(extra: dict[str, Any], match: str):
     with pytest.raises(TranscriptFormatError, match=match):
         Transcript.from_dict({"drowse_transcript": 2, "turns": [], **extra})
 
@@ -594,9 +594,9 @@ class _ReplaySession(StubSession):
 
     def __init__(self) -> None:
         super().__init__()
-        self.calls: list[dict] = []
+        self.calls: list[dict[str, Any]] = []
 
-    def generate(self, input, **kwargs):
+    def generate(self, input: Any, **kwargs: Any):
         from drowse.generation.results import GenerationResult, RunSet
 
         assert input is None
@@ -673,7 +673,7 @@ def _two_turn_transcript() -> Transcript:
 class _FailingReplaySession(_ReplaySession):
     """Refuses any turn whose steering names the uninstalled ``gone`` vector."""
 
-    def generate(self, input, **kwargs):
+    def generate(self, input: Any, **kwargs: Any):
         from drowse.steering.grammar import SteeringExprError
 
         if "gone" in (kwargs.get("steering") or ""):
@@ -701,7 +701,7 @@ def test_isolated_replay_records_a_failed_turn_and_keeps_going():
 
 def test_isolated_replay_still_propagates_non_drowse_errors():
     class _Broken(_ReplaySession):
-        def generate(self, input, **kwargs):
+        def generate(self, input: Any, **kwargs: Any):
             raise RuntimeError("bug, not a user error")
 
     with pytest.raises(RuntimeError, match="bug"):

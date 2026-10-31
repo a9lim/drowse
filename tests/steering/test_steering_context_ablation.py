@@ -13,6 +13,7 @@ import torch
 
 from drowse.errors import ProfileNotRegisteredError
 from drowse.steering.grammar import AblationTerm
+from drowse.steering.hooks import AffineGroup
 from drowse.steering.terms import Steering
 from drowse.steering.triggers import Trigger
 from tests.support.whitener import isotropic_whitener
@@ -99,7 +100,9 @@ def test_ablation_coefficient_survives_affine_gain(coeff: float) -> None:
     with session.steering(steering):
         hook = session.manager.hooks[1]
         assert len(hook.groups) == 1
-        op = hook.groups[0].op
+        group = hook.groups[0]
+        assert isinstance(group, AffineGroup)
+        op = group.op
         assert op.scale is not None
         assert float(op.scale[0]) == pytest.approx(coeff)
 

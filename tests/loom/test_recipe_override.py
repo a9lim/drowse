@@ -598,7 +598,9 @@ def test_inverted_steering_negates_every_term_kind() -> None:
     ablation = alphas["!c"]
     assert isinstance(projected, ProjectedTerm) and projected.coeff == -0.3
     assert isinstance(ablation, AblationTerm) and ablation.coeff == -0.5
-    coeff, trigger = alphas["d"]
+    triggered = alphas["d"]
+    assert isinstance(triggered, tuple)
+    coeff, trigger = triggered
     assert coeff == -0.4
     assert trigger.prompt is False
 

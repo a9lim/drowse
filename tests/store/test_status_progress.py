@@ -159,7 +159,7 @@ class _BootstrapSession:
         self._fitted = fitted
         self.fit_calls: list[tuple[Any, Any]] = []
 
-    def load(self, key: str) -> object:
+    def load(self, key: str) -> Any:
         from drowse.errors import ManifoldNotRegisteredError
 
         if key not in self._fitted:

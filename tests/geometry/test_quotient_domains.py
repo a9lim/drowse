@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 from drowse.geometry.domains import ManifoldDomain
 import math
@@ -41,7 +42,7 @@ def test_quotient_embedding_and_canonicalization(domain: ManifoldDomain):
     torch.testing.assert_close(domain.clamp_position(twin), domain.clamp_position(points), atol=1e-12, rtol=1e-12)
 
 
-def _translate_from(domain: ManifoldDomain, a: torch.Tensor, b: torch.Tensor, fraction):
+def _translate_from(domain: ManifoldDomain, a: torch.Tensor, b: torch.Tensor, fraction: float | torch.Tensor):
     """The kernel's path: ``translate_foot`` with the foot at the origin."""
     return domain.translate_foot(a, a, b, fraction)
 
@@ -63,7 +64,7 @@ def _slerp(ea: torch.Tensor, eb: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     return (torch.sin((1 - t) * omega) * ea + torch.sin(t * omega) * eb) / torch.sin(omega)
 
 
-def _geodesic_embedding(domain: ManifoldDomain, a: torch.Tensor, b: torch.Tensor, fraction):
+def _geodesic_embedding(domain: ManifoldDomain, a: torch.Tensor, b: torch.Tensor, fraction: float | torch.Tensor):
     """Closed-form geodesic oracle, independent of the domains' path code.
 
     Built from the quotient definitions alone and returned in the domain's
@@ -100,7 +101,7 @@ def test_quotient_jacobian(domain: ManifoldDomain):
 
 @pytest.mark.parametrize('make_domain', [KleinBottleDomain, ProjectivePlaneDomain, lambda: SphereDomain(2)], ids=['klein', 'projective', 'sphere'])
 @pytest.mark.parametrize('fraction', [0., 0.3, 0.5, 1., 1.5])
-def test_translate_from_the_origin_follows_the_geodesic(make_domain, fraction: float):
+def test_translate_from_the_origin_follows_the_geodesic(make_domain: Callable[[], ManifoldDomain], fraction: float):
     domain = make_domain()
     generator = torch.Generator().manual_seed(7)
     for _ in range(8):

@@ -22,7 +22,7 @@ from drowse.steering.grammar import (
     parse_expr,
     referenced_selectors,
 )
-from drowse.steering.triggers import Trigger
+from drowse.steering.triggers import ProbeGateOp, Trigger
 
 
 @pytest.fixture(autouse=True)
@@ -1011,7 +1011,7 @@ _GATES = [
 
 @pytest.mark.parametrize(("text", "probe", "op", "threshold", "canonical"), _GATES)
 def test_probe_gate_shapes_parse_and_round_trip(
-    text: str, probe: str, op: str, threshold: float, canonical: str | None,
+    text: str, probe: str, op: ProbeGateOp, threshold: float, canonical: str | None,
 ) -> None:
     from drowse.steering.triggers import ProbeGate
 

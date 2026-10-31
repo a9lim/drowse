@@ -340,6 +340,7 @@ def migrate_home(
 
 
 def main(argv: list[str] | None = None) -> int:
+    assert __doc__ is not None
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
         "--home", type=Path,

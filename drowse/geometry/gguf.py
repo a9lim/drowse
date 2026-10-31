@@ -30,6 +30,7 @@ lazy-imports it and raises a clear error if it's missing.
 from __future__ import annotations
 
 import logging
+import types
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +53,8 @@ class GGUFNotInstalled(ImportError, DrowseError):
         return (400, str(self) or self.__class__.__name__)
 
 
-def _import_gguf():
+# ModuleType: without the optional gguf, pyright resolves ``import gguf`` to this module.
+def _import_gguf() -> types.ModuleType:
     try:
         import gguf
     except ImportError as e:

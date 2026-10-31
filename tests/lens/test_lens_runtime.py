@@ -784,7 +784,7 @@ def test_has_compatible_jlens_rechecks_loaded_pointer_fingerprint(
     }
     replaced = {**compatible, "model_fingerprint": "different-weights"}
     session.lens.runtime.lens = lens
-    session.lens.runtime.identity = ("old",)
+    session.lens.runtime.identity = cast(Any, ("old",))
     monkeypatch.setattr(lens_io, "load_lens_sidecar", lambda _model: compatible)
     monkeypatch.setattr(lens_io, "load_lens", lambda _model: (lens, replaced))
 
@@ -1400,7 +1400,7 @@ def test_lens_probe_hash_tracks_the_resident_lens_identity() -> None:
     assert first is not None
     assert s.lens.probe_hash(name) == first
 
-    s.lens.runtime.identity = ("another", "lens")
+    s.lens.runtime.identity = cast(Any, ("another", "lens"))
     assert s.lens.probe_hash(name) != first
 
 

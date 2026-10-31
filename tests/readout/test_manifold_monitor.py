@@ -1019,7 +1019,9 @@ def test_affine_batched_topk_width_tracks_requested_top_n():
 
     reading = mon.score_single_token(_flat_node_hidden(m, 0))["wide"]
 
-    assert mon._engine(torch.device("cpu")).topk_width == 3
+    engine = mon._engine(torch.device("cpu"))
+    assert engine is not None
+    assert engine.topk_width == 3
     assert len(reading.nearest) == 3
     assert len(reading.assignment) == 3
     assert reading.nearest[0][0] == "n0"
@@ -1033,7 +1035,9 @@ def test_affine_batched_top_n_zero_skips_ranked_heads():
 
     reading = mon.score_single_token(_flat_node_hidden(m, 1))["tri"]
 
-    assert mon._engine(torch.device("cpu")).topk_width == 0
+    engine = mon._engine(torch.device("cpu"))
+    assert engine is not None
+    assert engine.topk_width == 0
     assert reading.nearest == []
     assert reading.assignment == []
 
@@ -1552,6 +1556,8 @@ def test_set_whitener_rebuilds_every_metric_derived_field():
     got, want = mon.attached_probes()["p"], fresh_mon.attached_probes()["p"]
     assert got.label_scale != pytest.approx(stale.label_scale)
     assert got.label_scale == pytest.approx(want.label_scale)
+    assert got.assign_bandwidth is not None and want.assign_bandwidth is not None
+    assert got.assign_logvol_bias is not None and want.assign_logvol_bias is not None
     assert torch.allclose(got.assign_bandwidth, want.assign_bandwidth)
     assert torch.allclose(got.assign_logvol_bias, want.assign_logvol_bias)
     hidden = _flat_node_hidden(m, 1)
@@ -1608,7 +1614,7 @@ def test_stream_is_one_batched_read_matching_per_token_reads():
             assert stream[name][t] == pytest.approx(lean[name].coords[0], abs=1e-5)
 
 
-def _probe_tensors(probe) -> list[torch.Tensor]:
+def _probe_tensors(probe: AttachedManifoldProbe) -> list[torch.Tensor]:
     out = list(probe.node_values_reduced.values())
     for whiten in probe.whitened.values():
         out += [t for t in vars(whiten).values() if isinstance(t, torch.Tensor)]

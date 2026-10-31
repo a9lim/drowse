@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -288,8 +288,8 @@ def test_evaluate_compare_linear_requires_a_single_manifold_term_before_fitting(
     folder = _discover_folder(tmp_path, monkeypatch, nodes=4)
     session = _FakeSession()
     with pytest.raises(NaturalnessError, match="single manifold term"):
-        evaluate(  # type: ignore[arg-type]
-            session, folder, "p", "0.5 formal.casual", compare_linear=True,
+        evaluate(
+            cast(Any, session), folder, "p", "0.5 formal.casual", compare_linear=True,
         )
     assert session.fit_calls == []
 

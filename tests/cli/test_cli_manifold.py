@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json as _json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -542,7 +542,7 @@ def test_run_manifold_transfer_json(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     monkeypatch.setattr(
         "drowse.fit.transfer.load_or_fit_transfer_alignment",
         lambda *args, **kwargs: TransferAlignment(
-            alignment={10: torch.eye(2)}, quality_per_layer={10: 0.5},
+            alignment=cast(Any, {10: torch.eye(2)}), quality_per_layer={10: 0.5},
             source_identity={"model_fingerprint": "src-fp"},
             target_identity={"model_fingerprint": "tgt-fp"},
             target_whitener=target_whitener,
@@ -589,7 +589,7 @@ def test_run_manifold_transfer_retries_unproven_target(
     monkeypatch.setattr(
         "drowse.fit.transfer.load_or_fit_transfer_alignment",
         lambda *args, **kwargs: TransferAlignment(
-            alignment={0: torch.eye(2)}, quality_per_layer={0: 0.5},
+            alignment=cast(Any, {0: torch.eye(2)}), quality_per_layer={0: 0.5},
             source_identity={"model_fingerprint": "src-fp"},
             target_identity={"model_fingerprint": "tgt-fp"},
             target_whitener=target_whitener,

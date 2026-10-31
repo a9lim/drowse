@@ -67,7 +67,9 @@ def test_token_rows_carry_raw_index_when_created() -> None:
         state.emit_map.append((raw_index, thinking))
         tap(text, thinking, 10 + raw_index, None, None, None, raw_index)
         node = tree.get(node_id)
-        rows_at_emit.append(dict((node.thinking_tokens if thinking else node.tokens)[-1]))
+        emitted = node.thinking_tokens if thinking else node.tokens
+        assert emitted is not None
+        rows_at_emit.append(dict(emitted[-1]))
 
     assert [row["raw_index"] for row in rows_at_emit] == [0, 2, 3]
     node = tree.get(node_id)

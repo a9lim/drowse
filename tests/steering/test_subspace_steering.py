@@ -331,7 +331,9 @@ def test_static_offsets_match_transient_constant_add():
     assert set(offsets) == set(mgr.hooks)
     for L, hook in mgr.hooks.items():
         assert hook.is_static
-        assert torch.equal(offsets[L], _group(mgr, L).op.const)
+        const = _group(mgr, L).op.const
+        assert const is not None
+        assert torch.equal(offsets[L], const)
 
 
 def test_static_offsets_sum_multiple_subspaces_like_the_hook_groups():
@@ -344,9 +346,9 @@ def test_static_offsets_sum_multiple_subspaces_like_the_hook_groups():
     assert offsets is not None
     hook = mgr.hooks[0]
     assert not hook.is_static  # two groups
-    consts = [_group(mgr, 0, gi).op.const for gi in range(2)]
-    assert all(c is not None for c in consts)
-    assert torch.allclose(offsets[0], consts[0] + consts[1], atol=1e-6)
+    const0, const1 = (_group(mgr, 0, gi).op.const for gi in range(2))
+    assert const0 is not None and const1 is not None
+    assert torch.allclose(offsets[0], const0 + const1, atol=1e-6)
 
 
 def test_static_offsets_use_the_shared_lowering():

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -217,16 +217,16 @@ def test_persist_writes_all_measurement_channels(matched: bool) -> None:
         tree=tree,
         tokenizer=_OffsetEchoTokenizer(),
         targets=[AuthoredPromptTarget(user_id, False, (120,), ("x",))],
-        monitor=SimpleNamespace(
+        monitor=cast(Any, SimpleNamespace(
             score_single_token=lambda _hidden: {"formal": _reading(0.25)},
-        ),
-        lens=SimpleNamespace(
+        )),
+        lens=cast(Any, SimpleNamespace(
             live={"source": "local:default"}, authored_capture=_lens_capture,
-        ),
-        sae=SimpleNamespace(
+        )),
+        sae=cast(Any, SimpleNamespace(
             live={"source": "saelens:test", "layer": 0},
             authored_capture=_sae_capture,
-        ),
+        )),
         monitor_active=True,
         lens_active=True,
         sae_active=True,

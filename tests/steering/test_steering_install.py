@@ -95,6 +95,7 @@ def test_generation_scope_restores_outer_offsets_through_teardown() -> None:
     scope ran unsteered.
     """
     session, buffers = _session()
+    assert session.engine is not None
     manager = session.manager
     with session.steering("0.5 a"):
         outer = _offsets(buffers)
@@ -229,6 +230,7 @@ def test_repeated_push_reuses_the_composed_plan(monkeypatch: pytest.MonkeyPatch)
         return original(entries, deps)
 
     monkeypatch.setattr(composer, "compose", counting)
+    plan = None
     for _ in range(3):
         with session.steering("0.5 a"):
             plan = session.manager.plan

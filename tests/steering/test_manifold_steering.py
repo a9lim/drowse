@@ -19,6 +19,7 @@ from drowse.steering.hooks import (
     _MANIFOLD_ONTO_GAIN,
     _manifold_layer_shares,
     CurvedGroup,
+    Group,
     SteeringHook,
     SteeringManager,
     SteeringPlan,
@@ -86,7 +87,7 @@ def _recompose_manifold(
     origin_coord = (
         torch.zeros(n) if O_L is None else O_L.reshape(-1).to(torch.float32)
     )
-    groups = (
+    groups: list[Group] = (
         [CurvedGroup(
             Trigger.BOTH, sub, domain, target_coord, origin_coord, along, onto,
         )]

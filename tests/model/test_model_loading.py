@@ -12,7 +12,7 @@ import os
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -377,7 +377,7 @@ def _compile(*, device: str = "cpu", mode: str = "default", patch_precision: boo
         precision_context,
     ):
         model = compile_mod.compile_with_probe(
-            _FakeModel("sdpa"), SimpleNamespace(), device, mode=mode,
+            cast(Any, _FakeModel("sdpa")), cast(Any, SimpleNamespace()), device, mode=mode,
         )
     return invocations, model
 
@@ -404,7 +404,7 @@ def test_compile_probe_failure_falls_back_to_eager():
         _w.catch_warnings(record=True) as caught,
     ):
         _w.simplefilter("always")
-        ret = compile_mod.compile_with_probe(base, SimpleNamespace(), "cpu")
+        ret = compile_mod.compile_with_probe(cast(Any, base), cast(Any, SimpleNamespace()), "cpu")
 
     assert ret is base
     assert any("torch.compile probe failed" in str(w.message) for w in caught)

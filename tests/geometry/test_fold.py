@@ -139,11 +139,13 @@ def test_fold_directions_to_subspace_neutral_anchored():
             whitener.mahalanobis_norm(L, raw), abs=1e-4,
         )
         # real per-layer pole coord = ‖d‖ (a step of ‖d‖ along d̂ from origin)
+        assert sub.node_coords is not None
         assert sub.node_coords.reshape(-1).item() == pytest.approx(
             float(raw.norm()), abs=1e-4,
         )
     # the pole eval lands at the in-span projection of ν + d
     sub2 = mfld.layers[2]
+    assert sub2.node_coords is not None
     assert torch.allclose(
         sub2.eval_at(sub2.node_coords[0]),
         _p_basis(neutral[2] + dir0, sub2.basis), atol=1e-4,

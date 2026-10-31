@@ -6,7 +6,7 @@ from __future__ import annotations
 import queue
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -195,7 +195,7 @@ def test_cold_alignment_reuses_loaded_target_neutrals_for_whitener(
 
     assert loaded == ["src/model", "tgt/model"]
     assert quality == {0: 1.0}
-    assert torch.equal(maps[0], torch.eye(2))
+    assert torch.equal(cast(Any, maps[0]), torch.eye(2))
     assert whitener.layers == {0}
     assert set(layer_means) == {0}
 

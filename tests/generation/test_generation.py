@@ -736,7 +736,7 @@ def test_gating_callback_backfills_exact_keys_hidden_by_top_n() -> None:
         mode=CaptureMode.INCREMENTAL, gating_keys={"toy@nearest", "toy@hidden"},
     )
     # The incremental branch reads the sink's appended row for this forward.
-    plane._rows = [{"toy": object()}]
+    plane._rows = cast(Any, [{"toy": object()}])
 
     callback = plane.gate_score_callback()
     scores = callback(0)

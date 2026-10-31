@@ -9,6 +9,7 @@ unique, so equivalence is checked on the transported residual.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pytest
 import torch
@@ -32,7 +33,10 @@ def _rot(theta: float) -> torch.Tensor:
     return torch.tensor([[c, -s], [s, c]])
 
 
-def _close_pairs(qa: torch.Tensor, qb: torch.Tensor, hn: torch.Tensor, closed) -> None:
+def _close_pairs(
+    qa: torch.Tensor, qb: torch.Tensor, hn: torch.Tensor,
+    closed: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> None:
     got = _rotate_planes(hn, *closed(qa, qb))
     ref = _rotate_planes(hn, *_principal_pairs_svd(qa, qb))
     assert torch.allclose(got, ref, atol=2e-5), (got - ref).abs().max()
